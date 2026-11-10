@@ -7,7 +7,19 @@ const WALK_SPEED := 7.0
 const RENT := 450
 const RENT_DAYS := 3
 const SHIFT_HOURS := 4.0
-const FRIDGE_MAX := 8
+const FRIDGE_MAX := 12
+const ITEM_SCALE := 1.5
+const STORE := Vector3(0, 0, -200)   # the supermarket interior lives far from the street
+const PRODUCTS: Array[Dictionary] = [
+	{"name": "לחם", "price": 9, "food": 22.0},
+	{"name": "גבינה", "price": 14, "food": 18.0},
+	{"name": "חלב", "price": 7, "food": 12.0},
+	{"name": "תפוח", "price": 3, "food": 8.0},
+	{"name": "פסטה", "price": 8, "food": 30.0},
+	{"name": "ביצים", "price": 13, "food": 28.0},
+	{"name": "עוף", "price": 32, "food": 55.0},
+	{"name": "שוקולד", "price": 7, "food": 10.0},
+]
 const SAVE_PATH := "user://life-city.cfg"
 
 enum State { MENU, PLAY, OVER }
@@ -24,6 +36,7 @@ class Person:
 class Place:
 	var key: String
 	var title: String
+	var prompt: String
 	var door: Vector3
 	var open_from := 0.0
 	var open_to := 24.0
@@ -53,7 +66,14 @@ var money := 200
 var hunger := 70.0                 # 100 = full
 var energy := 85.0
 var health := 100.0
-var fridge := 2
+var fridge: Array[int] = []        # product ids waiting at home
+var basket: Array[Node3D] = []     # items picked off the shelves, not yet paid for
+var store_items: Array[Node3D] = []
+var inside := false                # walking around inside the supermarket
+var focus: Node3D                  # shelf item close enough to grab
+var reach := 0.0
+var basket_mesh: MeshInstance3D
+var press_pos := Vector2.INF
 var shifts := 0
 var wage := 40                     # per hour
 var over_reason := ""
@@ -85,7 +105,7 @@ var prompt: Button
 var panel: PanelContainer
 var panel_title: Label
 var panel_text: Label
-var panel_buttons: VBoxContainer
+var panel_buttons: GridContainer
 var panel_note: Label
 var toast: Label
 var toast_tween: Tween
@@ -180,6 +200,7 @@ func _building(key: String, title: String, x: float, w: float, h: float, wall: C
 	var p := Place.new()
 	p.key = key
 	p.title = title
+	p.prompt = "להיכנס: " + title
 	p.door = Vector3(x, 0, front + 1.3)
 	p.open_from = open_from
 	p.open_to = open_to
@@ -296,6 +317,7 @@ func _build_world() -> void:
 		n.root.position = Vector3(rng.randf_range(-38, 38), 0, 5.6 if k % 3 == 0 else rng.randf_range(-2.6, -2.0))
 		add_child(n.root)
 		npcs.append(n)
+	_build_store()
 
 
 func _make_person(shirt: Color, pants: Color, into: Person = null) -> Person:
@@ -357,11 +379,15 @@ func _build_player() -> void:
 	player.add_child(cs)
 	_make_person(Color(0.2, 0.5, 0.95), Color(0.15, 0.2, 0.4), me)
 	player.add_child(me.root)
+	basket_mesh = _box(Vector3(0.5, 0.32, 0.38), Vector3(0, -0.85, 0.12), _mat(Color(0.85, 0.2, 0.2)), me.limbs[2])
+	basket_mesh.visible = false
 	add_child(player)
 	_reset_position()
 
 
 func _reset_position() -> void:
+	inside = false
+	_return_all()
 	player.position = places[0].door + Vector3(0, 0, 1.2)
 	player.velocity = Vector3.ZERO
 	me.root.rotation.y = 0.0
@@ -370,9 +396,10 @@ func _reset_position() -> void:
 
 ## Sun, sky and lamps follow the clock.
 func _apply_daylight() -> void:
-	var elevation := sin((clock - 6.0) / 12.0 * PI)          # 1 at noon, <0 at night
+	var hour := 12.0 if inside else clock                      # the shop is lit all day
+	var elevation := sin((hour - 6.0) / 12.0 * PI)          # 1 at noon, <0 at night
 	var light := clampf(elevation * 2.5 + 0.25, 0.0, 1.0)
-	sun.rotation_degrees = Vector3(-clampf(elevation, 0.12, 1.0) * 65.0, (clock - 12.0) * 9.0 - 25.0, 0)
+	sun.rotation_degrees = Vector3(-clampf(elevation, 0.12, 1.0) * 65.0, (hour - 12.0) * 9.0 - 25.0, 0)
 	sun.light_energy = 0.04 + light * 0.8
 	sun.light_color = Color(1.0, 0.72, 0.5).lerp(Color(1, 0.98, 0.93), clampf(elevation * 2.0, 0.0, 1.0))
 	var night_top := Color(0.03, 0.04, 0.12)
@@ -457,16 +484,15 @@ func _time_text(h: float) -> String:
 
 # Actions -------------------------------------------------------------------
 
-func _eat_home() -> void:
-	if fridge <= 0:
-		_toast("המקרר ריק. צריך לקנות אוכל בסופר.")
-		_play("no")
+func _eat(pid: int) -> void:
+	var at := fridge.find(pid)
+	if at < 0:
 		return
-	fridge -= 1
-	hunger = minf(hunger + 45.0, 100.0)
-	_skip(0.5, "awake")
+	fridge.remove_at(at)
+	hunger = minf(hunger + float(PRODUCTS[pid]["food"]), 100.0)
+	_skip(0.33, "awake")
 	_play("eat")
-	_toast("אכלת ארוחה ביתית.")
+	_toast("אכלת %s." % PRODUCTS[pid]["name"])
 	_refresh_panel()
 
 
@@ -480,23 +506,6 @@ func _sleep() -> void:
 		_skip(hours, "sleep")
 		_save()
 		_toast("ישנת %d שעות. בוקר טוב!" % int(hours)))
-
-
-func _buy(price: int, meals: int) -> void:
-	if money < price:
-		_toast("אין מספיק כסף.")
-		_play("no")
-		return
-	if fridge + meals > FRIDGE_MAX:
-		_toast("אין מקום במקרר (עד %d ארוחות)." % FRIDGE_MAX)
-		_play("no")
-		return
-	money -= price
-	fridge += meals
-	_skip(0.25, "awake")
-	_play("pay")
-	_toast("קנית אוכל. במקרר: %d ארוחות." % fridge)
-	_refresh_panel()
 
 
 func _cafe(price: int, food: float, boost: float, hours: float, msg: String) -> void:
@@ -583,6 +592,7 @@ func _add_action(text: String, action: Callable) -> void:
 	var b := Button.new()
 	b.text = _h(text)
 	b.focus_mode = Control.FOCUS_NONE
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	b.pressed.connect(action)
 	panel_buttons.add_child(b)
 
@@ -601,13 +611,25 @@ func _refresh_panel() -> void:
 	else:
 		match p.key:
 			"home":
-				panel_text.text = _h("במקרר: %d ארוחות" % fridge)
-				_add_action("לאכול ארוחה (חצי שעה)", _eat_home)
+				panel_text.text = _h("המקרר ריק. צריך לקנות אוכל בסופר." if fridge.is_empty() else "מה לאכול מהמקרר?")
+				for pid in PRODUCTS.size():
+					var have := fridge.count(pid)
+					if have > 0:
+						_add_action("%s ×%d" % [PRODUCTS[pid]["name"], have], _eat.bind(pid))
 				_add_action("לישון", _sleep)
-			"market":
-				panel_text.text = _h("במקרר בבית: %d מתוך %d" % [fridge, FRIDGE_MAX])
-				_add_action("לחם וגבינה · ארוחה אחת · ₪25", _buy.bind(25, 1))
-				_add_action("סל קניות · 4 ארוחות · ₪90", _buy.bind(90, 4))
+			"checkout":
+				if basket.is_empty():
+					panel_text.text = _h("הסל ריק. קחו מוצרים מהמדפים.")
+				else:
+					var parts: PackedStringArray = []
+					for pid in PRODUCTS.size():
+						var have := _basket_count(pid)
+						if have > 0:
+							parts.append(_h("%s ×%d" % [PRODUCTS[pid]["name"], have]))
+					panel_text.text = " · ".join(parts) + "\n" + _h("סך הכול: ₪%d" % _basket_total())
+					_add_action("לשלם ₪%d" % _basket_total(), _pay)
+					_add_action("להחזיר מוצר אחד", _return_last)
+					_add_action("להחזיר הכול למדף", _return_all_action)
 			"cafe":
 				panel_text.text = _h("אוכלים כאן ועכשיו, בלי לחזור הביתה")
 				_add_action("ארוחה חמה · ₪55", _cafe.bind(55, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
@@ -618,8 +640,10 @@ func _refresh_panel() -> void:
 	var close := Button.new()
 	close.text = _h("לצאת")
 	close.focus_mode = Control.FOCUS_NONE
+	close.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	close.pressed.connect(_close_panel)
 	panel_buttons.add_child(close)
+	panel_buttons.columns = 2 if actions.size() > 4 else 1
 
 
 # ----------------------------------------------------------------- loop ----
@@ -649,11 +673,18 @@ func _physics_process(delta: float) -> void:
 	var speed := WALK_SPEED * (0.6 if (energy < 15.0 or hunger < 10.0) else 1.0)
 	player.velocity = Vector3(input.x * speed, -4.0, input.y * speed)
 	player.move_and_slide()
-	player.position.x = clampf(player.position.x, -42.0, 42.0)
-	player.position.z = clampf(player.position.z, -5.6, 26.0)
+	if inside:
+		player.position.x = clampf(player.position.x, STORE.x - 10.8, STORE.x + 10.8)
+		player.position.z = clampf(player.position.z, STORE.z - 7.9, STORE.z + 8.2)
+	else:
+		player.position.x = clampf(player.position.x, -42.0, 42.0)
+		player.position.z = clampf(player.position.z, -5.6, 26.0)
 	if input.length_squared() > 0.01:
 		me.root.rotation.y = lerp_angle(me.root.rotation.y, atan2(input.x, input.y), 12.0 * delta)
 	_animate(me, input.length_squared() > 0.01, delta)
+	reach = maxf(reach - delta, 0.0)
+	if reach > 0.0:
+		me.limbs[3].rotation.x = -1.9          # arm stretched out to the shelf
 
 	if not walking:
 		return
@@ -663,6 +694,7 @@ func _physics_process(delta: float) -> void:
 	for p in places:
 		if p.door.distance_to(player.position) < 2.2:
 			near = p
+	_update_focus()
 	_update_hud()
 
 
@@ -674,7 +706,7 @@ func _process(delta: float) -> void:
 	if state == State.MENU:
 		want = Vector3(sin(Time.get_ticks_msec() * 0.0002) * 14.0, 1.0, -3.0)
 	cam_focus = cam_focus.lerp(want, 1.0 - exp(-5.0 * delta))
-	cam.position = cam_focus + Vector3(0, 11.5, 13.0)
+	cam.position = cam_focus + (Vector3(0, 7.0, 6.5) if inside else Vector3(0, 11.5, 13.0))
 	cam.look_at(cam_focus)
 	pad.queue_redraw()
 
@@ -693,6 +725,14 @@ func _unhandled_input(e: InputEvent) -> void:
 	elif e is InputEventScreenDrag and e.index == stick_id:
 		stick_vec = ((e.position - pad.origin) / 110.0).limit_length(1.0)
 		pad.knob = stick_vec
+	elif e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT:
+		# A click or tap that did not turn into a drag grabs the product under it.
+		if e.pressed:
+			press_pos = e.position
+		else:
+			if press_pos.distance_to(e.position) < 24.0:
+				_tap(e.position)
+			press_pos = Vector2.INF
 	elif e is InputEventKey and e.pressed and not e.echo:
 		var key: int = e.physical_keycode
 		if state != State.PLAY:
@@ -706,8 +746,11 @@ func _unhandled_input(e: InputEvent) -> void:
 				_close_panel()
 			elif key >= KEY_1 and key <= KEY_9 and key - KEY_1 < actions.size():
 				actions[key - KEY_1].call()
-		elif key in [KEY_E, KEY_ENTER, KEY_SPACE] and near != null:
-			_open_panel(near)
+		elif key in [KEY_E, KEY_ENTER, KEY_SPACE]:
+			if near != null:
+				_interact(near)
+			elif focus != null:
+				_pick(focus)
 
 
 # ---------------------------------------------------------- game states ----
@@ -719,7 +762,7 @@ func _new_game() -> void:
 	hunger = 70.0
 	energy = 85.0
 	health = 100.0
-	fridge = 2
+	fridge = [0, 5]
 	shifts = 0
 	wage = 40
 	_begin()
@@ -737,7 +780,12 @@ func _continue_game() -> void:
 	hunger = float(cfg.get_value("life", "hunger", 70.0))
 	energy = float(cfg.get_value("life", "energy", 85.0))
 	health = float(cfg.get_value("life", "health", 100.0))
-	fridge = int(cfg.get_value("life", "fridge", 2))
+	fridge.clear()
+	var stored: Variant = cfg.get_value("life", "fridge", [])
+	if stored is Array:
+		for v: Variant in stored:
+			if int(v) >= 0 and int(v) < PRODUCTS.size():
+				fridge.append(int(v))
 	shifts = int(cfg.get_value("life", "shifts", 0))
 	wage = int(cfg.get_value("life", "wage", 40))
 	_begin()
@@ -790,6 +838,7 @@ func _show_menu() -> void:
 		"",
 		"תנועה: חיצים או WASD · כניסה לבניין: E",
 		"בטלפון: גוררים אצבע על המסך כדי ללכת",
+		"בסופר: לוחצים על מוצר במדף כדי לקחת אותו, ומשלמים בקופה",
 	]), buttons)
 
 
@@ -926,7 +975,7 @@ func _build_hud() -> void:
 	prompt.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	prompt.pressed.connect(func() -> void:
 		if near != null:
-			_open_panel(near))
+			_interact(near))
 	prompt.visible = false
 	hud.add_child(prompt)
 
@@ -946,8 +995,9 @@ func _build_hud() -> void:
 	panel_text = _label(32)
 	panel_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	pv.add_child(panel_text)
-	panel_buttons = VBoxContainer.new()
-	panel_buttons.add_theme_constant_override("separation", 14)
+	panel_buttons = GridContainer.new()
+	panel_buttons.add_theme_constant_override("h_separation", 14)
+	panel_buttons.add_theme_constant_override("v_separation", 14)
 	pv.add_child(panel_buttons)
 	panel_note = _label(30, Color(1.0, 0.95, 0.7))
 	panel_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1006,15 +1056,17 @@ func _update_hud() -> void:
 	info_label.text = "\n".join([
 		_h("יום %d · %s" % [day, _time_text(clock)]),
 		_h("כסף: ₪%d" % money),
-		_h("אוכל בבית: %d" % fridge),
+		_h("אוכל בבית: %d" % fridge.size()),
 		_h("שכר דירה: %s" % rent_when),
+		_h("בסל: %d מוצרים · ₪%d" % [basket.size(), _basket_total()]) if inside else "",
 	])
+	basket_mesh.visible = not basket.is_empty()
 	(bars["hunger"] as ProgressBar).value = hunger
 	(bars["energy"] as ProgressBar).value = energy
 	(bars["health"] as ProgressBar).value = health
 	prompt.visible = playing and near != null and open_place == null and not busy
 	if prompt.visible:
-		prompt.text = _h("להיכנס: %s" % near.title)
+		prompt.text = _h(near.prompt)
 
 
 func _toast(text: String) -> void:
@@ -1056,6 +1108,7 @@ func _build_sounds() -> void:
 		"eat": _tone(300, 420, 0.25, 0.3),
 		"pay": _tone(880, 1320, 0.3, 0.25),
 		"no": _tone(220, 150, 0.3, 0.3),
+		"pick": _tone(620, 760, 0.1, 0.25),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -1066,3 +1119,275 @@ func _build_sounds() -> void:
 
 func _play(key: String) -> void:
 	(sfx[key] as AudioStreamPlayer).play()
+
+
+# ---------------------------------------------------------- supermarket ----
+
+func _ball(radius: float, pos: Vector3, mat: Material, parent: Node, squash: Vector3 = Vector3.ONE) -> void:
+	var mesh := SphereMesh.new()
+	mesh.radius = radius
+	mesh.height = radius * 2.0
+	mesh.radial_segments = 12
+	mesh.rings = 6
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.position = pos
+	mi.scale = squash
+	parent.add_child(mi)
+
+
+## A small model for each product, sitting on y = 0.
+func _product_node(pid: int) -> Node3D:
+	var n := Node3D.new()
+	match pid:
+		0:  # bread
+			_ball(0.2, Vector3(0, 0.17, 0), _mat(Color(0.72, 0.48, 0.22)), n, Vector3(1.0, 0.85, 1.9))
+		1:  # cheese
+			_box(Vector3(0.42, 0.24, 0.34), Vector3(0, 0.12, 0), _mat(Color(0.98, 0.8, 0.2)), n)
+		2:  # milk carton
+			_box(Vector3(0.24, 0.42, 0.24), Vector3(0, 0.21, 0), _mat(Color(0.95, 0.95, 0.97)), n)
+			_box(Vector3(0.25, 0.12, 0.25), Vector3(0, 0.46, 0), _mat(Color(0.2, 0.45, 0.9)), n)
+		3:  # apple
+			_ball(0.19, Vector3(0, 0.19, 0), _mat(Color(0.85, 0.12, 0.12)), n)
+			_box(Vector3(0.03, 0.1, 0.03), Vector3(0, 0.4, 0), _mat(Color(0.3, 0.2, 0.1)), n)
+		4:  # pasta box
+			_box(Vector3(0.3, 0.46, 0.14), Vector3(0, 0.23, 0), _mat(Color(0.15, 0.3, 0.7)), n)
+			_box(Vector3(0.2, 0.18, 0.15), Vector3(0, 0.26, 0), _mat(Color(0.98, 0.82, 0.4)), n)
+		5:  # egg carton
+			_box(Vector3(0.48, 0.14, 0.3), Vector3(0, 0.07, 0), _mat(Color(0.5, 0.45, 0.36)), n)
+			for k in 3:
+				_ball(0.07, Vector3(-0.15 + k * 0.15, 0.16, 0), _mat(Color(0.97, 0.93, 0.85)), n, Vector3(1, 1.2, 1))
+		6:  # chicken on a tray
+			_box(Vector3(0.5, 0.06, 0.36), Vector3(0, 0.03, 0), _mat(Color(0.9, 0.9, 0.9)), n)
+			_ball(0.17, Vector3(0, 0.17, 0), _mat(Color(0.95, 0.72, 0.6)), n, Vector3(1.3, 0.8, 1.0))
+		_:  # chocolate bar
+			_box(Vector3(0.42, 0.08, 0.24), Vector3(0, 0.04, 0), _mat(Color(0.35, 0.18, 0.08)), n)
+			_box(Vector3(0.2, 0.085, 0.245), Vector3(-0.08, 0.04, 0), _mat(Color(0.75, 0.1, 0.15)), n)
+	return n
+
+
+func _shelf(pid: int, pos: Vector3) -> void:
+	var wood := _mat(Color(0.4, 0.29, 0.2))
+	_box(Vector3(3.4, 1.0, 1.0), pos + Vector3(0, 0.5, 0), wood)
+	_box(Vector3(3.4, 1.3, 0.15), pos + Vector3(0, 1.65, -0.42), _mat(Color(0.16, 0.34, 0.55)))
+	_solid(Vector3(3.4, 2.0, 1.0), pos + Vector3(0, 1.0, 0))
+	var tag := Label3D.new()
+	tag.text = _h("%s ₪%d" % [PRODUCTS[pid]["name"], PRODUCTS[pid]["price"]])
+	tag.font = font
+	tag.font_size = 64
+	tag.pixel_size = 0.01
+	tag.outline_size = 16
+	tag.outline_modulate = Color(0.05, 0.1, 0.2)
+	tag.position = pos + Vector3(0, 1.75, -0.32)
+	add_child(tag)
+	for k in 4:
+		var item := _product_node(pid)
+		item.position = pos + Vector3(-1.2 + k * 0.8, 1.0, 0.12)
+		item.scale = Vector3.ONE * ITEM_SCALE
+		item.set_meta("pid", pid)
+		item.set_meta("home", item.position)
+		add_child(item)
+		store_items.append(item)
+
+
+func _build_store() -> void:
+	_box(Vector3(24, 1, 18), STORE + Vector3(0, -0.5, 0), _mat(Color(0.5, 0.47, 0.42)))
+	_solid(Vector3(24, 1, 18), STORE + Vector3(0, -0.5, 0))
+	var wall := _mat(Color(0.6, 0.66, 0.62))
+	_box(Vector3(24, 5, 0.5), STORE + Vector3(0, 2.5, -8.75), wall)
+	_solid(Vector3(24, 5, 0.5), STORE + Vector3(0, 2.5, -8.75))
+	for side: float in [-1.0, 1.0]:
+		_box(Vector3(0.5, 5, 18), STORE + Vector3(side * 11.75, 2.5, 0), wall)
+		_solid(Vector3(0.5, 5, 18), STORE + Vector3(side * 11.75, 2.5, 0))
+	var slots: Array[Vector3] = [
+		Vector3(-8, 0, -7.6), Vector3(-4, 0, -7.6), Vector3(0, 0, -7.6), Vector3(4, 0, -7.6), Vector3(8, 0, -7.6),
+		Vector3(1, 0, -1.5), Vector3(5, 0, -1.5), Vector3(9, 0, -1.5),
+	]
+	for pid in PRODUCTS.size():
+		_shelf(pid, STORE + slots[pid])
+
+	# Checkout: counter, till, cashier, and a mat to stand on.
+	var desk := STORE + Vector3(-7, 0, 3.4)
+	_box(Vector3(3.6, 1.1, 1.2), desk + Vector3(0, 0.55, 0), _mat(Color(0.3, 0.33, 0.4)))
+	_solid(Vector3(3.6, 1.1, 1.2), desk + Vector3(0, 0.55, 0))
+	_box(Vector3(0.7, 0.5, 0.6), desk + Vector3(-1.0, 1.35, 0), _mat(Color(0.15, 0.15, 0.18)))
+	var cashier := _make_person(Color(0.15, 0.6, 0.35), Color(0.2, 0.2, 0.25))
+	cashier.root.position = desk + Vector3(0, 0, -1.3)
+	add_child(cashier.root)
+	_sign("קופה", desk + Vector3(0, 3.2, -1.3), 72)
+	_box(Vector3(2.4, 0.04, 1.4), desk + Vector3(0, 0.03, 1.7), _mat(Color(0.95, 0.75, 0.2)))
+	var till := Place.new()
+	till.key = "checkout"
+	till.title = "קופה"
+	till.prompt = "לשלם בקופה"
+	till.door = desk + Vector3(0, 0, 1.7)
+	places.append(till)
+
+	_box(Vector3(2.6, 0.04, 1.4), STORE + Vector3(0, 0.03, 7.9), _mat(Color(0.25, 0.7, 0.4)))
+	var out := Place.new()
+	out.key = "store_exit"
+	out.title = "יציאה"
+	out.prompt = "לצאת מהסופר"
+	out.door = STORE + Vector3(0, 0, 7.9)
+	places.append(out)
+
+
+func _interact(p: Place) -> void:
+	if busy or state != State.PLAY:
+		return
+	match p.key:
+		"market":
+			if not _is_open(p):
+				_toast("הסופר סגור. פתוח בין %s ל-%s." % [_time_text(p.open_from), _time_text(p.open_to)])
+				_play("no")
+				return
+			inside = true
+			for item in store_items:
+				item.visible = true
+			player.position = STORE + Vector3(0, 0, 5.5)
+			me.root.rotation.y = PI
+			cam_focus = player.position
+			near = null
+			_play("door")
+			_apply_daylight()
+			_toast("לחצו על מוצר במדף כדי לקחת אותו. משלמים בקופה.")
+		"store_exit":
+			if not basket.is_empty():
+				_toast("קודם משלמים בקופה, או מחזירים את המוצרים למדף.")
+				_play("no")
+				return
+			inside = false
+			focus = null
+			for place in places:
+				if place.key == "market":
+					player.position = place.door + Vector3(0, 0, 1.2)
+			me.root.rotation.y = 0.0
+			cam_focus = player.position
+			near = null
+			_play("door")
+			_apply_daylight()
+			_update_hud()
+		_:
+			_open_panel(p)
+
+
+func _basket_total() -> int:
+	var total := 0
+	for item in basket:
+		total += int(PRODUCTS[int(item.get_meta("pid"))]["price"])
+	return total
+
+
+func _basket_count(pid: int) -> int:
+	var count := 0
+	for item in basket:
+		if int(item.get_meta("pid")) == pid:
+			count += 1
+	return count
+
+
+func _on_shelf(item: Node3D) -> bool:
+	return item.visible and not basket.has(item)
+
+
+## The nearest shelf item within arm's reach gets a little "pick me" bump.
+func _update_focus() -> void:
+	focus = null
+	if not inside:
+		return
+	var best := 2.3
+	var hand := player.position + Vector3(0, 1.0, 0)
+	for item in store_items:
+		item.scale = Vector3.ONE * ITEM_SCALE
+		if not _on_shelf(item):
+			continue
+		var d := hand.distance_to(item.get_meta("home"))
+		if d < best:
+			best = d
+			focus = item
+	if focus != null:
+		focus.scale = Vector3.ONE * ITEM_SCALE * 1.3
+
+
+## Click/tap position (canvas coordinates) -> the shelf item drawn under it.
+func _tap(pos: Vector2) -> void:
+	if not inside or state != State.PLAY or open_place != null or busy:
+		return
+	var hit: Node3D
+	var best := 70.0
+	for item in store_items:
+		if not _on_shelf(item):
+			continue
+		var world: Vector3 = item.get_meta("home") + Vector3(0, 0.2, 0)
+		if cam.is_position_behind(world):
+			continue
+		var d := cam.unproject_position(world).distance_to(pos)
+		if d < best:
+			best = d
+			hit = item
+	if hit == null:
+		return
+	if (player.position + Vector3(0, 1.0, 0)).distance_to(hit.get_meta("home")) > 3.0:
+		_toast("צריך להתקרב למדף כדי לקחת.")
+		return
+	_pick(hit)
+
+
+func _pick(item: Node3D) -> void:
+	if not _on_shelf(item):
+		return
+	if fridge.size() + basket.size() >= FRIDGE_MAX:
+		_toast("אין יותר מקום במקרר בבית (עד %d מוצרים)." % FRIDGE_MAX)
+		_play("no")
+		return
+	basket.append(item)
+	reach = 0.35
+	var to_item: Vector3 = item.get_meta("home") - player.position
+	me.root.rotation.y = atan2(to_item.x, to_item.z)
+	_play("pick")
+	var pid := int(item.get_meta("pid"))
+	_toast("לקחת %s · ₪%d" % [PRODUCTS[pid]["name"], PRODUCTS[pid]["price"]])
+	var tw := create_tween()
+	tw.tween_property(item, "position", player.position + Vector3(0, 1.0, 0), 0.25)
+	tw.tween_callback(func() -> void:
+		item.visible = false
+		item.position = item.get_meta("home")
+		item.scale = Vector3.ONE * ITEM_SCALE)
+	_update_hud()
+
+
+func _pay() -> void:
+	var total := _basket_total()
+	if money < total:
+		_toast("אין מספיק כסף (חסרים ₪%d). החזירו משהו למדף." % (total - money))
+		_play("no")
+		return
+	money -= total
+	for item in basket:
+		fridge.append(int(item.get_meta("pid")))
+	var bought := basket.size()
+	basket.clear()
+	_skip(0.25, "awake")
+	_play("pay")
+	_toast("שילמת ₪%d על %d מוצרים. הם יחכו לך במקרר בבית." % [total, bought])
+	_refresh_panel()
+
+
+func _return_last() -> void:
+	if basket.is_empty():
+		return
+	var item: Node3D = basket.pop_back()
+	item.visible = true
+	_refresh_panel()
+
+
+func _return_all() -> void:
+	for item in basket:
+		item.visible = true
+	basket.clear()
+
+
+func _return_all_action() -> void:
+	_return_all()
+	_refresh_panel()
