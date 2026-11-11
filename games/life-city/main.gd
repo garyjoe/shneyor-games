@@ -39,7 +39,7 @@ const AMMO_PRICE := 20
 const FOREST_Z := 36.0             # the forest starts this far south of the street
 const FOREST_END := 100.0
 const ROOMS := {
-	"home": {"origin": Vector3(-200, 0, -200), "half": Vector2(11, 8)},
+	"home": {"origin": Vector3(-200, 0, -200), "half": Vector2(19.5, 8)},
 	"market": {"origin": Vector3(0, 0, -200), "half": Vector2(14.8, 8.2)},
 	"cafe": {"origin": Vector3(200, 0, -200), "half": Vector2(8, 6)},
 	"work": {"origin": Vector3(400, 0, -200), "half": Vector2(10, 7)},
@@ -202,6 +202,12 @@ var prayed_slot := 0               # day * 3 + (0 morning, 1 afternoon, 2 evenin
 var family: Array[Person] = []     # wife, son, daughter, baby
 var family_joy := 70.0
 var near_kin: Person
+var kids := 0                      # 0 at home, 1 on the way to school, 2 at school, 3 on the way home
+var school_missed_day := 0
+var teacher: Person
+const KIDS: Array[int] = [1, 2, 3, 4]      # places of the children in `family`
+const KID_ROOMS: Array[float] = [13.6, 17.6, -13.6, -17.6]   # x of each child's bedroom
+const SCHOOL_DOOR := Vector3(126, 0, -4.7)
 var joy_warned := false
 var flames: Array[Node3D] = []
 var near_npc: Person               # a townsperson close enough to talk to
@@ -488,6 +494,7 @@ func _build_world() -> void:
 	_build_edges()
 	_build_neighbourhood()
 	_build_restroom()
+	_build_school()
 	_building("guns", "חנות נשק", 40, 9, 4.2, Color(0.5, 0.52, 0.45), Color(0.25, 0.3, 0.2), 9, 19)
 
 	# Passers-by on the pavements, each with a name.
@@ -520,12 +527,12 @@ func _cap(radius: float, height: float, pos: Vector3, mat: Material, parent: Nod
 
 
 ## A person built from rounded parts, with knees and elbows that bend.
-func _make_person(shirt: Color, pants: Color, into: Person = null) -> Person:
+func _make_person(shirt: Color, pants: Color, into: Person = null, tone: int = -1) -> Person:
 	var p := into if into else Person.new()
 	p.root = Node3D.new()
 	var tones: Array[Color] = [Color(0.96, 0.8, 0.66), Color(0.9, 0.72, 0.56), Color(0.78, 0.58, 0.42), Color(0.6, 0.42, 0.3), Color(0.45, 0.31, 0.22)]
 	var hairs: Array[Color] = [Color(0.12, 0.09, 0.07), Color(0.3, 0.19, 0.1), Color(0.55, 0.38, 0.18), Color(0.85, 0.7, 0.4), Color(0.6, 0.6, 0.62), Color(0.55, 0.2, 0.1)]
-	var skin := _mat(tones[rng.randi_range(0, 4)] if into == null else tones[1])
+	var skin := _mat(tones[tone] if tone >= 0 else (tones[rng.randi_range(0, 4)] if into == null else tones[0]))
 	var hair := _mat(hairs[rng.randi_range(0, 5)] if into == null else hairs[1])
 	var shirt_mat := _mat(shirt)
 	var pants_mat := _mat(pants)
@@ -1162,6 +1169,8 @@ func _new_game() -> void:
 	prayed_day = 0
 	prayed_slot = 0
 	family_joy = 70.0
+	kids = 0
+	school_missed_day = 0
 	for kin in family:
 		kin.talked_day = 0
 	friday_note_day = 0
@@ -1736,6 +1745,10 @@ func _interact(p: Place) -> void:
 			_enter_room(p)
 		"store_exit", "exit":
 			_leave_room()
+		"school":
+			_school_door()
+		"kids_out":
+			_take_kids()
 		"bench":
 			_bench_sleep()
 		"toilet":
@@ -1800,6 +1813,7 @@ func _leave_room() -> void:
 	inside = false
 	room = ""
 	carrying = false
+	_place_kids()
 	focus = null
 	me.root.rotation.y = 0.0
 	cam_focus = player.position
@@ -3395,6 +3409,7 @@ func _watch_week() -> void:
 	if _weekday() == 5 and clock >= 12.0 and clock < 18.0 and friday_note_day != day:
 		friday_note_day = day
 		_toast("היום יום שישי. שבת נכנסת ב-18:00: קנו חלה ומיץ ענבים, והדליקו נרות בבית.")
+	_watch_school()
 	if bladder >= 85.0 and not bladder_warned:
 		bladder_warned = true
 		_toast("צריך ללכת לשירותים! יש בבית, ויש שירותים ציבוריים בפארק.")
@@ -3549,33 +3564,66 @@ func _bubble_for(n: Person, height: float) -> void:
 
 
 func _build_family(o: Vector3) -> void:
-	# Mother, with her hair covered.
-	var mother := _make_person(Color(0.55, 0.3, 0.55), Color(0.3, 0.2, 0.35))
+	# Mother: hair covered, long sleeves and a long skirt. The whole family is fair-skinned.
+	var mother := _make_person(Color(0.55, 0.3, 0.55), Color(0.3, 0.2, 0.35), null, 0)
 	mother.name = "רחל"
 	_ball(0.215, Vector3(0, 1.82, -0.04), _mat(Color(0.8, 0.3, 0.45)), mother.root, Vector3(1.02, 0.9, 1.05))
-	_cap(0.16, 0.5, Vector3(0, 0.75, 0), _mat(Color(0.3, 0.2, 0.35)), mother.root, Vector3(1.5, 1.0, 1.1))   # skirt
+	_modest(mother, Color(0.55, 0.3, 0.55), Color(0.3, 0.2, 0.35))
 	mother.root.scale = Vector3(0.97, 0.97, 0.97)
 	mother.speed = 1.3
-	# Son with a kippah, and daughter.
-	var son := _make_person(Color(0.95, 0.95, 0.95), Color(0.15, 0.2, 0.4))
+	# Son with a kippah, and daughter in her school uniform with its badge.
+	var son := _make_person(Color(0.95, 0.95, 0.95), Color(0.15, 0.2, 0.4), null, 0)
 	son.name = "דוד"
 	_kippah(son.root, Color(0.15, 0.4, 0.75))
 	son.root.scale = Vector3(0.68, 0.68, 0.68)
 	son.speed = 2.2
-	var daughter := _make_person(Color(0.95, 0.6, 0.75), Color(0.5, 0.25, 0.45))
+	var daughter := _make_person(Color(0.6, 0.78, 0.95), Color(0.12, 0.16, 0.38), null, 0)
 	daughter.name = "שרה"
-	_cap(0.16, 0.45, Vector3(0, 0.78, 0), _mat(Color(0.5, 0.25, 0.45)), daughter.root, Vector3(1.5, 1.0, 1.1))
+	_modest(daughter, Color(0.6, 0.78, 0.95), Color(0.12, 0.16, 0.38))
+	_box(Vector3(0.09, 0.1, 0.02), Vector3(0.11, 1.36, 0.185), _mat(Color(0.95, 0.8, 0.15)), daughter.root)   # school badge
+	_box(Vector3(0.05, 0.05, 0.022), Vector3(0.11, 1.36, 0.186), _mat(Color(0.12, 0.16, 0.38)), daughter.root)
 	daughter.root.scale = Vector3(0.58, 0.58, 0.58)
 	daughter.speed = 2.0
-	var spots: Array[Vector3] = [Vector3(1.5, 0, -5.0), Vector3(2.5, 0, 4.0), Vector3(-1.5, 0, 4.5)]
-	var walkers: Array[Person] = [mother, son, daughter]
-	for k in 3:
+	# Two younger children.
+	var boy := _make_person(Color(0.3, 0.7, 0.4), Color(0.2, 0.22, 0.3), null, 0)
+	boy.name = "יעקב"
+	_kippah(boy.root, Color(0.75, 0.2, 0.2))
+	boy.root.scale = Vector3(0.5, 0.5, 0.5)
+	boy.speed = 2.3
+	var girl := _make_person(Color(0.98, 0.85, 0.5), Color(0.55, 0.2, 0.3), null, 0)
+	girl.name = "רבקה"
+	_modest(girl, Color(0.98, 0.85, 0.5), Color(0.55, 0.2, 0.3))
+	girl.root.scale = Vector3(0.44, 0.44, 0.44)
+	girl.speed = 1.9
+	var spots: Array[Vector3] = [Vector3(1.5, 0, -5.0), Vector3(2.5, 0, 4.0), Vector3(-1.5, 0, 4.5), Vector3(4.0, 0, 5.5), Vector3(-6.5, 0, 5.0)]
+	var walkers: Array[Person] = [mother, son, daughter, boy, girl]
+	# A bedroom for each child, two on each side of the home.
+	var room_colors: Array[Color] = [Color(0.3, 0.5, 0.85), Color(0.9, 0.55, 0.7), Color(0.35, 0.7, 0.45), Color(0.95, 0.8, 0.4)]
+	var inner := _mat(Color(0.86, 0.8, 0.68))
+	for wx: float in [-15.6, -11.6, 11.6, 15.6]:
+		_box(Vector3(0.25, 3.2, 4.6), o + Vector3(wx, 1.6, -6.2), inner)
+		_solid(Vector3(0.25, 3.2, 4.6), o + Vector3(wx, 1.6, -6.2))
+	for k in 4:
+		var rc := o + Vector3(KID_ROOMS[k], 0, -6.2)
+		_box(Vector3(3.5, 0.03, 4.2), rc + Vector3(0, 0.02, 0), _mat(room_colors[k].lightened(0.45)))
+		_box(Vector3(1.4, 0.45, 2.8), rc + Vector3(-0.8, 0.23, -0.9), _mat(Color(0.45, 0.3, 0.18)))
+		_box(Vector3(1.3, 0.2, 2.6), rc + Vector3(-0.8, 0.55, -0.9), _mat(Color(0.95, 0.95, 0.92)))
+		_box(Vector3(1.32, 0.22, 1.6), rc + Vector3(-0.8, 0.57, -0.4), _mat(room_colors[k]))
+		_box(Vector3(0.9, 0.16, 0.5), rc + Vector3(-0.8, 0.72, -1.9), _mat(Color(1, 1, 1)))
+		_solid(Vector3(1.4, 0.8, 2.8), rc + Vector3(-0.8, 0.4, -0.9))
+		_box(Vector3(0.8, 0.5, 0.6), rc + Vector3(1.1, 0.25, -1.9), _mat(room_colors[k].darkened(0.2)))     # toy box
+		_ball(0.2, rc + Vector3(1.1, 0.2, 0.2), _mat(Color.from_hsv(k * 0.23, 0.8, 0.95)), self)           # ball
+		_tag("החדר של %s" % walkers[k + 1].name, rc + Vector3(0, 2.6, -1.8), 40)
+	for k in 5:
 		walkers[k].root.position = o + spots[k]
 		walkers[k].target = walkers[k].root.position
 		add_child(walkers[k].root)
 		_bubble_for(walkers[k], 2.75)
 		_handle(walkers[k].root, "home", _family_talk.bind(walkers[k]))
 		family.append(walkers[k])
+	_spot("home", "kids_out", "ילקוטים", "לקחת את הילדים לבית הספר", o + Vector3(3.0, 0, 6.6))
+	_box(Vector3(0.5, 0.5, 0.25), o + Vector3(3.6, 0.25, 7.6), _mat(Color(0.2, 0.45, 0.8)))       # schoolbags by the door
+	_box(Vector3(0.45, 0.45, 0.25), o + Vector3(4.2, 0.23, 7.6), _mat(Color(0.85, 0.4, 0.6)))
 	# The baby, in a cot in the bedroom.
 	var cot := o + Vector3(-6.0, 0, -4.4)
 	var rail := _mat(Color(0.95, 0.93, 0.85))
@@ -3619,6 +3667,8 @@ func _update_family(delta: float) -> void:
 			near_kin = kin
 		if kin.limbs.is_empty():
 			continue                     # the baby stays in the cot
+		if kids != 0 and family.find(kin) in KIDS:
+			continue                     # out at school
 		kin.pause = maxf(kin.pause - delta, 0.0)
 		var to_target := kin.target - kin.root.position
 		to_target.y = 0.0
@@ -3628,6 +3678,9 @@ func _update_family(delta: float) -> void:
 			if kin.wait <= 0.0 and kin.pause <= 0.0:
 				kin.wait = rng.randf_range(2.0, 7.0)
 				kin.target = o + stops[rng.randi_range(0, stops.size() - 1)]
+				var place := family.find(kin)
+				if place in KIDS and (clock >= 20.5 or clock < 6.5):
+					kin.target = o + Vector3(KID_ROOMS[place - 1] + 0.6, 0, -5.4)        # bedtime: off to their own room
 			continue
 		var step := to_target.normalized() * kin.speed
 		kin.root.position += step * delta
@@ -3646,13 +3699,13 @@ func _family_talk(kin: Person) -> void:
 	match family.find(kin):
 		0:
 			lines = ["שלום! איך היה היום שלך?", "הילדים חיכו לך.", "תודה שאתה דואג לנו.", "אל תשכח לקנות חלה לשבת."]
-		1:
-			lines = ["אבא! בוא נשחק!", "אבא, למדתי היום בחומש.", "אפשר לבוא איתך לבית הכנסת?"]
-		2:
-			lines = ["אבא! ציירתי לך ציור.", "אבא, תקרא לי סיפור?", "אני אוהבת אותך, אבא."]
+		1, 3:
+			lines = ["אבא! בוא נשחק!", "אבא, למדתי היום בחומש.", "אפשר לבוא איתך לבית הכנסת?", "אבא, ראית את החדר שלי?"]
+		2, 4:
+			lines = ["אבא! ציירתי לך ציור.", "אבא, תקרא לי סיפור?", "אני אוהבת אותך, אבא.", "אבא, סידרתי את המיטה שלי!"]
 		_:
 			lines = ["גו גו!", "(התינוק מחייך אליך)", "(התינוק צוחק)"]
-	_say(kin, "שבת שלום, אבא!" if (_is_shabbat() and family.find(kin) in [1, 2]) else lines[rng.randi_range(0, lines.size() - 1)], 4.5)
+	_say(kin, "שבת שלום, אבא!" if (_is_shabbat() and family.find(kin) in KIDS) else lines[rng.randi_range(0, lines.size() - 1)], 4.5)
 	if kin.talked_day != day:
 		kin.talked_day = day
 		family_joy = minf(family_joy + 6.0, 100.0)
@@ -3661,9 +3714,11 @@ func _family_talk(kin: Person) -> void:
 
 ## Once a day the family eats from the fridge, and misses you a little.
 func _family_day() -> void:
+	kids = 0
+	_place_kids()
 	family_joy = maxf(family_joy - 6.0, 0.0)
 	var eaten := 0
-	while eaten < 3 and not fridge.is_empty():
+	while eaten < 4 and not fridge.is_empty():
 		var pick := -1
 		for k in fridge.size():                  # leave the Shabbat challah and grape juice alone
 			if fridge[k] != CHALLAH and fridge[k] != GRAPE_JUICE:
@@ -3673,7 +3728,7 @@ func _family_day() -> void:
 			break
 		fridge.remove_at(pick)
 		eaten += 1
-	if eaten < 3:
+	if eaten < 4:
 		family_joy = maxf(family_joy - 12.0, 0.0)
 		_toast("לא היה מספיק אוכל בבית למשפחה. צריך למלא את המקרר.")
 	if family_joy < 25.0 and not joy_warned:
@@ -3681,3 +3736,152 @@ func _family_day() -> void:
 		_toast("המשפחה מתגעגעת אליך. בוא הביתה, דבר איתם והבא אוכל.")
 	elif family_joy >= 40.0:
 		joy_warned = false
+
+
+# --------------------------------------------------------------- school ----
+
+## Long sleeves and a long skirt over the standard figure.
+func _modest(p: Person, shirt: Color, skirt: Color) -> void:
+	_cap(0.17, 0.82, Vector3(0, 0.6, 0), _mat(skirt), p.root, Vector3(1.45, 1.0, 1.15))
+	for k: int in [2, 3]:
+		_cap(0.068, 0.3, Vector3(0, -0.13, 0), _mat(shirt), p.joints[k])
+
+
+func _is_school_day() -> bool:
+	return _weekday() <= 5 and not _is_shabbat()
+
+
+func _build_school() -> void:
+	var at := Vector3(126, 0, -10)
+	_box(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0), _mat(Color(0.93, 0.85, 0.6)))
+	_box(Vector3(15.6, 0.4, 8.6), at + Vector3(0, 6.6, 0), _mat(Color(0.25, 0.4, 0.65)))
+	_solid(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0))
+	_box(Vector3(2.2, 2.6, 0.12), at + Vector3(0, 1.3, 4.05), _mat(Color(0.25, 0.4, 0.65)))
+	for f in 2:
+		for c in 4:
+			_box(Vector3(1.6, 1.3, 0.1), at + Vector3(-5.4 + c * 3.6 + (0.0 if c < 2 else 0.0), 2.1 + f * 3.0, 4.05), window_mat)
+	_sign("בית ספר", at + Vector3(0, 7.8, 4.3))
+	_box(Vector3(0.9, 0.9, 0.06), at + Vector3(0, 5.2, 4.06), _mat(Color(0.95, 0.8, 0.15)))       # the school emblem
+	_box(Vector3(0.5, 0.5, 0.07), at + Vector3(0, 5.2, 4.07), _mat(Color(0.12, 0.16, 0.38)))
+	_box(Vector3(3.0, 0.04, 1.6), SCHOOL_DOOR + Vector3(0, 0.03, 0), _mat(Color(0.95, 0.75, 0.2)))
+	var gate := Place.new()
+	gate.key = "school"
+	gate.title = "בית ספר"
+	gate.prompt = "בית הספר"
+	gate.door = SCHOOL_DOOR
+	places.append(gate)
+	# The teacher waits by the door.
+	teacher = _make_person(Color(0.35, 0.55, 0.5), Color(0.2, 0.2, 0.3))
+	teacher.speed = 0.0
+	teacher.root.position = SCHOOL_DOOR + Vector3(2.6, 0, -0.4)
+	_modest(teacher, Color(0.35, 0.55, 0.5), Color(0.2, 0.2, 0.3))
+	_add_townsperson(teacher)
+	teacher.name = "המורה מרים"
+	# A small yard with a slide and a swing frame.
+	var yard := at + Vector3(11.5, 0, 4.5)
+	_box(Vector3(5.0, 0.04, 4.0), yard + Vector3(0, 0.02, 0), _mat(Color(0.85, 0.75, 0.5)))
+	_box(Vector3(0.9, 0.12, 3.0), yard + Vector3(-1.2, 0.9, 0), _mat(Color(0.9, 0.2, 0.2))).rotation.x = 0.5
+	for sz: float in [-1.0, 1.0]:
+		_box(Vector3(0.12, 2.4, 0.12), yard + Vector3(1.4, 1.2, sz), _mat(Color(0.25, 0.4, 0.65)))
+	_box(Vector3(0.12, 0.12, 2.2), yard + Vector3(1.4, 2.4, 0), _mat(Color(0.25, 0.4, 0.65)))
+
+
+## Where the two children are drawn: at home, walking behind you, or out of sight at school.
+func _place_kids() -> void:
+	if family.size() < 6:
+		return
+	for k: int in KIDS:
+		var kid := family[k]
+		if kids == 0:
+			kid.root.visible = true
+			kid.root.position = ROOMS["home"]["origin"] + Vector3(-1.0 + k * 1.2, 0, 3.8)
+			kid.target = kid.root.position
+		else:
+			kid.root.visible = (kids == 1 or kids == 3) and not inside and not driving
+
+
+func _take_kids() -> void:
+	if kids != 0:
+		_toast("הילדים כבר לא בבית.")
+		return
+	if not _is_school_day():
+		_toast("היום אין בית ספר.")
+		return
+	if clock >= 13.0:
+		_toast("מאוחר מדי לבית הספר היום.")
+		return
+	kids = 1
+	var packed := 0
+	for n in 4:
+		for k in fridge.size():
+			if fridge[k] != CHALLAH and fridge[k] != GRAPE_JUICE:
+				fridge.remove_at(k)
+				packed += 1
+				break
+	if packed == 4:
+		_toast("ארזת לילדים אוכל לבית הספר. עכשיו מסיעים אותם: בית הספר בקצה הימני של הרחוב.")
+	else:
+		family_joy = maxf(family_joy - 6.0, 0.0)
+		_toast("אין מספיק אוכל לארוז לילדים! קנה אוכל. בינתיים מסיעים אותם לבית הספר.")
+	_play("pick")
+	_place_kids()
+	_update_hud()
+
+
+func _school_door() -> void:
+	if kids == 1:
+		kids = 2
+		family_joy = minf(family_joy + 8.0, 100.0)
+		_say(teacher, "בוקר טוב ילדים! להתראות אבא.", 5.0)
+		_toast("הילדים בבית הספר. אוספים אותם אחרי %s." % ("11:00" if _weekday() == 5 else "13:00"))
+		_play("pay")
+	elif kids == 2:
+		if clock < (11.0 if _weekday() == 5 else 13.0):
+			_say(teacher, "הילדים עוד לומדים. בוא אחר כך.", 4.0)
+			return
+		kids = 3
+		_say(teacher, "הם למדו יפה היום!", 5.0)
+		_toast("אספת את הילדים. עכשיו מחזירים אותם הביתה.")
+		_play("pick")
+	elif kids == 3:
+		_toast("הילדים איתך. קח אותם הביתה.")
+	else:
+		_say(teacher, "שלום! הילדים שלך בבית." if _is_school_day() else "היום אין לימודים.", 4.0)
+	_place_kids()
+	_update_hud()
+
+
+func _watch_school() -> void:
+	# The children trail behind you on foot, and ride along unseen in the car.
+	if kids == 1 or kids == 3:
+		for k: int in KIDS:
+			var kid := family[k]
+			kid.root.visible = not inside and not driving
+			if kid.root.visible:
+				var back := Vector3(-sin(me.root.rotation.y), 0, -cos(me.root.rotation.y))
+				var want := player.position + back * (0.9 + 0.5 * k) + Vector3(0.6 if k % 2 == 1 else -0.6, 0, 0)
+				var moving := kid.root.position.distance_to(want) > 0.3
+				if kid.root.position.distance_to(want) > 12.0:
+					kid.root.position = want
+				kid.root.position = kid.root.position.move_toward(want, 9.0 * get_physics_process_delta_time())
+				var dir := want - kid.root.position
+				if dir.length() > 0.05:
+					kid.root.rotation.y = atan2(dir.x, dir.z)
+				_animate(kid, moving, get_physics_process_delta_time())
+		if kids == 3 and room == "home":
+			kids = 0
+			family_joy = minf(family_joy + 6.0, 100.0)
+			_place_kids()
+			_toast("הילדים חזרו הביתה מבית הספר.")
+	if kids == 0 and _is_school_day() and clock >= 9.0 and clock < 13.0 and school_missed_day != day:
+		school_missed_day = day
+		family_joy = maxf(family_joy - 8.0, 0.0)
+		_toast("הילדים עוד לא בבית הספר! קח אותם מהבית (ליד הדלת).")
+	if kids == 2 and clock >= 18.5:
+		kids = 0
+		family_joy = maxf(family_joy - 8.0, 0.0)
+		_place_kids()
+		_toast("לא אספת את הילדים, והם חזרו הביתה לבד.")
+	if kids != 0 and _is_shabbat():
+		kids = 0
+		_place_kids()
