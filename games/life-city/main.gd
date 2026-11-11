@@ -19,7 +19,13 @@ const PRODUCTS: Array[Dictionary] = [
 	{"name": "ביצים", "price": 13, "food": 28.0},
 	{"name": "עוף", "price": 32, "food": 55.0},
 	{"name": "שוקולד", "price": 7, "food": 10.0},
+	{"name": "בשר ציד", "price": 35, "food": 45.0},   # only from hunting, never on a shelf
 ]
+const MEAT := 8
+const RIFLE_PRICE := 600
+const AMMO_PRICE := 40
+const FOREST_Z := 36.0             # the forest starts this far south of the street
+const FOREST_END := 100.0
 const SAVE_PATH := "user://life-city.cfg"
 
 enum State { MENU, PLAY, OVER }
@@ -31,6 +37,19 @@ class Person:
 	var phase := 0.0
 	var dir := 1.0
 	var speed := 2.0
+	var chasing := false            # robbers only
+	var target := Vector3.ZERO
+	var wait := 0.0
+
+
+class Animal:
+	var node: Node3D
+	var big := false                # deer or rabbit
+	var dead := false
+	var gone := 0.0                 # seconds until it comes back after being collected
+	var heading := Vector3.ZERO
+	var timer := 0.0
+	var scared := 0.0
 
 
 class Place:
@@ -74,6 +93,13 @@ var focus: Node3D                  # shelf item close enough to grab
 var reach := 0.0
 var basket_mesh: MeshInstance3D
 var press_pos := Vector2.INF
+var has_rifle := false
+var ammo := 0
+var shot_cool := 0.0
+var rob_cool := 0.0
+var rifle_mesh: MeshInstance3D
+var animals: Array[Animal] = []
+var thugs: Array[Person] = []
 var shifts := 0
 var wage := 40                     # per hour
 var over_reason := ""
@@ -261,8 +287,8 @@ func _build_world() -> void:
 	lamp_mat.emission = Color(1.0, 0.9, 0.6)
 
 	# Ground, road, pavements.
-	_box(Vector3(160, 1, 110), Vector3(0, -0.5, 0), _mat(Color(0.34, 0.56, 0.3)))
-	_solid(Vector3(160, 1, 110), Vector3(0, -0.5, 0))
+	_box(Vector3(180, 1, 220), Vector3(0, -0.5, 40), _mat(Color(0.34, 0.56, 0.3)))
+	_solid(Vector3(180, 1, 220), Vector3(0, -0.5, 40))
 	_box(Vector3(160, 0.04, 6), Vector3(0, 0.02, 1.5), _mat(Color(0.25, 0.26, 0.29)))
 	var dash := _mat(Color(0.9, 0.9, 0.85))
 	for k in range(-19, 20):
@@ -306,8 +332,8 @@ func _build_world() -> void:
 		_tree(pos)
 	for k in 16:
 		_tree(Vector3(rng.randf_range(-48, 48), 0, rng.randf_range(-26, -17)))
-	for x: float in [-41.0, 41.0]:
-		_tree(Vector3(x, 0, -8))
+	_tree(Vector3(-41, 0, -8))
+	_building("guns", "חנות נשק", 40, 9, 4.2, Color(0.5, 0.52, 0.45), Color(0.25, 0.3, 0.2), 9, 19)
 
 	# Passers-by on the pavements.
 	for k in 6:
@@ -318,6 +344,7 @@ func _build_world() -> void:
 		add_child(n.root)
 		npcs.append(n)
 	_build_store()
+	_build_forest()
 
 
 func _make_person(shirt: Color, pants: Color, into: Person = null) -> Person:
@@ -381,6 +408,8 @@ func _build_player() -> void:
 	player.add_child(me.root)
 	basket_mesh = _box(Vector3(0.5, 0.32, 0.38), Vector3(0, -0.85, 0.12), _mat(Color(0.85, 0.2, 0.2)), me.limbs[2])
 	basket_mesh.visible = false
+	rifle_mesh = _box(Vector3(0.1, 0.1, 1.3), Vector3(0, -0.6, 0.35), _mat(Color(0.25, 0.17, 0.1)), me.limbs[3])
+	rifle_mesh.visible = false
 	add_child(player)
 	_reset_position()
 
@@ -388,6 +417,7 @@ func _build_player() -> void:
 func _reset_position() -> void:
 	inside = false
 	_return_all()
+	_reset_forest()
 	player.position = places[0].door + Vector3(0, 0, 1.2)
 	player.velocity = Vector3.ZERO
 	me.root.rotation.y = 0.0
@@ -634,6 +664,14 @@ func _refresh_panel() -> void:
 				panel_text.text = _h("אוכלים כאן ועכשיו, בלי לחזור הביתה")
 				_add_action("ארוחה חמה · ₪55", _cafe.bind(55, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
 				_add_action("קפה · ₪14", _cafe.bind(14, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
+			"guns":
+				panel_text.text = _h(("יש לך רובה ציד · כדורים: %d" % ammo) if has_rifle else "כדי לצוד ביער צריך רובה ציד וכדורים")
+				if not has_rifle:
+					_add_action("רובה ציד · ₪%d" % RIFLE_PRICE, _buy_rifle)
+				else:
+					_add_action("10 כדורים · ₪%d" % AMMO_PRICE, _buy_ammo)
+				if fridge.has(MEAT):
+					_add_action("למכור בשר ציד (יש %d) · ₪%d" % [fridge.count(MEAT), PRODUCTS[MEAT]["price"]], _sell_meat)
 			"work":
 				panel_text.text = _h("שכר: ₪%d לשעה · משמרות שעבדת: %d" % [wage, shifts])
 				_add_action("לעבוד משמרת (%d שעות) · ₪%d" % [int(SHIFT_HOURS), int(wage * SHIFT_HOURS)], _work)
@@ -677,8 +715,8 @@ func _physics_process(delta: float) -> void:
 		player.position.x = clampf(player.position.x, STORE.x - 10.8, STORE.x + 10.8)
 		player.position.z = clampf(player.position.z, STORE.z - 7.9, STORE.z + 8.2)
 	else:
-		player.position.x = clampf(player.position.x, -42.0, 42.0)
-		player.position.z = clampf(player.position.z, -5.6, 26.0)
+		player.position.x = clampf(player.position.x, -44.0, 46.0)
+		player.position.z = clampf(player.position.z, -5.6, FOREST_END)
 	if input.length_squared() > 0.01:
 		me.root.rotation.y = lerp_angle(me.root.rotation.y, atan2(input.x, input.y), 12.0 * delta)
 	_animate(me, input.length_squared() > 0.01, delta)
@@ -695,6 +733,7 @@ func _physics_process(delta: float) -> void:
 		if p.door.distance_to(player.position) < 2.2:
 			near = p
 	_update_focus()
+	_update_forest(delta)
 	_update_hud()
 
 
@@ -751,6 +790,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				_interact(near)
 			elif focus != null:
 				_pick(focus)
+			elif _in_forest():
+				_shoot(_nearest_animal())
 
 
 # ---------------------------------------------------------- game states ----
@@ -765,6 +806,8 @@ func _new_game() -> void:
 	fridge = [0, 5]
 	shifts = 0
 	wage = 40
+	has_rifle = false
+	ammo = 0
 	_begin()
 	_toast("בוקר טוב! לך לעבודה, קנה אוכל ושמור על עצמך.")
 
@@ -788,6 +831,8 @@ func _continue_game() -> void:
 				fridge.append(int(v))
 	shifts = int(cfg.get_value("life", "shifts", 0))
 	wage = int(cfg.get_value("life", "wage", 40))
+	has_rifle = bool(cfg.get_value("life", "rifle", false))
+	ammo = int(cfg.get_value("life", "ammo", 0))
 	_begin()
 	_toast("ברוך שובך! יום %d." % day)
 
@@ -810,7 +855,8 @@ func _save() -> void:
 		return
 	var cfg := ConfigFile.new()
 	for pair: Array in [["day", day], ["clock", clock], ["money", money], ["hunger", hunger],
-			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage]]:
+			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage],
+			["rifle", has_rifle], ["ammo", ammo]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
 
@@ -839,6 +885,7 @@ func _show_menu() -> void:
 		"תנועה: חיצים או WASD · כניסה לבניין: E",
 		"בטלפון: גוררים אצבע על המסך כדי ללכת",
 		"בסופר: לוחצים על מוצר במדף כדי לקחת אותו, ומשלמים בקופה",
+		"ביער שמדרום: צדים עם רובה מחנות הנשק, ובורחים מהאנשים באדום",
 	]), buttons)
 
 
@@ -1059,7 +1106,9 @@ func _update_hud() -> void:
 		_h("אוכל בבית: %d" % fridge.size()),
 		_h("שכר דירה: %s" % rent_when),
 		_h("בסל: %d מוצרים · ₪%d" % [basket.size(), _basket_total()]) if inside else "",
+		_h("כדורים: %d" % ammo) if has_rifle and not inside else "",
 	])
+	rifle_mesh.visible = has_rifle and _in_forest()
 	basket_mesh.visible = not basket.is_empty()
 	(bars["hunger"] as ProgressBar).value = hunger
 	(bars["energy"] as ProgressBar).value = energy
@@ -1085,7 +1134,7 @@ func _toast(text: String) -> void:
 # ---------------------------------------------------------------- audio ----
 
 ## Sounds are synthesised at startup, so the game ships no audio files.
-func _tone(f0: float, f1: float, dur: float, vol: float) -> AudioStreamWAV:
+func _tone(f0: float, f1: float, dur: float, vol: float, noise: float = 0.0) -> AudioStreamWAV:
 	var rate := 22050
 	var count := int(dur * rate)
 	var data := PackedByteArray()
@@ -1094,7 +1143,8 @@ func _tone(f0: float, f1: float, dur: float, vol: float) -> AudioStreamWAV:
 	for i in count:
 		var k := float(i) / count
 		phase += TAU * lerpf(f0, f1, k) / rate
-		data.encode_s16(i * 2, int(sin(phase) * vol * (1.0 - k) * 32000.0))
+		var wave := lerpf(sin(phase), rng.randf_range(-1.0, 1.0), noise)
+		data.encode_s16(i * 2, int(wave * vol * (1.0 - k) * 32000.0))
 	var wav := AudioStreamWAV.new()
 	wav.format = AudioStreamWAV.FORMAT_16_BITS
 	wav.mix_rate = rate
@@ -1109,6 +1159,8 @@ func _build_sounds() -> void:
 		"pay": _tone(880, 1320, 0.3, 0.25),
 		"no": _tone(220, 150, 0.3, 0.3),
 		"pick": _tone(620, 760, 0.1, 0.25),
+		"bang": _tone(140, 40, 0.35, 0.6, 0.8),
+		"alarm": _tone(500, 900, 0.5, 0.3),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -1204,7 +1256,7 @@ func _build_store() -> void:
 		Vector3(-8, 0, -7.6), Vector3(-4, 0, -7.6), Vector3(0, 0, -7.6), Vector3(4, 0, -7.6), Vector3(8, 0, -7.6),
 		Vector3(1, 0, -1.5), Vector3(5, 0, -1.5), Vector3(9, 0, -1.5),
 	]
-	for pid in PRODUCTS.size():
+	for pid in slots.size():
 		_shelf(pid, STORE + slots[pid])
 
 	# Checkout: counter, till, cashier, and a mat to stand on.
@@ -1312,7 +1364,10 @@ func _update_focus() -> void:
 
 ## Click/tap position (canvas coordinates) -> the shelf item drawn under it.
 func _tap(pos: Vector2) -> void:
-	if not inside or state != State.PLAY or open_place != null or busy:
+	if state != State.PLAY or open_place != null or busy:
+		return
+	if not inside:
+		_tap_forest(pos)
 		return
 	var hit: Node3D
 	var best := 70.0
@@ -1390,4 +1445,299 @@ func _return_all() -> void:
 
 func _return_all_action() -> void:
 	_return_all()
+	_refresh_panel()
+
+
+# --------------------------------------------------------------- forest ----
+
+func _in_forest() -> bool:
+	return not inside and player.position.z > FOREST_Z - 2.0
+
+
+func _forest_point() -> Vector3:
+	return Vector3(rng.randf_range(-40, 42), 0, rng.randf_range(FOREST_Z + 6.0, FOREST_END - 4.0))
+
+
+func _pine(pos: Vector3) -> void:
+	var h := rng.randf_range(4.0, 7.0)
+	_box(Vector3(0.35, 1.4, 0.35), pos + Vector3(0, 0.7, 0), _mat(Color(0.33, 0.22, 0.13)))
+	_solid(Vector3(0.6, 2.0, 0.6), pos + Vector3(0, 1.0, 0))
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = h * 0.3
+	cone.height = h
+	cone.radial_segments = 8
+	var c := MeshInstance3D.new()
+	c.mesh = cone
+	c.material_override = _mat(Color.from_hsv(rng.randf_range(0.3, 0.38), 0.65, rng.randf_range(0.28, 0.42)))
+	c.position = pos + Vector3(0, 1.2 + h * 0.5, 0)
+	add_child(c)
+
+
+func _make_animal(big: bool) -> Animal:
+	var a := Animal.new()
+	a.big = big
+	a.node = Node3D.new()
+	if big:  # deer
+		var fur := _mat(Color(0.55, 0.36, 0.2))
+		_box(Vector3(0.55, 0.6, 1.3), Vector3(0, 1.05, 0), fur, a.node)
+		_box(Vector3(0.3, 0.7, 0.3), Vector3(0, 1.55, 0.65), fur, a.node)
+		_box(Vector3(0.32, 0.3, 0.5), Vector3(0, 1.95, 0.8), fur, a.node)
+		for sx: float in [-0.2, 0.2]:
+			_box(Vector3(0.06, 0.45, 0.06), Vector3(sx, 2.3, 0.7), _mat(Color(0.85, 0.8, 0.7)), a.node)
+			for sz: float in [-0.5, 0.5]:
+				_box(Vector3(0.14, 0.8, 0.14), Vector3(sx, 0.4, sz), fur, a.node)
+	else:    # rabbit
+		var fur := _mat(Color(0.8, 0.78, 0.74))
+		_ball(0.28, Vector3(0, 0.3, 0), fur, a.node, Vector3(1, 1, 1.4))
+		_ball(0.18, Vector3(0, 0.55, 0.3), fur, a.node)
+		for sx: float in [-0.08, 0.08]:
+			_box(Vector3(0.07, 0.35, 0.05), Vector3(sx, 0.85, 0.28), fur, a.node)
+	add_child(a.node)
+	animals.append(a)
+	return a
+
+
+func _build_forest() -> void:
+	_sign("היער", Vector3(0, 3.0, FOREST_Z - 3.0), 110)
+	_box(Vector3(0.2, 2.6, 0.2), Vector3(0, 1.3, FOREST_Z - 3.0), _mat(Color(0.3, 0.2, 0.12)))
+	for k in 150:
+		var pos := Vector3(rng.randf_range(-70, 70), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
+		if absf(pos.x) < 3.0 and pos.z < FOREST_Z + 14.0:
+			continue                       # keep a path in from the sign
+		_pine(pos)
+	for k in 8:
+		_make_animal(k < 4)
+	for k in 3:
+		var t := _make_person(Color(0.85, 0.08, 0.08), Color(0.6, 0.05, 0.05))
+		add_child(t.root)
+		thugs.append(t)
+	_reset_forest()
+
+
+func _reset_forest() -> void:
+	rob_cool = 0.0
+	for a in animals:
+		a.dead = false
+		a.gone = 0.0
+		a.scared = 0.0
+		a.node.visible = true
+		a.node.rotation = Vector3.ZERO
+		a.node.position = _forest_point()
+	for t in thugs:
+		t.chasing = false
+		t.wait = 0.0
+		t.root.position = _forest_point() + Vector3(0, 0, 12)
+		t.root.position.z = minf(t.root.position.z, FOREST_END - 2.0)
+		t.target = t.root.position
+
+
+func _update_forest(delta: float) -> void:
+	shot_cool = maxf(shot_cool - delta, 0.0)
+	rob_cool = maxf(rob_cool - delta, 0.0)
+	var here := player.position
+	for a in animals:
+		if a.gone > 0.0:
+			a.gone -= delta
+			if a.gone <= 0.0:
+				a.dead = false
+				a.node.visible = true
+				a.node.rotation = Vector3.ZERO
+				a.node.position = _forest_point()
+			continue
+		if a.dead:
+			if a.node.position.distance_to(here) < 1.9:
+				_collect(a)
+			continue
+		var away := a.node.position - here
+		away.y = 0.0
+		a.scared = maxf(a.scared - delta, 0.0)
+		if away.length() < 7.0 and not inside:
+			a.scared = 1.5
+		var speed := 0.0
+		if a.scared > 0.0:
+			a.heading = away.normalized()
+			speed = 7.5 if a.big else 6.0
+		else:
+			a.timer -= delta
+			if a.timer <= 0.0:
+				a.timer = rng.randf_range(1.5, 4.5)
+				var angle := rng.randf() * TAU
+				a.heading = Vector3(cos(angle), 0, sin(angle)) if rng.randf() < 0.65 else Vector3.ZERO
+			speed = 1.6
+		if a.heading != Vector3.ZERO:
+			a.node.position += a.heading * speed * delta
+			a.node.rotation.y = lerp_angle(a.node.rotation.y, atan2(a.heading.x, a.heading.z), 8.0 * delta)
+		a.node.position.x = clampf(a.node.position.x, -42.0, 44.0)
+		a.node.position.z = clampf(a.node.position.z, FOREST_Z + 3.0, FOREST_END - 2.0)
+
+	for t in thugs:
+		var to_me := here - t.root.position
+		to_me.y = 0.0
+		var dist := to_me.length()
+		var in_reach := _in_forest() and here.z > FOREST_Z + 1.0
+		if t.chasing and (not in_reach or dist > 24.0 or rob_cool > 0.0):
+			t.chasing = false
+		elif not t.chasing and in_reach and dist < 13.0 and rob_cool <= 0.0:
+			t.chasing = true
+			_toast("אדם רע באדום רודף אחריך! ברח מהיער!")
+			_play("alarm")
+		var step := Vector3.ZERO
+		if t.chasing:
+			step = to_me.normalized() * 5.6
+			if dist < 1.3:
+				_robbed()
+		else:
+			var to_target := t.target - t.root.position
+			if to_target.length() < 1.0:
+				t.wait -= delta
+				if t.wait <= 0.0:
+					t.wait = rng.randf_range(1.0, 4.0)
+					t.target = _forest_point()
+			else:
+				step = to_target.normalized() * 2.0
+		t.root.position += step * delta
+		t.root.position.z = maxf(t.root.position.z, FOREST_Z + 2.0)
+		if step != Vector3.ZERO:
+			t.root.rotation.y = lerp_angle(t.root.rotation.y, atan2(step.x, step.z), 10.0 * delta)
+		_animate(t, step != Vector3.ZERO, delta * (1.8 if t.chasing else 1.0))
+
+
+func _robbed() -> void:
+	var stolen := mini(money, maxi(50, int(money * 0.3)))
+	money -= stolen
+	health = maxf(health - 12.0, 1.0)
+	rob_cool = 18.0
+	for t in thugs:
+		t.chasing = false
+		t.target = _forest_point()
+	_play("no")
+	_toast("שדדו אותך! לקחו לך ₪%d. צא מהיער!" % stolen)
+
+
+func _nearest_animal() -> Animal:
+	var best: Animal
+	var best_d := 30.0
+	for a in animals:
+		if a.dead or a.gone > 0.0:
+			continue
+		var d := a.node.position.distance_to(player.position)
+		if d < best_d:
+			best_d = d
+			best = a
+	return best
+
+
+## Tap or click on an animal on screen to shoot at it.
+func _tap_forest(pos: Vector2) -> void:
+	if not _in_forest():
+		return
+	var hit: Animal
+	var best := 80.0
+	for a in animals:
+		if a.dead or a.gone > 0.0:
+			continue
+		var world := a.node.position + Vector3(0, 1.0 if a.big else 0.4, 0)
+		if cam.is_position_behind(world):
+			continue
+		var d := cam.unproject_position(world).distance_to(pos)
+		if d < best:
+			best = d
+			hit = a
+	if hit != null:
+		_shoot(hit)
+
+
+func _shoot(a: Animal) -> void:
+	if a == null or shot_cool > 0.0:
+		return
+	if not has_rifle:
+		_toast("כדי לצוד צריך רובה ציד. קונים אותו בחנות הנשק ברחוב.")
+		shot_cool = 1.0
+		return
+	if ammo <= 0:
+		_toast("נגמרו הכדורים. קונים עוד בחנות הנשק.")
+		_play("no")
+		shot_cool = 1.0
+		return
+	var to_animal := a.node.position - player.position
+	to_animal.y = 0.0
+	var dist := to_animal.length()
+	if dist > 30.0:
+		_toast("רחוק מדי. צריך להתקרב בשקט.")
+		shot_cool = 0.5
+		return
+	ammo -= 1
+	shot_cool = 0.9
+	reach = 0.4
+	me.root.rotation.y = atan2(to_animal.x, to_animal.z)
+	_play("bang")
+	for other in animals:                  # the shot startles everything nearby
+		if other.node.position.distance_to(player.position) < 35.0:
+			other.scared = 4.0
+			var flee: Vector3 = other.node.position - player.position
+			flee.y = 0.0
+			other.heading = flee.normalized()
+	# Close shots always hit; far ones often miss, more so at small targets.
+	var chance := clampf(1.25 - dist / (32.0 if a.big else 24.0), 0.1, 1.0)
+	if rng.randf() < chance:
+		a.dead = true
+		a.scared = 0.0
+		a.node.rotation.z = PI * 0.5
+		_toast("פגעת! לך לאסוף את הבשר.")
+	else:
+		_toast("פספסת! החיה בורחת.")
+	_update_hud()
+
+
+func _collect(a: Animal) -> void:
+	var pieces := 2 if a.big else 1
+	var room := FRIDGE_MAX - fridge.size()
+	if room <= 0:
+		if a.timer <= 0.0:                 # do not repeat the message every frame
+			_toast("אין מקום במקרר לבשר. מכור או אכול משהו קודם.")
+		a.timer = 3.0
+		return
+	pieces = mini(pieces, room)
+	for k in pieces:
+		fridge.append(MEAT)
+	a.gone = 50.0
+	a.node.visible = false
+	_play("pick")
+	_toast("אספת %d נתחי בשר ציד. אפשר לאכול בבית או למכור בחנות הנשק." % pieces)
+
+
+func _buy_rifle() -> void:
+	if money < RIFLE_PRICE:
+		_toast("אין מספיק כסף (חסרים ₪%d)." % (RIFLE_PRICE - money))
+		_play("no")
+		return
+	money -= RIFLE_PRICE
+	has_rifle = true
+	ammo += 5
+	_play("pay")
+	_toast("קנית רובה ציד, וקיבלת 5 כדורים. היער נמצא מדרום לפארק.")
+	_refresh_panel()
+
+
+func _buy_ammo() -> void:
+	if money < AMMO_PRICE:
+		_toast("אין מספיק כסף.")
+		_play("no")
+		return
+	money -= AMMO_PRICE
+	ammo += 10
+	_play("pay")
+	_toast("קנית 10 כדורים.")
+	_refresh_panel()
+
+
+func _sell_meat() -> void:
+	var at := fridge.find(MEAT)
+	if at < 0:
+		return
+	fridge.remove_at(at)
+	money += int(PRODUCTS[MEAT]["price"])
+	_play("pay")
+	_toast("מכרת נתח בשר ציד.")
 	_refresh_panel()
