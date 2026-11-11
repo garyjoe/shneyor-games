@@ -7,7 +7,7 @@ const WALK_SPEED := 7.0
 const RENT := 300
 const RENT_DAYS := 3
 const SHIFT_HOURS := 4.0
-const FRIDGE_MAX := 12
+const FRIDGE_MAX := 20
 const ITEM_SCALE := 1.5
 const STORE := Vector3(0, 0, -200)   # the supermarket interior lives far from the street
 const PRODUCTS: Array[Dictionary] = [
@@ -20,15 +20,27 @@ const PRODUCTS: Array[Dictionary] = [
 	{"name": "עוף", "price": 20, "food": 55.0},
 	{"name": "שוקולד", "price": 4, "food": 10.0},
 	{"name": "בשר ציד", "price": 80, "food": 45.0},   # only from hunting, never on a shelf
+	{"name": "חלה", "price": 7, "food": 25.0},
+	{"name": "מיץ ענבים", "price": 9, "food": 8.0},
+	{"name": "אורז", "price": 5, "food": 30.0},
+	{"name": "בננה", "price": 2, "food": 9.0},
+	{"name": "עגבנייה", "price": 2, "food": 6.0},
+	{"name": "יוגורט", "price": 4, "food": 12.0},
+	{"name": "דג", "price": 18, "food": 45.0},
+	{"name": "עוגה", "price": 12, "food": 20.0},
 ]
+const SHELF_PIDS: Array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16]
+const CHALLAH := 9
+const GRAPE_JUICE := 10
+const WEEKDAYS: Array[String] = ["יום ראשון", "יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת"]
 const MEAT := 8
 const RIFLE_PRICE := 350
 const AMMO_PRICE := 20
 const FOREST_Z := 36.0             # the forest starts this far south of the street
 const FOREST_END := 100.0
 const ROOMS := {
-	"home": {"origin": Vector3(-200, 0, -200), "half": Vector2(7, 6)},
-	"market": {"origin": Vector3(0, 0, -200), "half": Vector2(10.8, 8.2)},
+	"home": {"origin": Vector3(-200, 0, -200), "half": Vector2(11, 8)},
+	"market": {"origin": Vector3(0, 0, -200), "half": Vector2(14.8, 8.2)},
 	"cafe": {"origin": Vector3(200, 0, -200), "half": Vector2(8, 6)},
 	"work": {"origin": Vector3(400, 0, -200), "half": Vector2(10, 7)},
 	"guns": {"origin": Vector3(600, 0, -200), "half": Vector2(6, 5)},
@@ -37,9 +49,10 @@ const ROOMS := {
 	"build": {"origin": Vector3(1200, 0, -200), "half": Vector2(10, 7)},
 	"music": {"origin": Vector3(1400, 0, -200), "half": Vector2(6, 5)},
 	"hall": {"origin": Vector3(1600, 0, -200), "half": Vector2(11, 8)},
+	"shul": {"origin": Vector3(1800, 0, -200), "half": Vector2(9, 7)},
 }
 const ROOM_HINTS := {
-	"home": "בבית: לוחצים על המיטה, המקרר או הספה.",
+	"home": "בבית: מיטה, מקרר, ספה, שולחן אוכל, שירותים ומקלחת — לוחצים כדי להשתמש.",
 	"market": "לחצו על מוצר במדף כדי לקחת אותו. משלמים בקופה.",
 	"cafe": "לחצו על הצלחת או על הכוס שעל הדלפק כדי להזמין.",
 	"work": "עבודה: לוקחים חבילה מהשולחן ושמים אותה על המדף.",
@@ -49,6 +62,7 @@ const ROOM_HINTS := {
 	"build": "עבודה בבנייה: לוקחים לבנים מהערימה ומניחים בקיר.",
 	"music": "לחצו על הגיטרה כדי לקנות אותה, או דברו עם המוכר על שיעור.",
 	"hall": "עולים לבמה ומופיעים עם הגיטרה. חברים שלך יבואו לראות.",
+	"shul": "בית הכנסת: עומדים ליד הבימה כדי להתפלל.",
 }
 ## Hand jobs: carry something from one spot to another. Pay scales with your wage.
 const JOBS := {
@@ -57,8 +71,8 @@ const JOBS := {
 	"build": {"pay": 30, "tire": 3.5, "from": 6.0, "to": 16.0, "tips": 0, "what": "לבנים"},
 }
 const CAR_HOME := Vector3(-18, 0, -0.5)
-const WEST := -80.0                # the town fence
-const EAST := 120.0
+const WEST := -100.0                # the town fence
+const EAST := 140.0
 const GUITAR_PRICE := 400
 const LESSON_PRICE := 40
 const NAMES: Array[String] = ["דני", "מיכל", "יוסי", "נועה", "אבי", "תמר", "רון", "שירה", "איתי", "מאיה", "עומר", "יעל",
@@ -85,6 +99,7 @@ enum State { MENU, PLAY, OVER }
 class Person:
 	var root: Node3D
 	var limbs: Array[Node3D] = []   # leg, leg, arm, arm
+	var joints: Array[Node3D] = []  # knee, knee, elbow, elbow
 	var phase := 0.0
 	var dir := 1.0
 	var speed := 2.0
@@ -176,6 +191,14 @@ var car_heading := PI * 0.5
 var fuel := 60.0
 var traffic: Array[Node3D] = []
 var car_model := 0
+var bladder := 0.0                 # 0 = fine, 100 = desperate for the toilet
+var bladder_warned := false
+var was_shabbat := false
+var friday_note_day := 0
+var candles_day := 0               # the Friday the candles were lit on
+var kiddush_day := 0
+var prayed_day := 0
+var flames: Array[Node3D] = []
 var near_npc: Person               # a townsperson close enough to talk to
 var has_guitar := false
 var skill := 0                     # guitar skill, 0..15
@@ -393,7 +416,7 @@ func _build_world() -> void:
 
 	# Street lamps.
 	var pole_mat := _mat(Color(0.2, 0.2, 0.22))
-	for x: float in [-64.0, -48.0, -32.0, -16.0, 0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0]:
+	for x: float in [-96.0, -80.0, -64.0, -48.0, -32.0, -16.0, 0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0, 128.0]:
 		_box(Vector3(0.18, 4.2, 0.18), Vector3(x, 2.1, -1.9), pole_mat)
 		_box(Vector3(0.9, 0.25, 0.5), Vector3(x, 4.2, -1.6), lamp_mat)
 
@@ -450,6 +473,7 @@ func _build_world() -> void:
 		_tree(pos)
 	for k in 16:
 		_tree(Vector3(rng.randf_range(-48, 48), 0, rng.randf_range(-26, -17)))
+	_building("shul", "בית כנסת", -91, 11, 6.5, Color(0.9, 0.87, 0.78), Color(0.2, 0.3, 0.55), 6, 21)
 	_building("music", "חנות מוזיקה", -74, 9, 4.2, Color(0.55, 0.4, 0.6), Color(0.3, 0.18, 0.4), 9, 20)
 	_building("hall", "אולם הופעות", -58, 15, 8.5, Color(0.75, 0.3, 0.3), Color(0.35, 0.1, 0.12), 17, 24)
 	_building("clinic", "מרפאה", -40, 10, 4.2, Color(0.9, 0.92, 0.94), Color(0.75, 0.15, 0.15), 8, 20)
@@ -458,6 +482,7 @@ func _build_world() -> void:
 	_build_town_extras()
 	_build_edges()
 	_build_neighbourhood()
+	_build_restroom()
 	_building("guns", "חנות נשק", 40, 9, 4.2, Color(0.5, 0.52, 0.45), Color(0.25, 0.3, 0.2), 9, 19)
 
 	# Passers-by on the pavements, each with a name.
@@ -475,6 +500,21 @@ func _build_world() -> void:
 	_build_cars()
 
 
+func _cap(radius: float, height: float, pos: Vector3, mat: Material, parent: Node, squash: Vector3 = Vector3.ONE) -> void:
+	var mesh := CapsuleMesh.new()
+	mesh.radius = radius
+	mesh.height = height
+	mesh.radial_segments = 12
+	mesh.rings = 4
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.position = pos
+	mi.scale = squash
+	parent.add_child(mi)
+
+
+## A person built from rounded parts, with knees and elbows that bend.
 func _make_person(shirt: Color, pants: Color, into: Person = null) -> Person:
 	var p := into if into else Person.new()
 	p.root = Node3D.new()
@@ -483,66 +523,81 @@ func _make_person(shirt: Color, pants: Color, into: Person = null) -> Person:
 	var skin := _mat(tones[rng.randi_range(0, 4)] if into == null else tones[1])
 	var hair := _mat(hairs[rng.randi_range(0, 5)] if into == null else hairs[1])
 	var shirt_mat := _mat(shirt)
-	var torso := CapsuleMesh.new()
-	torso.radius = 0.3
-	torso.height = 0.95
-	var t := MeshInstance3D.new()
-	t.mesh = torso
-	t.material_override = shirt_mat
-	t.position.y = 1.15
-	p.root.add_child(t)
-	_box(Vector3(0.16, 0.14, 0.16), Vector3(0, 1.62, 0), skin, p.root)                 # neck
-	var head := SphereMesh.new()
-	head.radius = 0.26
-	head.height = 0.54
-	var hd := MeshInstance3D.new()
-	hd.mesh = head
-	hd.material_override = skin
-	hd.position.y = 1.86
-	p.root.add_child(hd)
-	# Hair: a cap of hair, and for some people long hair down the back.
-	_ball(0.275, Vector3(0, 1.93, -0.04), hair, p.root, Vector3(1.0, 0.8, 1.0))
+	var pants_mat := _mat(pants)
+	# Body: chest wider at the shoulders, hips in the trouser colour.
+	_cap(0.2, 0.62, Vector3(0, 1.24, 0), shirt_mat, p.root, Vector3(1.3, 1.0, 0.85))
+	_ball(0.2, Vector3(0, 0.96, 0), pants_mat, p.root, Vector3(1.2, 0.8, 0.85))
+	_cap(0.065, 0.16, Vector3(0, 1.57, 0), skin, p.root)
+	# Head, slightly longer than wide, with ears.
+	_ball(0.2, Vector3(0, 1.74, 0), skin, p.root, Vector3(0.95, 1.12, 1.0))
+	for sx: float in [-0.19, 0.19]:
+		_ball(0.045, Vector3(sx, 1.73, 0.0), skin, p.root, Vector3(0.5, 1.0, 0.8))
+	_ball(0.205, Vector3(0, 1.81, -0.035), hair, p.root, Vector3(1.0, 0.82, 1.0))
 	if into == null and rng.randf() < 0.45:
-		_box(Vector3(0.48, 0.5, 0.14), Vector3(0, 1.72, -0.2), hair, p.root)
-	# Face: eyes with a highlight, eyebrows, and a smile.
-	var dark := _mat(Color(0.08, 0.08, 0.1))
-	for sx: float in [-0.1, 0.1]:
-		_ball(0.045, Vector3(sx, 1.9, 0.235), _mat(Color(1, 1, 1)), p.root)
-		_ball(0.026, Vector3(sx, 1.9, 0.27), dark, p.root)
-		_box(Vector3(0.09, 0.02, 0.03), Vector3(sx, 1.975, 0.24), hair, p.root)
-	_box(Vector3(0.13, 0.025, 0.03), Vector3(0, 1.765, 0.245), _mat(Color(0.7, 0.25, 0.25)), p.root)
-	for sx: float in [-0.055, 0.055]:
-		_box(Vector3(0.035, 0.03, 0.03), Vector3(sx * 1.45, 1.782, 0.24), _mat(Color(0.7, 0.25, 0.25)), p.root)
-	_box(Vector3(0.05, 0.07, 0.05), Vector3(0, 1.84, 0.27), skin, p.root)              # nose
+		_cap(0.17, 0.5, Vector3(0, 1.62, -0.13), hair, p.root, Vector3(1.1, 1.0, 0.5))    # long hair
+	# Face.
+	var dark := _mat(Color(0.1, 0.09, 0.1))
+	var lips := _mat(Color(0.72, 0.3, 0.3))
+	for sx: float in [-0.072, 0.072]:
+		_ball(0.03, Vector3(sx, 1.765, 0.172), _mat(Color(1, 1, 1)), p.root, Vector3(1.2, 0.85, 0.6))
+		_ball(0.016, Vector3(sx, 1.765, 0.188), dark, p.root)
+		_box(Vector3(0.065, 0.014, 0.02), Vector3(sx, 1.81, 0.178), hair, p.root)
+	_ball(0.026, Vector3(0, 1.725, 0.2), skin, p.root, Vector3(0.8, 1.2, 1.0))
+	_box(Vector3(0.085, 0.016, 0.02), Vector3(0, 1.665, 0.182), lips, p.root)
+	for sx: float in [-0.05, 0.05]:
+		_box(Vector3(0.022, 0.02, 0.02), Vector3(sx, 1.675, 0.178), lips, p.root)
+	# Legs: thigh, knee, shin, shoe.
 	var shoe := _mat(Color(0.12, 0.1, 0.1))
-	for sx: float in [-0.15, 0.15]:
+	var knees: Array[Node3D] = []
+	for sx: float in [-0.12, 0.12]:
 		var hip := Node3D.new()
-		hip.position = Vector3(sx, 0.75, 0)
+		hip.position = Vector3(sx, 0.92, 0)
 		p.root.add_child(hip)
-		_box(Vector3(0.22, 0.68, 0.24), Vector3(0, -0.34, 0), _mat(pants), hip)
-		_box(Vector3(0.23, 0.1, 0.34), Vector3(0, -0.7, 0.05), shoe, hip)
+		_cap(0.1, 0.5, Vector3(0, -0.23, 0), pants_mat, hip)
+		var knee := Node3D.new()
+		knee.position = Vector3(0, -0.46, 0)
+		hip.add_child(knee)
+		_cap(0.085, 0.46, Vector3(0, -0.2, 0), pants_mat, knee)
+		_ball(0.1, Vector3(0, -0.42, 0.07), shoe, knee, Vector3(0.9, 0.6, 1.6))
 		p.limbs.append(hip)
-	for sx: float in [-0.4, 0.4]:
+		knees.append(knee)
+	# Arms: sleeve, elbow, forearm, hand.
+	var elbows: Array[Node3D] = []
+	for sx: float in [-0.31, 0.31]:
 		var shoulder := Node3D.new()
-		shoulder.position = Vector3(sx, 1.5, 0)
+		shoulder.position = Vector3(sx, 1.46, 0)
 		p.root.add_child(shoulder)
-		_box(Vector3(0.18, 0.32, 0.18), Vector3(0, -0.14, 0), shirt_mat, shoulder)      # sleeve
-		_box(Vector3(0.14, 0.4, 0.14), Vector3(0, -0.48, 0), skin, shoulder)
-		_ball(0.09, Vector3(0, -0.7, 0), skin, shoulder)                               # hand
+		_cap(0.075, 0.36, Vector3(0, -0.15, 0), shirt_mat, shoulder)
+		var elbow := Node3D.new()
+		elbow.position = Vector3(0, -0.31, 0)
+		shoulder.add_child(elbow)
+		_cap(0.06, 0.32, Vector3(0, -0.14, 0), skin, elbow)
+		_ball(0.065, Vector3(0, -0.32, 0), skin, elbow, Vector3(0.8, 1.1, 1.0))
 		p.limbs.append(shoulder)
+		elbows.append(elbow)
+	p.joints = knees + elbows
 	if into == null:
-		var tall := rng.randf_range(0.92, 1.08)
-		p.root.scale = Vector3(tall, tall, tall)
+		var tall := rng.randf_range(0.93, 1.07)
+		p.root.scale = Vector3(tall * rng.randf_range(0.95, 1.08), tall, tall)
 	return p
 
 
 func _animate(p: Person, moving: bool, dt: float) -> void:
 	if moving:
-		p.phase += dt * 9.0
-	var swing := sin(p.phase) * 0.7 if moving else 0.0
-	var signs := [1.0, -1.0, -1.0, 1.0]
-	for k in 4:
-		p.limbs[k].rotation.x = lerp_angle(p.limbs[k].rotation.x, swing * signs[k], 12.0 * dt)
+		p.phase += dt * 8.5
+	var s := sin(p.phase) if moving else 0.0
+	var c := cos(p.phase) if moving else 0.0
+	var blend := 12.0 * dt
+	p.limbs[0].rotation.x = lerp_angle(p.limbs[0].rotation.x, 0.55 * s, blend)
+	p.limbs[1].rotation.x = lerp_angle(p.limbs[1].rotation.x, -0.55 * s, blend)
+	p.limbs[2].rotation.x = lerp_angle(p.limbs[2].rotation.x, -0.4 * s, blend)
+	p.limbs[3].rotation.x = lerp_angle(p.limbs[3].rotation.x, 0.4 * s, blend)
+	if p.joints.size() == 4:
+		# Each knee folds while its leg swings forward; elbows stay a little bent.
+		p.joints[0].rotation.x = lerp_angle(p.joints[0].rotation.x, 0.9 * maxf(0.0, -c) if moving else 0.0, blend)
+		p.joints[1].rotation.x = lerp_angle(p.joints[1].rotation.x, 0.9 * maxf(0.0, c) if moving else 0.0, blend)
+		p.joints[2].rotation.x = lerp_angle(p.joints[2].rotation.x, -0.25 - 0.3 * maxf(0.0, -s), blend)
+		p.joints[3].rotation.x = lerp_angle(p.joints[3].rotation.x, -0.25 - 0.3 * maxf(0.0, s), blend)
 
 
 func _build_player() -> void:
@@ -557,9 +612,9 @@ func _build_player() -> void:
 	player.add_child(cs)
 	_make_person(Color(0.2, 0.5, 0.95), Color(0.15, 0.2, 0.4), me)
 	player.add_child(me.root)
-	basket_mesh = _box(Vector3(0.5, 0.32, 0.38), Vector3(0, -0.85, 0.12), _mat(Color(0.85, 0.2, 0.2)), me.limbs[2])
+	basket_mesh = _box(Vector3(0.5, 0.32, 0.38), Vector3(0, -0.72, 0.14), _mat(Color(0.85, 0.2, 0.2)), me.limbs[2])
 	basket_mesh.visible = false
-	can_mesh = _box(Vector3(0.4, 0.5, 0.22), Vector3(0, -0.85, 0.05), _mat(Color(0.85, 0.12, 0.1)), me.limbs[2])
+	can_mesh = _box(Vector3(0.4, 0.5, 0.22), Vector3(0, -0.74, 0.06), _mat(Color(0.85, 0.12, 0.1)), me.limbs[2])
 	can_mesh.visible = false
 	guitar_mesh = Node3D.new()
 	guitar_mesh.position = Vector3(0, 1.15, -0.34)
@@ -628,6 +683,9 @@ func _tick(hours: float, mode: String) -> void:
 			energy -= 2.8 * hours
 	hunger = clampf(hunger, 0.0, 100.0)
 	energy = clampf(energy, 0.0, 100.0)
+	bladder = minf(bladder + (1.5 if mode == "sleep" else 4.5) * hours, 100.0)
+	if bladder >= 100.0:
+		health -= 3.0 * hours
 	if hunger <= 0.0:
 		health -= 9.0 * hours
 	if energy <= 0.0:
@@ -680,6 +738,7 @@ func _eat(pid: int) -> void:
 	if at < 0:
 		return
 	fridge.remove_at(at)
+	bladder = minf(bladder + 5.0, 100.0)
 	hunger = minf(hunger + float(PRODUCTS[pid]["food"]), 100.0)
 	_skip(0.33, "awake")
 	_play("eat")
@@ -700,6 +759,8 @@ func _sleep() -> void:
 
 
 func _cafe(price: int, food: float, boost: float, hours: float, msg: String) -> void:
+	if _shabbat_block():
+		return
 	if money < price:
 		_toast("אין מספיק כסף.")
 		_play("no")
@@ -724,6 +785,8 @@ func _rest() -> void:
 
 
 func _take_parcel() -> void:
+	if _shabbat_block():
+		return
 	var job: Dictionary = JOBS[room]
 	if carrying:
 		_toast("כבר יש לך %s ביד." % job["what"])
@@ -955,7 +1018,7 @@ func _physics_process(delta: float) -> void:
 	var walking := state == State.PLAY and open_place == null and not busy
 	var input := _move_input() if walking else Vector2.ZERO
 	# Tired or starving people walk slower.
-	var speed := WALK_SPEED * (0.6 if (energy < 15.0 or hunger < 10.0) else 1.0)
+	var speed := WALK_SPEED * (0.6 if (energy < 15.0 or hunger < 10.0 or bladder >= 95.0) else 1.0)
 	if driving:
 		_drive(input, delta)
 	else:
@@ -992,6 +1055,7 @@ func _physics_process(delta: float) -> void:
 		elif p.room == room and p.door.distance_to(player.position) < 2.2:
 			near = p
 	near_car = not driving and not inside and car.position.distance_to(player.position) < 3.2
+	_watch_week()
 	near_npc = null
 	if not driving and not inside:
 		var closest := 2.6
@@ -1001,7 +1065,7 @@ func _physics_process(delta: float) -> void:
 				closest = d
 				near_npc = n
 			if d < 3.5 and n.hello_cool <= 0.0 and n.bubble_t <= 0.0:
-				_say(n, "שלום %s!" % ("חבר" if n.level >= 3 else ""), 2.0)       # a friendly hello as you pass
+				_say(n, "שבת שלום!" if _is_shabbat() else ("שלום %s!" % ("חבר" if n.level >= 3 else "")), 2.0)
 				n.hello_cool = 40.0
 		edge_cool = maxf(edge_cool - delta, 0.0)
 		if edge_cool <= 0.0 and (player.position.x <= WEST + 0.05 or player.position.x >= EAST - 0.05 or player.position.z >= FOREST_END - 0.05):
@@ -1081,6 +1145,12 @@ func _new_game() -> void:
 	has_guitar = false
 	skill = 0
 	last_show_day = 0
+	bladder = 0.0
+	candles_day = 0
+	kiddush_day = 0
+	prayed_day = 0
+	friday_note_day = 0
+	was_shabbat = false
 	for n in npcs:
 		n.level = 0
 		n.talked_day = 0
@@ -1122,6 +1192,10 @@ func _continue_game() -> void:
 	has_guitar = bool(cfg.get_value("life", "guitar", false))
 	skill = int(cfg.get_value("life", "skill", 0))
 	last_show_day = int(cfg.get_value("life", "last_show", 0))
+	bladder = float(cfg.get_value("life", "bladder", 0.0))
+	candles_day = int(cfg.get_value("life", "candles", 0))
+	kiddush_day = int(cfg.get_value("life", "kiddush", 0))
+	was_shabbat = _is_shabbat()
 	var known: Variant = cfg.get_value("life", "known", [])
 	for k in npcs.size():
 		npcs[k].level = int(known[k]) if known is Array and k < (known as Array).size() else 0
@@ -1152,7 +1226,7 @@ func _save() -> void:
 	for pair: Array in [["day", day], ["clock", clock], ["money", money], ["hunger", hunger],
 			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage],
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
-			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()],
+			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["candles", candles_day], ["kiddush", kiddush_day],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading],
 			["can", has_can], ["car_model", car_model]]:
 		cfg.set_value("life", pair[0], pair[1])
@@ -1282,7 +1356,7 @@ func _build_hud() -> void:
 	hud.add_child(box)
 	stats_box = box
 	for def: Array in [["hunger", "שובע", Color(1.0, 0.62, 0.2)], ["energy", "אנרגיה", Color(0.3, 0.7, 1.0)],
-			["health", "בריאות", Color(0.95, 0.3, 0.4)]]:
+			["health", "בריאות", Color(0.95, 0.3, 0.4)], ["toilet", "שירותים", Color(0.55, 0.8, 0.4)]]:
 		var row := HBoxContainer.new()
 		row.alignment = BoxContainer.ALIGNMENT_END
 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1399,7 +1473,7 @@ func _update_hud() -> void:
 	var rent_days := _days_to_rent()
 	var rent_when := "מחר" if rent_days == 1 else "עוד %d ימים" % rent_days
 	info_label.text = "\n".join([
-		_h("יום %d · %s" % [day, _time_text(clock)]),
+		_h("%s · %s" % [WEEKDAYS[_weekday()], _time_text(clock)]) + ("  " + _h("שבת שלום!") if _is_shabbat() else ""),
 		_h("כסף: ₪%d" % money),
 		_h("אוכל בבית: %d" % fridge.size()),
 		_h("שכר דירה: %s" % (("לשלם ₪%d!" % rent_owed) if rent_owed > 0 else rent_when)),
@@ -1421,6 +1495,10 @@ func _update_hud() -> void:
 	(bars["hunger"] as ProgressBar).value = hunger
 	(bars["energy"] as ProgressBar).value = energy
 	(bars["health"] as ProgressBar).value = health
+	(bars["toilet"] as ProgressBar).value = 100.0 - bladder
+	var lit := candles_day > 0 and (day == candles_day or (day == candles_day + 1 and clock < 19.0))
+	for f in flames:
+		f.visible = lit
 	prompt.visible = playing and (near != null or near_car or driving or near_npc != null) and open_place == null and not busy
 	if prompt.visible:
 		if near != null:
@@ -1530,9 +1608,35 @@ func _product_node(pid: int) -> Node3D:
 		6:  # chicken on a tray
 			_box(Vector3(0.5, 0.06, 0.36), Vector3(0, 0.03, 0), _mat(Color(0.9, 0.9, 0.9)), n)
 			_ball(0.17, Vector3(0, 0.17, 0), _mat(Color(0.95, 0.72, 0.6)), n, Vector3(1.3, 0.8, 1.0))
-		_:  # chocolate bar
+		7:  # chocolate bar
 			_box(Vector3(0.42, 0.08, 0.24), Vector3(0, 0.04, 0), _mat(Color(0.35, 0.18, 0.08)), n)
 			_box(Vector3(0.2, 0.085, 0.245), Vector3(-0.08, 0.04, 0), _mat(Color(0.75, 0.1, 0.15)), n)
+		9:  # challah
+			for k in 3:
+				_ball(0.12, Vector3(-0.14 + k * 0.14, 0.12, 0), _mat(Color(0.8, 0.55, 0.22)), n, Vector3(1.0, 0.9, 1.5))
+		10:  # grape juice bottle
+			_cap(0.09, 0.4, Vector3(0, 0.2, 0), _mat(Color(0.35, 0.08, 0.3)), n)
+			_cap(0.04, 0.16, Vector3(0, 0.44, 0), _mat(Color(0.35, 0.08, 0.3)), n)
+			_box(Vector3(0.19, 0.12, 0.19), Vector3(0, 0.2, 0), _mat(Color(0.95, 0.9, 0.7)), n)
+		11:  # bag of rice
+			_ball(0.17, Vector3(0, 0.19, 0), _mat(Color(0.95, 0.94, 0.88)), n, Vector3(1.0, 1.15, 0.6))
+			_box(Vector3(0.2, 0.12, 0.2), Vector3(0, 0.2, 0), _mat(Color(0.2, 0.55, 0.3)), n)
+		12:  # bananas
+			for k in 3:
+				_cap(0.04, 0.34, Vector3(-0.06 + k * 0.06, 0.07, 0), _mat(Color(0.98, 0.85, 0.2)), n, Vector3(1, 1, 1))
+		13:  # tomato
+			_ball(0.15, Vector3(0, 0.14, 0), _mat(Color(0.9, 0.15, 0.1)), n, Vector3(1, 0.85, 1))
+			_box(Vector3(0.06, 0.03, 0.06), Vector3(0, 0.27, 0), _mat(Color(0.2, 0.5, 0.15)), n)
+		14:  # yoghurt pot
+			_box(Vector3(0.2, 0.24, 0.2), Vector3(0, 0.12, 0), _mat(Color(0.97, 0.97, 0.97)), n)
+			_box(Vector3(0.22, 0.03, 0.22), Vector3(0, 0.255, 0), _mat(Color(0.9, 0.4, 0.6)), n)
+		15:  # fish on a tray
+			_box(Vector3(0.5, 0.05, 0.3), Vector3(0, 0.025, 0), _mat(Color(0.85, 0.9, 0.95)), n)
+			_ball(0.11, Vector3(0, 0.12, 0), _mat(Color(0.55, 0.65, 0.75)), n, Vector3(2.0, 0.7, 0.8))
+		_:  # cake
+			_box(Vector3(0.38, 0.2, 0.38), Vector3(0, 0.1, 0), _mat(Color(0.55, 0.32, 0.18)), n)
+			_box(Vector3(0.4, 0.05, 0.4), Vector3(0, 0.22, 0), _mat(Color(0.98, 0.9, 0.85)), n)
+			_ball(0.045, Vector3(0, 0.27, 0), _mat(Color(0.85, 0.1, 0.15)), n)
 	return n
 
 
@@ -1561,20 +1665,22 @@ func _shelf(pid: int, pos: Vector3) -> void:
 
 
 func _build_store() -> void:
-	_box(Vector3(24, 1, 18), STORE + Vector3(0, -0.5, 0), _mat(Color(0.5, 0.47, 0.42)))
-	_solid(Vector3(24, 1, 18), STORE + Vector3(0, -0.5, 0))
+	_box(Vector3(32, 1, 18), STORE + Vector3(0, -0.5, 0), _mat(Color(0.5, 0.47, 0.42)))
+	_solid(Vector3(32, 1, 18), STORE + Vector3(0, -0.5, 0))
 	var wall := _mat(Color(0.6, 0.66, 0.62))
-	_box(Vector3(24, 5, 0.5), STORE + Vector3(0, 2.5, -8.75), wall)
-	_solid(Vector3(24, 5, 0.5), STORE + Vector3(0, 2.5, -8.75))
+	_box(Vector3(32, 5, 0.5), STORE + Vector3(0, 2.5, -8.75), wall)
+	_solid(Vector3(32, 5, 0.5), STORE + Vector3(0, 2.5, -8.75))
 	for side: float in [-1.0, 1.0]:
-		_box(Vector3(0.5, 5, 18), STORE + Vector3(side * 11.75, 2.5, 0), wall)
-		_solid(Vector3(0.5, 5, 18), STORE + Vector3(side * 11.75, 2.5, 0))
+		_box(Vector3(0.5, 5, 18), STORE + Vector3(side * 15.75, 2.5, 0), wall)
+		_solid(Vector3(0.5, 5, 18), STORE + Vector3(side * 15.75, 2.5, 0))
 	var slots: Array[Vector3] = [
-		Vector3(-8, 0, -7.6), Vector3(-4, 0, -7.6), Vector3(0, 0, -7.6), Vector3(4, 0, -7.6), Vector3(8, 0, -7.6),
-		Vector3(1, 0, -1.5), Vector3(5, 0, -1.5), Vector3(9, 0, -1.5),
+		Vector3(-12, 0, -7.6), Vector3(-8, 0, -7.6), Vector3(-4, 0, -7.6), Vector3(0, 0, -7.6),
+		Vector3(4, 0, -7.6), Vector3(8, 0, -7.6), Vector3(12, 0, -7.6),
+		Vector3(-11, 0, -1.5), Vector3(-3, 0, -1.5), Vector3(1, 0, -1.5), Vector3(5, 0, -1.5), Vector3(9, 0, -1.5), Vector3(13, 0, -1.5),
+		Vector3(5, 0, 3.0), Vector3(9, 0, 3.0), Vector3(13, 0, 3.0),
 	]
-	for pid in slots.size():
-		_shelf(pid, STORE + slots[pid])
+	for k in slots.size():
+		_shelf(SHELF_PIDS[k], STORE + slots[k])
 
 	# Checkout: counter, till, cashier, and a mat to stand on.
 	var desk := STORE + Vector3(-7, 0, 3.4)
@@ -1608,12 +1714,20 @@ func _interact(p: Place) -> void:
 	if busy or state != State.PLAY:
 		return
 	match p.key:
-		"home", "market", "cafe", "work", "guns", "clinic", "diner", "build", "music", "hall":
+		"home", "market", "cafe", "work", "guns", "clinic", "diner", "build", "music", "hall", "shul":
 			_enter_room(p)
 		"store_exit", "exit":
 			_leave_room()
 		"bench":
 			_bench_sleep()
+		"toilet":
+			_use_toilet()
+		"shower":
+			_shower()
+		"table":
+			_table_action()
+		"pray":
+			_pray()
 		"stage":
 			_perform()
 		"busk":
@@ -1631,7 +1745,10 @@ func _interact(p: Place) -> void:
 
 
 func _enter_room(p: Place) -> void:
-	if p.key == "home" and rent_owed > 0:
+	if _is_shabbat() and p.key not in ["home", "shul", "clinic"]:
+		_toast("שבת היום, %s סגור. שבת שלום!" % p.title)
+		return
+	if p.key == "home" and rent_owed > 0 and not _is_shabbat():
 		_open_panel(p)
 		return
 	if not _is_open(p):
@@ -1766,6 +1883,8 @@ func _pick(item: Node3D) -> void:
 
 
 func _pay() -> void:
+	if _shabbat_block():
+		return
 	var total := _basket_total()
 	if money < total:
 		_toast("אין מספיק כסף (חסרים ₪%d). החזירו משהו למדף." % (total - money))
@@ -1854,8 +1973,8 @@ func _make_animal(big: bool) -> Animal:
 func _build_forest() -> void:
 	_sign("היער", Vector3(0, 3.0, FOREST_Z - 3.0), 110)
 	_box(Vector3(0.2, 2.6, 0.2), Vector3(0, 1.3, FOREST_Z - 3.0), _mat(Color(0.3, 0.2, 0.12)))
-	for k in 260:
-		var pos := Vector3(rng.randf_range(-105, 145), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
+	for k in 310:
+		var pos := Vector3(rng.randf_range(-125, 165), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
 		if absf(pos.x) < 3.0 and pos.z < FOREST_Z + 14.0:
 			continue                       # keep a path in from the sign
 		_pine(pos)
@@ -2013,6 +2132,8 @@ func _tap_forest(pos: Vector2) -> void:
 
 
 func _shoot(a: Animal) -> void:
+	if a != null and _shabbat_block():
+		return
 	if a == null or shot_cool > 0.0:
 		return
 	if not has_rifle:
@@ -2072,6 +2193,8 @@ func _collect(a: Animal) -> void:
 
 
 func _buy_rifle() -> void:
+	if _shabbat_block():
+		return
 	if has_rifle:
 		_toast("כבר יש לך רובה ציד.")
 		return
@@ -2088,6 +2211,8 @@ func _buy_rifle() -> void:
 
 
 func _buy_ammo() -> void:
+	if _shabbat_block():
+		return
 	if not has_rifle:
 		_toast("קודם צריך לקנות רובה ציד.")
 		return
@@ -2103,6 +2228,8 @@ func _buy_ammo() -> void:
 
 
 func _sell_meat() -> void:
+	if _shabbat_block():
+		return
 	var at := fridge.find(MEAT)
 	if at < 0:
 		return
@@ -2253,6 +2380,8 @@ func _use() -> void:
 
 
 func _enter_car() -> void:
+	if _shabbat_block():
+		return
 	driving = true
 	near_car = false
 	car_speed = 0.0
@@ -2280,6 +2409,8 @@ func _exit_car() -> void:
 
 func _drive(input: Vector2, delta: float) -> void:
 	var want := Vector3(input.x, 0, input.y)
+	if _is_shabbat():
+		want = Vector3.ZERO              # the car stays parked until Shabbat is over
 	if want.length() > 0.15 and fuel > 0.0:
 		var grip := clampf(absf(car_speed) / 4.0, 0.35, 1.0)
 		car_heading = rotate_toward(car_heading, atan2(want.x, want.z), 2.8 * grip * delta)
@@ -2300,6 +2431,11 @@ func _drive(input: Vector2, delta: float) -> void:
 
 
 func _update_traffic(delta: float) -> void:
+	var resting := _is_shabbat()
+	for t in traffic:
+		t.visible = not resting          # no one drives on Shabbat
+	if resting:
+		return
 	var mine := player.position if not inside else Vector3(0, 0, 999)
 	for t in traffic:
 		var dir: float = t.get_meta("dir")
@@ -2327,6 +2463,8 @@ func _fuel_price() -> int:
 
 
 func _refuel() -> void:
+	if _shabbat_block():
+		return
 	var price := _fuel_price()
 	if money < price:
 		_toast("אין מספיק כסף לתדלוק מלא (₪%d)." % price)
@@ -2450,63 +2588,127 @@ func _build_interiors() -> void:
 	_build_site()
 	_build_music_shop()
 	_build_hall()
+	_build_shul()
 
 
 func _build_home() -> void:
 	var o := _room("home", Color(0.62, 0.48, 0.34), Color(0.86, 0.8, 0.68))
 	var wood := Color(0.45, 0.3, 0.18)
-	_box(Vector3(5.0, 0.03, 3.6), o + Vector3(1.5, 0.02, 1.0), _mat(Color(0.6, 0.2, 0.22)))      # rug
+	var wall := _mat(Color(0.86, 0.8, 0.68))
 
-	# Bed
-	var bed := o + Vector3(-5.6, 0, -3.8)
-	_box(Vector3(2.2, 0.5, 3.6), bed + Vector3(0, 0.25, 0), _mat(wood))
-	var mattress := _box(Vector3(2.0, 0.25, 3.4), bed + Vector3(0, 0.62, 0), _mat(Color(0.93, 0.93, 0.9)))
-	_box(Vector3(2.02, 0.27, 2.0), bed + Vector3(0, 0.64, 0.7), _mat(Color(0.25, 0.4, 0.75)))
-	_box(Vector3(1.4, 0.2, 0.7), bed + Vector3(0, 0.85, -1.25), _mat(Color(1, 1, 1)))
-	_box(Vector3(2.2, 1.3, 0.2), bed + Vector3(0, 0.65, -1.85), _mat(wood))
-	_solid(Vector3(2.2, 1.0, 3.6), bed + Vector3(0, 0.5, 0))
+	# Inner walls: bedroom on the left, bathroom on the right, kitchen between them.
+	for wx: float in [-4.2, 5.4]:
+		_box(Vector3(0.25, 3.2, 4.6), o + Vector3(wx, 1.6, -6.2), wall)
+		_solid(Vector3(0.25, 3.2, 4.6), o + Vector3(wx, 1.6, -6.2))
+
+	# --- Bedroom
+	_box(Vector3(5.6, 0.03, 3.6), o + Vector3(-8.0, 0.02, -5.6), _mat(Color(0.35, 0.42, 0.6)))
+	var bed := o + Vector3(-9.6, 0, -6.2)
+	_box(Vector3(2.4, 0.5, 3.8), bed + Vector3(0, 0.25, 0), _mat(wood))
+	var mattress := _box(Vector3(2.2, 0.25, 3.6), bed + Vector3(0, 0.62, 0), _mat(Color(0.93, 0.93, 0.9)))
+	_box(Vector3(2.22, 0.27, 2.1), bed + Vector3(0, 0.64, 0.75), _mat(Color(0.25, 0.4, 0.75)))
+	for sx: float in [-0.5, 0.5]:
+		_box(Vector3(0.85, 0.2, 0.6), bed + Vector3(sx, 0.85, -1.35), _mat(Color(1, 1, 1)))
+	_box(Vector3(2.4, 1.3, 0.2), bed + Vector3(0, 0.65, -1.95), _mat(wood))
+	_solid(Vector3(2.4, 1.0, 3.8), bed + Vector3(0, 0.5, 0))
 	_tag("מיטה", bed + Vector3(0, 2.0, 0))
-	var bed_spot := _spot("home", "bed", "מיטה", "לישון במיטה", bed + Vector3(2.0, 0, 0.6))
+	var bed_spot := _spot("home", "bed", "מיטה", "לישון במיטה", bed + Vector3(2.1, 0, 0.8))
 	_handle(mattress, "home", _interact.bind(bed_spot))
+	_box(Vector3(0.7, 0.6, 0.6), bed + Vector3(1.7, 0.3, -1.6), _mat(wood))                    # nightstand
+	_box(Vector3(0.25, 0.35, 0.25), bed + Vector3(1.7, 0.78, -1.6), lamp_mat)
+	_box(Vector3(2.2, 2.6, 0.8), o + Vector3(-5.6, 1.3, -8.0), _mat(wood.darkened(0.1)))        # wardrobe
+	_solid(Vector3(2.2, 2.6, 0.8), o + Vector3(-5.6, 1.3, -8.0))
 
-	# Fridge and kitchen counter
-	var fridge_pos := o + Vector3(-2.2, 0, -5.4)
-	var fridge_box := _box(Vector3(1.1, 2.2, 0.9), fridge_pos + Vector3(0, 1.1, 0), _mat(Color(0.82, 0.85, 0.88)))
-	_box(Vector3(0.06, 0.8, 0.06), fridge_pos + Vector3(0.38, 1.3, 0.48), _mat(Color(0.3, 0.3, 0.32)))
-	_solid(Vector3(1.1, 2.2, 0.9), fridge_pos + Vector3(0, 1.1, 0))
-	_tag("מקרר", fridge_pos + Vector3(0, 2.7, 0))
-	var fridge_spot := _spot("home", "fridge", "המקרר", "לפתוח את המקרר", fridge_pos + Vector3(0, 0, 1.3))
+	# --- Kitchen
+	var fridge_pos := o + Vector3(-3.2, 0, -7.9)
+	var fridge_box := _box(Vector3(1.2, 2.3, 0.9), fridge_pos + Vector3(0, 1.15, 0), _mat(Color(0.82, 0.85, 0.88)))
+	_box(Vector3(0.06, 0.8, 0.06), fridge_pos + Vector3(0.42, 1.35, 0.48), _mat(Color(0.3, 0.3, 0.32)))
+	_solid(Vector3(1.2, 2.3, 0.9), fridge_pos + Vector3(0, 1.15, 0))
+	_tag("מקרר", fridge_pos + Vector3(0, 2.8, 0))
+	var fridge_spot := _spot("home", "fridge", "המקרר", "לפתוח את המקרר", fridge_pos + Vector3(0, 0, 1.4))
 	_handle(fridge_box, "home", _interact.bind(fridge_spot))
-	_box(Vector3(2.8, 1.0, 0.8), o + Vector3(0.2, 0.5, -5.5), _mat(Color(0.9, 0.9, 0.86)))
-	_box(Vector3(2.8, 0.08, 0.85), o + Vector3(0.2, 1.04, -5.5), _mat(Color(0.3, 0.3, 0.33)))
-	_box(Vector3(0.8, 0.05, 0.5), o + Vector3(0.6, 1.09, -5.5), _mat(Color(0.6, 0.65, 0.7)))
-	_solid(Vector3(2.8, 1.1, 0.8), o + Vector3(0.2, 0.55, -5.5))
+	_box(Vector3(4.6, 1.0, 0.8), o + Vector3(0.2, 0.5, -8.0), _mat(Color(0.9, 0.9, 0.86)))
+	_box(Vector3(4.6, 0.08, 0.85), o + Vector3(0.2, 1.04, -8.0), _mat(Color(0.3, 0.3, 0.33)))
+	_box(Vector3(0.9, 0.05, 0.5), o + Vector3(-0.9, 1.09, -8.0), _mat(Color(0.6, 0.65, 0.7)))    # sink
+	_box(Vector3(1.0, 0.04, 0.7), o + Vector3(1.4, 1.1, -8.0), _mat(Color(0.1, 0.1, 0.12)))     # hob
+	_solid(Vector3(4.6, 1.1, 0.8), o + Vector3(0.2, 0.55, -8.0))
+	for k in 3:
+		_box(Vector3(1.3, 0.7, 0.4), o + Vector3(-1.1 + k * 1.4, 2.5, -8.25), _mat(wood.lightened(0.1)))
 
-	# Sofa
-	var sofa := o + Vector3(4.6, 0, -5.0)
+	# --- Bathroom
+	_box(Vector3(6.0, 0.03, 4.4), o + Vector3(8.6, 0.02, -6.2), _mat(Color(0.75, 0.85, 0.9)))
+	var loo := o + Vector3(7.0, 0, -7.9)
+	var bowl := _box(Vector3(0.55, 0.45, 0.7), loo + Vector3(0, 0.23, 0.1), _mat(Color(0.97, 0.97, 0.97)))
+	_box(Vector3(0.6, 0.06, 0.74), loo + Vector3(0, 0.48, 0.1), _mat(Color(0.9, 0.9, 0.92)))
+	_box(Vector3(0.6, 0.6, 0.25), loo + Vector3(0, 0.75, -0.35), _mat(Color(0.97, 0.97, 0.97)))
+	_solid(Vector3(0.6, 1.0, 1.0), loo + Vector3(0, 0.5, 0))
+	_tag("שירותים", loo + Vector3(0, 1.9, 0))
+	var loo_spot := _spot("home", "toilet", "שירותים", "להשתמש בשירותים", loo + Vector3(0, 0, 1.5))
+	_handle(bowl, "home", _interact.bind(loo_spot))
+	_box(Vector3(1.0, 0.85, 0.6), o + Vector3(8.8, 0.43, -8.1), _mat(Color(0.95, 0.95, 0.95)))   # basin
+	_box(Vector3(0.9, 0.9, 0.05), o + Vector3(8.8, 1.8, -8.45), _mat(Color(0.7, 0.85, 0.95)))   # mirror
+	_solid(Vector3(1.0, 0.9, 0.6), o + Vector3(8.8, 0.45, -8.1))
+	var shower := o + Vector3(10.5, 0, -5.4)
+	var tray := _box(Vector3(1.6, 0.12, 1.6), shower + Vector3(0, 0.06, 0), _mat(Color(0.55, 0.75, 0.9)))
+	_box(Vector3(0.06, 2.3, 0.06), shower + Vector3(0.6, 1.15, -0.6), _mat(Color(0.75, 0.75, 0.78)))
+	_box(Vector3(0.4, 0.06, 0.3), shower + Vector3(0.4, 2.25, -0.5), _mat(Color(0.75, 0.75, 0.78)))
+	_tag("מקלחת", shower + Vector3(0, 2.8, 0))
+	var shower_spot := _spot("home", "shower", "מקלחת", "להתקלח", shower + Vector3(-1.8, 0, 0))
+	_handle(tray, "home", _interact.bind(shower_spot))
+
+	# --- Living room
+	_box(Vector3(5.4, 0.03, 4.2), o + Vector3(6.6, 0.02, 0.6), _mat(Color(0.6, 0.2, 0.22)))
+	var sofa := o + Vector3(6.6, 0, -1.8)
 	var fabric := _mat(Color(0.3, 0.5, 0.45))
-	var seat := _box(Vector3(3.2, 0.5, 1.1), sofa + Vector3(0, 0.35, 0), fabric)
-	_box(Vector3(3.2, 1.0, 0.3), sofa + Vector3(0, 0.8, -0.45), fabric)
-	for sx: float in [-1.5, 1.5]:
+	var seat := _box(Vector3(3.6, 0.5, 1.1), sofa + Vector3(0, 0.35, 0), fabric)
+	_box(Vector3(3.6, 1.0, 0.3), sofa + Vector3(0, 0.8, -0.45), fabric)
+	for sx: float in [-1.7, 1.7]:
 		_box(Vector3(0.3, 0.8, 1.1), sofa + Vector3(sx, 0.5, 0), fabric)
-	_solid(Vector3(3.2, 1.0, 1.1), sofa + Vector3(0, 0.5, 0))
+	for sx: float in [-0.9, 0.9]:
+		_box(Vector3(0.7, 0.3, 0.3), sofa + Vector3(sx, 0.75, -0.2), _mat(Color(0.9, 0.75, 0.3)))
+	_solid(Vector3(3.6, 1.0, 1.1), sofa + Vector3(0, 0.5, 0))
 	_tag("ספה", sofa + Vector3(0, 2.0, 0))
 	var sofa_spot := _spot("home", "sofa", "ספה", "לנוח על הספה", sofa + Vector3(0, 0, 1.4))
 	_handle(seat, "home", _interact.bind(sofa_spot))
+	_box(Vector3(1.6, 0.4, 0.8), o + Vector3(6.6, 0.2, 1.6), _mat(wood))                         # coffee table
+	_solid(Vector3(1.6, 0.4, 0.8), o + Vector3(6.6, 0.2, 1.6))
+	_box(Vector3(2.4, 0.5, 0.5), o + Vector3(6.6, 0.25, 3.9), _mat(wood.darkened(0.2)))          # TV stand
+	_box(Vector3(2.0, 1.2, 0.08), o + Vector3(6.6, 1.15, 3.9), _mat(Color(0.05, 0.05, 0.07)))
+	_solid(Vector3(2.4, 1.6, 0.5), o + Vector3(6.6, 0.8, 3.9))
+	_box(Vector3(0.6, 2.4, 2.6), o + Vector3(11.2, 1.2, 1.0), _mat(wood))                        # bookcase
+	for k in 12:
+		_box(Vector3(0.1, 0.5, 0.16), o + Vector3(10.87, 0.55 + (k / 4) * 0.75, 0.1 + (k % 4) * 0.5), _mat(Color.from_hsv(k * 0.08, 0.6, 0.8)))
+	_solid(Vector3(0.6, 2.4, 2.6), o + Vector3(11.2, 1.2, 1.0))
+	_cap(0.25, 0.6, o + Vector3(10.8, 0.3, -2.6), _mat(Color(0.6, 0.35, 0.2)), self)             # plant pot
+	_ball(0.5, o + Vector3(10.8, 1.0, -2.6), _mat(Color(0.2, 0.55, 0.25)), self, Vector3(1, 1.3, 1))
 
-	# Dining table with four chairs
-	var table := o + Vector3(1.5, 0, 1.0)
-	_table(table, Vector2(2.4, 1.3), wood)
-	for sx: float in [-0.65, 0.65]:
-		_chair(table + Vector3(sx, 0, 1.05), 1.0, wood.lightened(0.15))
-		_chair(table + Vector3(sx, 0, -1.05), -1.0, wood.lightened(0.15))
-	_box(Vector3(0.35, 0.06, 0.35), table + Vector3(0, 1.03, 0), _mat(Color(0.95, 0.95, 0.9)))    # plate
+	# --- Dining area: a table for six, with the Shabbat candlesticks.
+	var table := o + Vector3(-4.2, 0, 1.6)
+	_table(table, Vector2(3.2, 1.4), wood)
+	for sx: float in [-1.0, 0.0, 1.0]:
+		_chair(table + Vector3(sx, 0, 1.1), 1.0, wood.lightened(0.15))
+		_chair(table + Vector3(sx, 0, -1.1), -1.0, wood.lightened(0.15))
+	_box(Vector3(2.2, 0.02, 0.9), table + Vector3(0, 1.01, 0), _mat(Color(0.97, 0.97, 0.95)))    # tablecloth
+	var sticks := Node3D.new()
+	sticks.position = table + Vector3(0, 1.02, 0)
+	add_child(sticks)
+	for sx: float in [-0.18, 0.18]:
+		_box(Vector3(0.06, 0.3, 0.06), Vector3(sx, 0.15, 0), _mat(Color(0.8, 0.8, 0.85)), sticks)
+		_box(Vector3(0.04, 0.16, 0.04), Vector3(sx, 0.38, 0), _mat(Color(1, 1, 0.95)), sticks)
+		var flame := Node3D.new()
+		flame.position = Vector3(sx, 0.52, 0)
+		sticks.add_child(flame)
+		_ball(0.05, Vector3.ZERO, lamp_mat, flame, Vector3(0.8, 1.6, 0.8))
+		flame.visible = false
+		flames.append(flame)
+	_tag("נרות שבת", table + Vector3(0, 2.1, 0), 40)
+	_handle(sticks, "home", _light_candles)
+	_spot("home", "table", "שולחן האוכל", "לשבת לשולחן", table + Vector3(-2.5, 0, 0))
 
-	# Wardrobe and a floor lamp
-	_box(Vector3(1.8, 2.6, 0.8), o + Vector3(-5.9, 1.3, 1.5), _mat(wood.darkened(0.1)))
-	_solid(Vector3(1.8, 2.6, 0.8), o + Vector3(-5.9, 1.3, 1.5))
-	_box(Vector3(0.1, 1.9, 0.1), o + Vector3(6.3, 0.95, -3.4), _mat(Color(0.2, 0.2, 0.22)))
-	_box(Vector3(0.6, 0.45, 0.6), o + Vector3(6.3, 2.05, -3.4), lamp_mat)
+	# --- Desk by the wall
+	_table(o + Vector3(-10.4, 0, 3.6), Vector2(1.4, 2.4), wood.lightened(0.1))
+	_box(Vector3(0.08, 0.6, 0.9), o + Vector3(-10.7, 1.35, 3.6), _mat(Color(0.1, 0.12, 0.16)))
+	_chair(o + Vector3(-9.2, 0, 3.6), 0.0, Color(0.2, 0.22, 0.28))
 
 
 func _build_cafe() -> void:
@@ -2620,6 +2822,8 @@ func _build_gun_shop() -> void:
 
 
 func _buy_car(model: int) -> void:
+	if _shabbat_block():
+		return
 	var price := int(CARS[model]["price"])
 	if driving:
 		_toast("קודם יוצאים מהרכב.")
@@ -2638,6 +2842,8 @@ func _buy_car(model: int) -> void:
 
 
 func _buy_can() -> void:
+	if _shabbat_block():
+		return
 	if money < CAN_PRICE:
 		_toast("אין מספיק כסף.")
 		_play("no")
@@ -2663,6 +2869,8 @@ func _pour_can() -> void:
 
 
 func _pay_rent() -> void:
+	if _shabbat_block():
+		return
 	if money < rent_owed:
 		_toast("אין מספיק כסף (חסרים ₪%d). לך לעבוד, ובינתיים ישנים על ספסל בפארק." % (rent_owed - money))
 		_play("no")
@@ -2731,9 +2939,9 @@ func _block(pos: Vector3, size: Vector3, color: Color) -> void:
 func _build_town_extras() -> void:
 	# A second row of apartment blocks behind the street.
 	var palette: Array[Color] = [Color(0.78, 0.74, 0.66), Color(0.66, 0.7, 0.76), Color(0.8, 0.68, 0.6), Color(0.7, 0.75, 0.68)]
-	for k in 16:
+	for k in 19:
 		var h := rng.randf_range(9.0, 19.0)
-		_block(Vector3(-95 + k * 15.0 + rng.randf_range(-1.5, 1.5), 0, -27), Vector3(rng.randf_range(9, 12), h, 9), palette[k % 4])
+		_block(Vector3(-118 + k * 15.0 + rng.randf_range(-1.5, 1.5), 0, -27), Vector3(rng.randf_range(9, 12), h, 9), palette[k % 4])
 	# Houses south of the road, east of the park.
 	for k in 4:
 		var hp := Vector3(52 + k * 9.5, 0, 14)
@@ -2934,6 +3142,8 @@ func _talk(n: Person) -> void:
 
 
 func _buy_guitar() -> void:
+	if _shabbat_block():
+		return
 	if has_guitar:
 		_toast("כבר יש לך גיטרה.")
 		return
@@ -2949,6 +3159,8 @@ func _buy_guitar() -> void:
 
 
 func _lesson() -> void:
+	if _shabbat_block():
+		return
 	if money < LESSON_PRICE:
 		_toast("אין מספיק כסף.")
 		_play("no")
@@ -2961,6 +3173,8 @@ func _lesson() -> void:
 
 
 func _busk() -> void:
+	if _shabbat_block():
+		return
 	if not has_guitar:
 		_toast("כדי לנגן צריך גיטרה. קונים אותה בחנות המוזיקה.")
 		return
@@ -2979,6 +3193,8 @@ func _busk() -> void:
 
 
 func _perform() -> void:
+	if _shabbat_block():
+		return
 	if not has_guitar:
 		_toast("כדי להופיע צריך גיטרה. קונים אותה בחנות המוזיקה.")
 		return
@@ -3123,3 +3339,161 @@ func _build_neighbourhood() -> void:
 	busk.prompt = "לנגן ברחוב"
 	busk.door = corner
 	places.append(busk)
+
+
+# ------------------------------------------------ the week, and Shabbat ----
+
+func _weekday() -> int:
+	return (day - 1) % 7              # 0 = Sunday ... 5 = Friday, 6 = Shabbat
+
+
+## Shabbat runs from Friday evening until Saturday night.
+func _is_shabbat() -> bool:
+	var wd := _weekday()
+	return (wd == 5 and clock >= 18.0) or (wd == 6 and clock < 19.0)
+
+
+func _shabbat_block() -> bool:
+	if not _is_shabbat():
+		return false
+	_toast("שבת היום. את זה עושים אחרי צאת השבת. שבת שלום!")
+	return true
+
+
+func _watch_week() -> void:
+	var now := _is_shabbat()
+	if now and not was_shabbat:
+		car_speed = 0.0
+		_toast("שבת נכנסה. החנויות סגורות, לא עובדים ולא נוסעים. שבת שלום!")
+		_play("level" if sfx.has("level") else "pay")
+	elif was_shabbat and not now:
+		_toast("השבת יצאה. שבוע טוב!")
+		_play("pay")
+	was_shabbat = now
+	if _weekday() == 5 and clock >= 12.0 and clock < 18.0 and friday_note_day != day:
+		friday_note_day = day
+		_toast("היום יום שישי. שבת נכנסת ב-18:00: קנו חלה ומיץ ענבים, והדליקו נרות בבית.")
+	if bladder >= 85.0 and not bladder_warned:
+		bladder_warned = true
+		_toast("צריך ללכת לשירותים! יש בבית, ויש שירותים ציבוריים בפארק.")
+	elif bladder < 50.0:
+		bladder_warned = false
+
+
+func _light_candles() -> void:
+	if _is_shabbat():
+		_toast("לא מדליקים אש בשבת.")
+	elif _weekday() != 5:
+		_toast("נרות שבת מדליקים ביום שישי, לפני כניסת השבת.")
+	elif candles_day == day:
+		_toast("הנרות כבר דולקים.")
+	else:
+		candles_day = day
+		_play("pay")
+		_toast("הדלקת נרות שבת. שבת שלום!")
+		_update_hud()
+
+
+func _table_action() -> void:
+	if not _is_shabbat():
+		for p in places:
+			if p.key == "fridge":
+				_open_panel(p)
+		return
+	var this_shabbat := day if _weekday() == 6 else day + 1
+	var meal := this_shabbat * 2 + (1 if _weekday() == 6 else 0)   # Friday night, then Shabbat day
+	if kiddush_day == meal:
+		_toast("כבר אכלת את הסעודה הזאת. שבת שלום!")
+		return
+	if not fridge.has(CHALLAH) or not fridge.has(GRAPE_JUICE):
+		_toast("לקידוש ולסעודת שבת צריך חלה ומיץ ענבים. קונים אותם בסופר לפני שבת.")
+		return
+	kiddush_day = meal
+	fridge.remove_at(fridge.find(CHALLAH))
+	fridge.remove_at(fridge.find(GRAPE_JUICE))
+	_time_skip("קידוש וסעודת שבת...", func() -> void:
+		_skip(1.0, "awake")
+		hunger = minf(hunger + 60.0, 100.0)
+		health = minf(health + 8.0, 100.0)
+		_toast("עשית קידוש ואכלת סעודת שבת. שבת שלום!"))
+
+
+func _pray() -> void:
+	if prayed_day == day:
+		_toast("כבר התפללת היום.")
+		return
+	prayed_day = day
+	var shabbat := _is_shabbat()
+	_time_skip("תפילת שבת..." if shabbat else "מתפללים...", func() -> void:
+		_skip(1.5 if shabbat else 0.5, "awake")
+		health = minf(health + (10.0 if shabbat else 3.0), 100.0)
+		_toast("התפללת בבית הכנסת. שבת שלום!" if shabbat else "התפללת בבית הכנסת."))
+
+
+func _use_toilet() -> void:
+	if bladder < 15.0:
+		_toast("אתה לא צריך לשירותים עכשיו.")
+		return
+	bladder = 0.0
+	_skip(0.15, "awake")
+	_play("door")
+	_toast("הקלה! עכשיו הרבה יותר נוח.")
+	_update_hud()
+
+
+func _shower() -> void:
+	_time_skip("מתקלחים...", func() -> void:
+		_skip(0.3, "awake")
+		energy = minf(energy + 6.0, 100.0)
+		_toast("התקלחת. מרגיש רענן."))
+
+
+func _build_shul() -> void:
+	var o := _room("shul", Color(0.55, 0.45, 0.35), Color(0.92, 0.9, 0.82))
+	var wood := Color(0.42, 0.28, 0.16)
+	# The ark with its curtain, on a step at the front.
+	_box(Vector3(5.0, 0.2, 1.6), o + Vector3(0, 0.1, -6.6), _mat(wood.lightened(0.1)))
+	_box(Vector3(2.4, 3.2, 0.7), o + Vector3(0, 1.8, -7.1), _mat(wood))
+	_box(Vector3(1.8, 2.4, 0.08), o + Vector3(0, 1.7, -6.72), _mat(Color(0.2, 0.25, 0.6)))
+	_box(Vector3(1.2, 0.12, 0.09), o + Vector3(0, 2.3, -6.68), _mat(Color(0.9, 0.75, 0.25)))
+	_box(Vector3(0.3, 0.3, 0.3), o + Vector3(0, 3.7, -7.0), lamp_mat)                             # eternal light
+	_solid(Vector3(2.4, 3.2, 0.9), o + Vector3(0, 1.6, -7.0))
+	# The reading table in the middle.
+	_table(o + Vector3(0, 0, -2.4), Vector2(2.2, 1.4), wood)
+	_box(Vector3(2.3, 0.04, 1.5), o + Vector3(0, 1.02, -2.4), _mat(Color(0.2, 0.25, 0.6)))
+	_box(Vector3(0.9, 0.08, 0.6), o + Vector3(0, 1.08, -2.4), _mat(Color(0.95, 0.93, 0.85)))
+	_tag("בימה", o + Vector3(0, 2.3, -2.4))
+	_spot("shul", "pray", "בית כנסת", "להתפלל", o + Vector3(0, 0, -0.8))
+	# Benches, a bookcase and a few people at prayer.
+	for side: float in [-1.0, 1.0]:
+		for row in 3:
+			var b := o + Vector3(side * 5.4, 0, -3.5 + row * 2.3)
+			_box(Vector3(3.6, 0.12, 0.6), b + Vector3(0, 0.55, 0), _mat(wood.lightened(0.15)))
+			_box(Vector3(3.6, 0.7, 0.1), b + Vector3(0, 0.9, 0.3), _mat(wood.lightened(0.15)))
+			_solid(Vector3(3.6, 1.0, 0.7), b + Vector3(0, 0.5, 0))
+	_box(Vector3(0.6, 2.6, 2.4), o + Vector3(8.4, 1.3, 3.0), _mat(wood))
+	for k in 12:
+		_box(Vector3(0.1, 0.5, 0.16), o + Vector3(8.07, 0.6 + (k / 4) * 0.8, 2.2 + (k % 4) * 0.5), _mat(Color(0.25, 0.2, 0.15).lightened(k * 0.03)))
+	for side: float in [-1.0, 1.0]:
+		var man := _make_person(Color(0.95, 0.95, 0.95), Color(0.12, 0.12, 0.15))
+		man.root.position = o + Vector3(side * 5.4, 0, -4.3)
+		man.root.rotation.y = PI
+		_ball(0.12, Vector3(0, 1.93, -0.02), _mat(Color(0.1, 0.1, 0.3)), man.root, Vector3(1.0, 0.35, 1.0))   # kippah
+		add_child(man.root)
+
+
+func _build_restroom() -> void:
+	# Public toilets in the park.
+	var at := Vector3(-14, 0, 17)
+	_box(Vector3(3.2, 2.8, 2.6), at + Vector3(0, 1.4, 0), _mat(Color(0.8, 0.82, 0.78)))
+	_box(Vector3(3.6, 0.25, 3.0), at + Vector3(0, 2.9, 0), _mat(Color(0.3, 0.45, 0.55)))
+	_box(Vector3(1.0, 2.1, 0.1), at + Vector3(0, 1.05, -1.33), _mat(Color(0.25, 0.4, 0.5)))
+	_solid(Vector3(3.2, 2.8, 2.6), at + Vector3(0, 1.4, 0))
+	_sign("שירותים", at + Vector3(0, 3.6, -1.2), 64)
+	_box(Vector3(1.8, 0.04, 1.2), at + Vector3(0, 0.03, -2.2), _mat(Color(0.95, 0.75, 0.2)))
+	var loo := Place.new()
+	loo.key = "toilet"
+	loo.title = "שירותים ציבוריים"
+	loo.prompt = "להיכנס לשירותים"
+	loo.door = at + Vector3(0, 0, -2.2)
+	places.append(loo)
