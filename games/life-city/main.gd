@@ -143,6 +143,7 @@ var car_heading := PI * 0.5
 var fuel := 60.0
 var traffic: Array[Node3D] = []
 var car_model := 0
+var rent_owed := 0                 # unpaid rent; the flat stays locked until it is renewed
 var has_can := false               # carrying a jerry can of petrol
 var can_mesh: MeshInstance3D
 var rifle_mesh: MeshInstance3D
@@ -373,6 +374,12 @@ func _build_world() -> void:
 		_box(Vector3(2.4, 0.15, 0.7), Vector3(x, 0.55, 9.5), bench)
 		_box(Vector3(2.4, 0.7, 0.12), Vector3(x, 0.95, 9.85), bench)
 		_solid(Vector3(2.4, 1.2, 0.8), Vector3(x, 0.6, 9.6))
+		var seat := Place.new()
+		seat.key = "bench"
+		seat.title = "ספסל"
+		seat.prompt = "לישון על הספסל"
+		seat.door = Vector3(x, 0, 8.4)
+		places.append(seat)
 	for k in 34:
 		var pos := Vector3(rng.randf_range(-45, 45), 0, rng.randf_range(8, 28))
 		if pos.distance_to(Vector3(4, 0, 14)) < 6.5 or (pos.z < 11.0 and absf(pos.x - 4.0) < 9.0) \
@@ -537,7 +544,7 @@ func _tick(hours: float, mode: String) -> void:
 		day += 1
 		_new_day()
 	if health <= 0.0 and state == State.PLAY:
-		_game_over("קרסת מרעב ומעייפות.\nצריך לאכול ולישון בזמן.")
+		_hospital()
 
 
 func _skip(hours: float, mode: String) -> void:
@@ -550,13 +557,9 @@ func _skip(hours: float, mode: String) -> void:
 
 func _new_day() -> void:
 	if (day - 1) % RENT_DAYS == 0:
-		if money >= RENT:
-			money -= RENT
-			_toast("שולם שכר דירה: ₪%d" % RENT)
-			_play("pay")
-		else:
-			_game_over("לא היה מספיק כסף לשכר הדירה (₪%d).\nפינו אותך מהדירה." % RENT)
-			return
+		rent_owed += RENT
+		_toast("הגיע הזמן לחדש שכר דירה: ₪%d. משלמים בדלת של הבית." % rent_owed)
+		_play("alarm")
 	_save()
 
 
@@ -763,6 +766,9 @@ func _refresh_panel() -> void:
 				else:
 					panel_text.text = _h("דלק במכל: %d%%" % int(fuel))
 					_add_action("למלא מכל · ₪%d" % price, _refuel)
+			"home":
+				panel_text.text = _h("כדי להיכנס הביתה צריך לחדש את שכר הדירה. בינתיים אפשר לישון על ספסל בפארק.")
+				_add_action("לחדש שכר דירה · ₪%d" % rent_owed, _pay_rent)
 			"dealer":
 				panel_text.text = _h("הרכב שלך: %s. רכב חדש מחליף אותו ומגיע עם מכל מלא." % CARS[car_model]["name"])
 				for k in range(1, CARS.size()):
@@ -916,6 +922,7 @@ func _new_game() -> void:
 	shifts = 0
 	wage = 40
 	parcels = 0
+	rent_owed = 0
 	has_rifle = false
 	ammo = 0
 	fuel = 60.0
@@ -950,6 +957,7 @@ func _continue_game() -> void:
 	ammo = int(cfg.get_value("life", "ammo", 0))
 	fuel = float(cfg.get_value("life", "fuel", 60.0))
 	parcels = int(cfg.get_value("life", "parcels", shifts * 8))
+	rent_owed = int(cfg.get_value("life", "rent_owed", 0))
 	_begin()
 	_park_car(Vector3(float(cfg.get_value("life", "car_x", CAR_HOME.x)), 0, float(cfg.get_value("life", "car_z", CAR_HOME.z))),
 		float(cfg.get_value("life", "car_rot", PI * 0.5)))
@@ -975,7 +983,7 @@ func _save() -> void:
 	var cfg := ConfigFile.new()
 	for pair: Array in [["day", day], ["clock", clock], ["money", money], ["hunger", hunger],
 			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage],
-			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels],
+			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading],
 			["can", has_can], ["car_model", car_model]]:
 		cfg.set_value("life", pair[0], pair[1])
@@ -1225,7 +1233,7 @@ func _update_hud() -> void:
 		_h("יום %d · %s" % [day, _time_text(clock)]),
 		_h("כסף: ₪%d" % money),
 		_h("אוכל בבית: %d" % fridge.size()),
-		_h("שכר דירה: %s" % rent_when),
+		_h("שכר דירה: %s" % (("לשלם ₪%d!" % rent_owed) if rent_owed > 0 else rent_when)),
 		_h("בסל: %d מוצרים · ₪%d" % [basket.size(), _basket_total()]) if room == "market" else "",
 		_h("כדורים: %d" % ammo) if has_rifle and not inside else "",
 		_h("דלק: %d%%" % int(fuel)) if driving else "",
@@ -1427,6 +1435,8 @@ func _interact(p: Place) -> void:
 			_enter_room(p)
 		"store_exit", "exit":
 			_leave_room()
+		"bench":
+			_bench_sleep()
 		"bed":
 			_sleep()
 		"sofa":
@@ -1440,6 +1450,9 @@ func _interact(p: Place) -> void:
 
 
 func _enter_room(p: Place) -> void:
+	if p.key == "home" and rent_owed > 0:
+		_open_panel(p)
+		return
 	if not _is_open(p):
 		_toast("%s: סגור עכשיו. פתוח בין %s ל-%s." % [p.title, _time_text(p.open_from), _time_text(p.open_to)])
 		_play("no")
@@ -2446,3 +2459,49 @@ func _pour_can() -> void:
 	_play("pick")
 	_toast("מילאת דלק מהמיכל. עכשיו יש %d%% במכל." % int(fuel))
 	_update_hud()
+
+
+func _pay_rent() -> void:
+	if money < rent_owed:
+		_toast("אין מספיק כסף (חסרים ₪%d). לך לעבוד, ובינתיים ישנים על ספסל בפארק." % (rent_owed - money))
+		_play("no")
+		return
+	money -= rent_owed
+	rent_owed = 0
+	_play("pay")
+	var home := open_place
+	_close_panel()
+	_save()
+	_enter_room(home)
+	_toast("שכר הדירה חודש. ברוך הבא הביתה!")
+
+
+## Sleeping rough: slower, and you never wake up fully rested.
+func _bench_sleep() -> void:
+	if energy > 60.0:
+		_toast("אתה לא מספיק עייף כדי לישון על ספסל.")
+		return
+	var hours := clampf(ceilf((70.0 - energy) / 8.0), 1.0, 8.0)
+	var before := energy
+	_time_skip("ישנים על הספסל...", func() -> void:
+		_skip(hours, "sleep")
+		energy = minf(before + hours * 8.0, 70.0)
+		_save()
+		_toast("ישנת %d שעות על הספסל. לא הכי נוח." % int(hours)))
+
+
+## Collapsing no longer ends the game: you wake up outside your home, poorer.
+func _hospital() -> void:
+	var fee := mini(money, 150)
+	money -= fee
+	health = 50.0
+	hunger = maxf(hunger, 60.0)
+	energy = maxf(energy, 70.0)
+	var car_at := car.position
+	var heading := car_heading
+	_close_panel()
+	_reset_position()
+	_park_car(car_at, heading)
+	_apply_daylight()
+	_play("no")
+	_toast("התעלפת מרעב ומעייפות, וטיפלו בך בבית החולים. שילמת ₪%d." % fee)
