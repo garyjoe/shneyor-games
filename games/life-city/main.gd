@@ -2,7 +2,7 @@ extends Node3D
 ## Life in the City: a small everyday-life sim. Walk around town, work shifts
 ## for money, buy food, eat, sleep and pay the rent. The scene is built in code.
 
-const HOUR_SECONDS := 40.0         # real seconds per game hour while walking
+const HOUR_SECONDS := 100.0         # real seconds per game hour while walking
 const WALK_SPEED := 7.0
 const RENT := 300
 const RENT_DAYS := 3
@@ -68,11 +68,11 @@ const ROOM_HINTS := {
 const JOBS := {
 	"work": {"pay": 20, "tire": 0.0, "from": 8.0, "to": 20.0, "tips": 0, "what": "חבילה"},
 	"diner": {"pay": 15, "tire": 0.0, "from": 11.0, "to": 23.0, "tips": 12, "what": "מנה"},
-	"build": {"pay": 30, "tire": 3.5, "from": 6.0, "to": 16.0, "tips": 0, "what": "לבנים"},
+	"build": {"pay": 30, "tire": 3.5, "from": 6.0, "to": 19.0, "tips": 0, "what": "לבנים"},
 }
 const CAR_HOME := Vector3(-18, 0, -0.5)
-const WEST := -100.0                # the town fence
-const EAST := 140.0
+const WEST := -150.0                # the town fence
+const EAST := 190.0
 const GUITAR_PRICE := 400
 const LESSON_PRICE := 40
 const NAMES: Array[String] = ["דני", "מיכל", "יוסי", "נועה", "אבי", "תמר", "רון", "שירה", "איתי", "מאיה", "עומר", "יעל",
@@ -207,6 +207,9 @@ var school_missed_day := 0
 var teacher: Person
 var outing_day := 0                # the day you last played outside with the children
 const PLAYGROUND := Vector3(20, 0, 21)
+const LAKE := Vector3(-128, 0, 18)
+const FARM := Vector3(166, 0, 16)
+var play_home_day := 0
 const PICNIC := Vector3(0, 0, FOREST_Z + 9.0)
 const KIDS: Array[int] = [1, 2, 3, 4]      # places of the children in `family`
 const KID_ROOMS: Array[float] = [13.6, 17.6, -13.6, -17.6]   # x of each child's bedroom
@@ -413,15 +416,15 @@ func _build_world() -> void:
 	lamp_mat.emission = Color(1.0, 0.9, 0.6)
 
 	# Ground, road, pavements.
-	_box(Vector3(360, 1, 260), Vector3(20, -0.5, 35), _mat(Color(0.34, 0.56, 0.3)))
-	_solid(Vector3(360, 1, 260), Vector3(20, -0.5, 35))
-	_box(Vector3(320, 0.04, 6), Vector3(20, 0.02, 1.5), _mat(Color(0.25, 0.26, 0.29)))
+	_box(Vector3(500, 1, 260), Vector3(20, -0.5, 35), _mat(Color(0.34, 0.56, 0.3)))
+	_solid(Vector3(500, 1, 260), Vector3(20, -0.5, 35))
+	_box(Vector3(460, 0.04, 6), Vector3(20, 0.02, 1.5), _mat(Color(0.25, 0.26, 0.29)))
 	var dash := _mat(Color(0.9, 0.9, 0.85))
-	for k in range(-34, 44):
+	for k in range(-51, 61):
 		_box(Vector3(1.8, 0.02, 0.2), Vector3(k * 4.0, 0.05, 1.5), dash)
 	var paving := _mat(Color(0.58, 0.56, 0.53))
-	_box(Vector3(320, 0.04, 4.5), Vector3(20, 0.015, -3.75), paving)
-	_box(Vector3(320, 0.04, 2.0), Vector3(20, 0.015, 5.5), paving)
+	_box(Vector3(460, 0.04, 4.5), Vector3(20, 0.015, -3.75), paving)
+	_box(Vector3(460, 0.04, 2.0), Vector3(20, 0.015, 5.5), paving)
 
 	_building("home", "הבית שלי", -24, 9, 4.2, Color(0.85, 0.7, 0.48), Color(0.68, 0.28, 0.2), 0, 24)
 	_building("market", "סופרמרקט", -8, 12, 4.2, Color(0.78, 0.8, 0.84), Color(0.15, 0.55, 0.3), 7, 22)
@@ -430,7 +433,7 @@ func _build_world() -> void:
 
 	# Street lamps.
 	var pole_mat := _mat(Color(0.2, 0.2, 0.22))
-	for x: float in [-96.0, -80.0, -64.0, -48.0, -32.0, -16.0, 0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0, 128.0]:
+	for x: float in [-144.0, -128.0, -112.0, -96.0, -80.0, -64.0, -48.0, -32.0, -16.0, 0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0, 128.0, 144.0, 160.0, 176.0]:
 		_box(Vector3(0.18, 4.2, 0.18), Vector3(x, 2.1, -1.9), pole_mat)
 		_box(Vector3(0.9, 0.25, 0.5), Vector3(x, 4.2, -1.6), lamp_mat)
 
@@ -492,17 +495,18 @@ func _build_world() -> void:
 	_building("hall", "אולם הופעות", -58, 15, 8.5, Color(0.75, 0.3, 0.3), Color(0.35, 0.1, 0.12), 17, 24)
 	_building("clinic", "מרפאה", -40, 10, 4.2, Color(0.9, 0.92, 0.94), Color(0.75, 0.15, 0.15), 8, 20)
 	_building("diner", "מסעדה", 56, 11, 4.2, Color(0.8, 0.5, 0.35), Color(0.45, 0.15, 0.12), 11, 23)
-	_building("build", "אתר בנייה", 72, 12, 7.0, Color(0.6, 0.58, 0.55), Color(0.9, 0.6, 0.1), 6, 16)
+	_building("build", "אתר בנייה", 72, 12, 7.0, Color(0.6, 0.58, 0.55), Color(0.9, 0.6, 0.1), 6, 19)
 	_build_town_extras()
 	_build_edges()
 	_build_neighbourhood()
 	_build_restroom()
 	_build_school()
 	_build_playground()
+	_build_outskirts()
 	_building("guns", "חנות נשק", 40, 9, 4.2, Color(0.5, 0.52, 0.45), Color(0.25, 0.3, 0.2), 9, 19)
 
 	# Passers-by on the pavements, each with a name.
-	for k in 18:
+	for k in 26:
 		var n := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.88), Color.from_hsv(rng.randf(), 0.3, 0.42))
 		n.dir = 1.0 if k % 2 == 0 else -1.0
 		n.speed = rng.randf_range(1.6, 2.6)
@@ -516,7 +520,7 @@ func _build_world() -> void:
 	_build_cars()
 
 
-func _cap(radius: float, height: float, pos: Vector3, mat: Material, parent: Node, squash: Vector3 = Vector3.ONE) -> void:
+func _cap(radius: float, height: float, pos: Vector3, mat: Material, parent: Node, squash: Vector3 = Vector3.ONE) -> MeshInstance3D:
 	var mesh := CapsuleMesh.new()
 	mesh.radius = radius
 	mesh.height = height
@@ -528,6 +532,7 @@ func _cap(radius: float, height: float, pos: Vector3, mat: Material, parent: Nod
 	mi.position = pos
 	mi.scale = squash
 	parent.add_child(mi)
+	return mi
 
 
 ## A person built from rounded parts, with knees and elbows that bend.
@@ -837,7 +842,9 @@ func _drop_parcel() -> void:
 	reach = 0.35
 	parcels += 1
 	shifts = parcels / 8
-	_skip(0.5, "work")
+	_skip(0.3, "work")
+	energy = maxf(energy - 1.0, 0.0)
+	hunger = maxf(hunger - 0.7, 0.0)
 	energy = maxf(energy - float(job["tire"]), 0.0)
 	var pay := int(int(job["pay"]) * wage / 40.0)
 	var tip := rng.randi_range(0, int(job["tips"])) if int(job["tips"]) > 0 else 0
@@ -976,6 +983,13 @@ func _refresh_panel() -> void:
 					_add_action("גיטרה · ₪%d" % GUITAR_PRICE, _buy_guitar)
 				elif skill < 15:
 					_add_action("שיעור נגינה (שעה) · ₪%d" % LESSON_PRICE, _lesson)
+			"farm":
+				panel_text.text = _h("ישר מהחווה, טרי וזול יותר מהסופר.")
+				_add_action("ביצים טריות · ₪5", _farm_buy.bind(5, 5))
+				_add_action("חלב טרי · ₪3", _farm_buy.bind(2, 3))
+				_add_action("עגבניות מהשדה · ₪1", _farm_buy.bind(13, 1))
+				if kids == 4:
+					_add_action("להאכיל את הפרות עם הילדים", _feed_cows)
 			"kids_out":
 				if kids != 0:
 					panel_text.text = _h("הילדים כבר לא בבית.")
@@ -1757,6 +1771,12 @@ func _interact(p: Place) -> void:
 			_leave_room()
 		"school":
 			_school_door()
+		"beach":
+			_beach()
+		"farm":
+			_open_panel(p)
+		"play_home":
+			_play_home()
 		"playground":
 			_play_outside("מתנדנדים ומתגלשים בגינה...", "שיחקת עם הילדים בגינה. הם נהנו מאוד!")
 		"picnic":
@@ -2017,8 +2037,8 @@ func _make_animal(big: bool) -> Animal:
 func _build_forest() -> void:
 	_sign("היער", Vector3(0, 3.0, FOREST_Z - 3.0), 110)
 	_box(Vector3(0.2, 2.6, 0.2), Vector3(0, 1.3, FOREST_Z - 3.0), _mat(Color(0.3, 0.2, 0.12)))
-	for k in 310:
-		var pos := Vector3(rng.randf_range(-125, 165), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
+	for k in 420:
+		var pos := Vector3(rng.randf_range(-175, 215), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
 		if absf(pos.x) < 3.0 and pos.z < FOREST_Z + 14.0:
 			continue                       # keep a path in from the sign
 		_pine(pos)
@@ -2357,10 +2377,10 @@ func _build_cars() -> void:
 		_tag("%s ₪%d" % [CARS[k]["name"], CARS[k]["price"]], show.position + Vector3(0, 2.6, 0), 44)
 
 	# Two lanes of traffic that loop along the street.
-	for k in 9:
+	for k in 13:
 		var t := _make_car(Color.from_hsv(rng.randf(), rng.randf_range(0.2, 0.75), rng.randf_range(0.5, 0.95)))
 		var east := k % 2 == 0
-		t.position = Vector3(rng.randf_range(-130, 165), 0, 3.6 if east else 1.5)
+		t.position = Vector3(rng.randf_range(-190, 230), 0, 3.6 if east else 1.5)
 		t.rotation.y = PI * 0.5 if east else -PI * 0.5
 		t.set_meta("dir", 1.0 if east else -1.0)
 		t.set_meta("top", rng.randf_range(7.0, 11.0))
@@ -2498,10 +2518,10 @@ func _update_traffic(delta: float) -> void:
 		var now: float = move_toward(t.get_meta("speed"), want, 12.0 * delta)
 		t.set_meta("speed", now)
 		t.position.x += dir * now * delta
-		if dir > 0.0 and t.position.x > 172.0:
-			t.position.x = -135.0
-		elif dir < 0.0 and t.position.x < -135.0:
-			t.position.x = 172.0
+		if dir > 0.0 and t.position.x > 240.0:
+			t.position.x = -200.0
+		elif dir < 0.0 and t.position.x < -200.0:
+			t.position.x = 240.0
 
 
 func _fuel_price() -> int:
@@ -2753,6 +2773,12 @@ func _build_home() -> void:
 
 	_build_family(o)
 
+	# --- Play corner: a mat with blocks where you play with the children.
+	_box(Vector3(2.6, 0.04, 2.0), o + Vector3(1.6, 0.03, 3.4), _mat(Color(0.4, 0.75, 0.5)))
+	for k in 5:
+		_box(Vector3(0.3, 0.3, 0.3), o + Vector3(0.8 + (k % 3) * 0.4, 0.2 + (k / 3) * 0.3, 3.0 + (k % 2) * 0.3), _mat(Color.from_hsv(k * 0.19, 0.75, 0.95)))
+	_spot("home", "play_home", "פינת משחקים", "לשחק עם הילדים", o + Vector3(2.4, 0, 3.8))
+
 	# --- Desk by the wall
 	_table(o + Vector3(-10.4, 0, 3.6), Vector2(1.4, 2.4), wood.lightened(0.1))
 	_box(Vector3(0.08, 0.6, 0.9), o + Vector3(-10.7, 1.35, 3.6), _mat(Color(0.1, 0.12, 0.16)))
@@ -2987,9 +3013,9 @@ func _block(pos: Vector3, size: Vector3, color: Color) -> void:
 func _build_town_extras() -> void:
 	# A second row of apartment blocks behind the street.
 	var palette: Array[Color] = [Color(0.78, 0.74, 0.66), Color(0.66, 0.7, 0.76), Color(0.8, 0.68, 0.6), Color(0.7, 0.75, 0.68)]
-	for k in 19:
+	for k in 26:
 		var h := rng.randf_range(9.0, 19.0)
-		_block(Vector3(-118 + k * 15.0 + rng.randf_range(-1.5, 1.5), 0, -27), Vector3(rng.randf_range(9, 12), h, 9), palette[k % 4])
+		_block(Vector3(-168 + k * 15.0 + rng.randf_range(-1.5, 1.5), 0, -27), Vector3(rng.randf_range(9, 12), h, 9), palette[k % 4])
 	# Houses south of the road, east of the park.
 	for k in 4:
 		var hp := Vector3(52 + k * 9.5, 0, 14)
@@ -4003,3 +4029,148 @@ func _build_playground() -> void:
 	hike.prompt = "לטייל עם הילדים ביער"
 	hike.door = pic
 	places.append(hike)
+
+
+func _play_home() -> void:
+	if kids != 0:
+		_toast("הילדים לא בבית עכשיו.")
+		return
+	if energy < 10.0:
+		_toast("אתה עייף מדי לשחק עכשיו.")
+		return
+	var first := play_home_day != day
+	play_home_day = day
+	_time_skip("משחקים עם הילדים...", func() -> void:
+		_skip(0.75, "awake")
+		energy = maxf(energy - 4.0, 0.0)
+		family_joy = minf(family_joy + (10.0 if first else 4.0), 100.0)
+		for k: int in KIDS:
+			_say(family[k], ["ניצחתי!", "עוד משחק, אבא!", "תורי!", "אבא הכי טוב!"][k - 1], 5.0)
+		_toast("שיחקת עם הילדים בבית. הם מאושרים!"))
+
+
+func _beach() -> void:
+	if kids == 4:
+		_play_outside("בונים ארמונות בחול על שפת האגם...", "שיחקת עם הילדים על חוף האגם!")
+		return
+	if energy > 92.0:
+		_toast("אתה לא עייף. אפשר סתם ליהנות מהנוף.")
+		return
+	_time_skip("נחים על חוף האגם...", func() -> void:
+		_skip(1.0, "awake")
+		energy = minf(energy + 18.0, 100.0)
+		_toast("נחת שעה על החוף. מרגיע."))
+
+
+func _farm_buy(pid: int, price: int) -> void:
+	if _shabbat_block():
+		return
+	if money < price:
+		_toast("אין מספיק כסף.")
+		_play("no")
+		return
+	if fridge.size() >= FRIDGE_MAX:
+		_toast("אין מקום במקרר בבית.")
+		_play("no")
+		return
+	money -= price
+	fridge.append(pid)
+	_play("pay")
+	_toast("קנית %s טרי מהחווה." % PRODUCTS[pid]["name"])
+	_refresh_panel()
+
+
+func _feed_cows() -> void:
+	_close_panel()
+	_play_outside("מאכילים את הפרות...", "האכלתם את הפרות בחווה. הילדים התלהבו!")
+
+
+## More to see at both ends of town: a lake with a beach, and a farm.
+func _build_outskirts() -> void:
+	# --- The lake
+	var water := CylinderMesh.new()
+	water.top_radius = 11.0
+	water.bottom_radius = 11.0
+	water.height = 0.06
+	var lake := MeshInstance3D.new()
+	lake.mesh = water
+	lake.material_override = _mat(Color(0.25, 0.55, 0.85))
+	lake.position = LAKE + Vector3(0, 0.04, 6)
+	add_child(lake)
+	var shore := StaticBody3D.new()
+	var shore_shape := CollisionShape3D.new()
+	var round := CylinderShape3D.new()
+	round.radius = 10.8
+	round.height = 3.0
+	shore_shape.shape = round
+	shore.add_child(shore_shape)
+	shore.position = LAKE + Vector3(0, 1.5, 6)
+	add_child(shore)
+	_box(Vector3(26, 0.04, 9), LAKE + Vector3(0, 0.02, -8.5), _mat(Color(0.93, 0.85, 0.6)))        # sand
+	_box(Vector3(1.6, 0.25, 9.0), LAKE + Vector3(6, 0.35, -1.0), _mat(Color(0.5, 0.35, 0.2)))      # pier
+	for k in 4:
+		_box(Vector3(0.2, 0.9, 0.2), LAKE + Vector3(6 + (0.7 if k % 2 == 0 else -0.7), 0.3, -4.5 + (k / 2) * 6.5), _mat(Color(0.4, 0.28, 0.16)))
+	for k in 3:
+		var px := LAKE + Vector3(-8 + k * 5.0, 0, -8.5)
+		_box(Vector3(0.1, 2.2, 0.1), px + Vector3(0, 1.1, 0), _mat(Color(0.9, 0.9, 0.9)))
+		_ball(1.2, px + Vector3(0, 2.3, 0), _mat(Color.from_hsv(k * 0.3, 0.7, 0.95)), self, Vector3(1.0, 0.3, 1.0))
+		_box(Vector3(0.8, 0.12, 1.8), px + Vector3(1.2, 0.25, 0), _mat(Color(0.95, 0.95, 0.9)))    # sun bed
+	_sign("חוף האגם", LAKE + Vector3(0, 3.2, -12.6), 80)
+	_box(Vector3(0.15, 2.8, 0.15), LAKE + Vector3(0, 1.4, -12.6), _mat(Color(0.2, 0.2, 0.22)))
+	_box(Vector3(2.4, 0.05, 1.6), LAKE + Vector3(-2, 0.05, -7.5), _mat(Color(0.95, 0.75, 0.2)))
+	var beach := Place.new()
+	beach.key = "beach"
+	beach.title = "חוף האגם"
+	beach.prompt = "לנוח או לשחק על החוף"
+	beach.door = LAKE + Vector3(-2, 0, -7.5)
+	places.append(beach)
+
+	# --- The farm
+	_box(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4), _mat(Color(0.7, 0.18, 0.15)))             # barn
+	_box(Vector3(9.6, 0.5, 7.6), FARM + Vector3(-6, 5.2, 4), _mat(Color(0.35, 0.3, 0.28)))
+	_box(Vector3(2.6, 3.2, 0.1), FARM + Vector3(-6, 1.6, 0.47), _mat(Color(0.95, 0.93, 0.85)))
+	_solid(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4))
+	_box(Vector3(14, 0.04, 10), FARM + Vector3(7, 0.02, 4), _mat(Color(0.5, 0.42, 0.25)))          # paddock
+	_fence(FARM + Vector3(0, 0, -1), FARM + Vector3(14, 0, -1))
+	_fence(FARM + Vector3(0, 0, 9), FARM + Vector3(14, 0, 9))
+	_fence(FARM + Vector3(14, 0, -1), FARM + Vector3(14, 0, 9))
+	for k in 4:
+		var cow := Node3D.new()
+		cow.position = FARM + Vector3(3 + k * 2.8, 0, 2 + (k % 2) * 4)
+		cow.rotation.y = k * 1.3
+		add_child(cow)
+		var hide := _mat(Color(0.96, 0.96, 0.94))
+		var patch := _mat(Color(0.12, 0.1, 0.1))
+		_cap(0.5, 1.9, Vector3(0, 1.1, 0), hide, cow).rotation.x = PI * 0.5
+		_ball(0.3, Vector3(0.2, 1.3, 0.2), patch, cow, Vector3(1.2, 0.8, 1.4))
+		_ball(0.25, Vector3(-0.25, 1.25, -0.4), patch, cow, Vector3(1.0, 0.8, 1.2))
+		_ball(0.3, Vector3(0, 1.35, 1.15), hide, cow, Vector3(0.9, 0.9, 1.3))
+		for sx: float in [-0.3, 0.3]:
+			for sz: float in [-0.6, 0.6]:
+				_box(Vector3(0.16, 0.7, 0.16), Vector3(sx, 0.35, sz), hide, cow)
+	for k in 3:
+		_cap(0.6, 1.6, FARM + Vector3(-10.5 + k * 1.3, 0.6, -1.5), _mat(Color(0.9, 0.78, 0.35)), self).rotation.z = PI * 0.5
+	_sign("החווה", FARM + Vector3(-6, 6.4, 0.6), 96)
+	var farmer := _make_person(Color(0.3, 0.45, 0.7), Color(0.35, 0.3, 0.2))
+	farmer.speed = 0.0
+	farmer.root.position = FARM + Vector3(-2.2, 0, -1.8)
+	_add_townsperson(farmer)
+	farmer.name = "החוואי גדי"
+	_box(Vector3(2.4, 0.05, 1.6), FARM + Vector3(-4.5, 0.05, -2.2), _mat(Color(0.95, 0.75, 0.2)))
+	var stand := Place.new()
+	stand.key = "farm"
+	stand.title = "החווה"
+	stand.prompt = "לקנות מהחווה"
+	stand.door = FARM + Vector3(-4.5, 0, -2.2)
+	places.append(stand)
+	# A few more homes along the longer street.
+	var palette: Array[Color] = [Color(0.82, 0.74, 0.6), Color(0.68, 0.76, 0.8), Color(0.8, 0.66, 0.62), Color(0.72, 0.78, 0.66)]
+	for k in 5:
+		var hp := Vector3([-112.0, -126.0, -140.0, 148.0, 162.0][k], 0, -10)
+		_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k % 4]))
+		_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
+		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+		for sx: float in [-2.5, 2.5]:
+			_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
+		_solid(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0))
+		_tree(hp + Vector3(5.5, 0, 2.0))
