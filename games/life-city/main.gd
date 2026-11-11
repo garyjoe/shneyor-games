@@ -19,7 +19,30 @@ const PRODUCTS: Array[Dictionary] = [
 	{"name": "ביצים", "price": 13, "food": 28.0},
 	{"name": "עוף", "price": 32, "food": 55.0},
 	{"name": "שוקולד", "price": 7, "food": 10.0},
+	{"name": "בשר ציד", "price": 35, "food": 45.0},   # only from hunting, never on a shelf
 ]
+const MEAT := 8
+const RIFLE_PRICE := 600
+const AMMO_PRICE := 40
+const FOREST_Z := 36.0             # the forest starts this far south of the street
+const FOREST_END := 100.0
+const ROOMS := {
+	"home": {"origin": Vector3(-200, 0, -200), "half": Vector2(7, 6)},
+	"market": {"origin": Vector3(0, 0, -200), "half": Vector2(10.8, 8.2)},
+	"cafe": {"origin": Vector3(200, 0, -200), "half": Vector2(8, 6)},
+	"work": {"origin": Vector3(400, 0, -200), "half": Vector2(10, 7)},
+	"guns": {"origin": Vector3(600, 0, -200), "half": Vector2(6, 5)},
+}
+const ROOM_HINTS := {
+	"home": "בבית: לוחצים על המיטה, המקרר או הספה.",
+	"market": "לחצו על מוצר במדף כדי לקחת אותו. משלמים בקופה.",
+	"cafe": "לחצו על הצלחת או על הכוס שעל הדלפק כדי להזמין.",
+	"work": "עבודה: לוקחים חבילה מהשולחן ושמים אותה על המדף.",
+	"guns": "לחצו על הרובה או על קופסת הכדורים שעל הדלפק.",
+}
+const CAR_HOME := Vector3(-18, 0, -0.5)
+const CAR_TOP_SPEED := 17.0
+const GAS_PUMP := Vector3(15, 0, 5.6)
 const SAVE_PATH := "user://life-city.cfg"
 
 enum State { MENU, PLAY, OVER }
@@ -31,12 +54,26 @@ class Person:
 	var phase := 0.0
 	var dir := 1.0
 	var speed := 2.0
+	var chasing := false            # robbers only
+	var target := Vector3.ZERO
+	var wait := 0.0
+
+
+class Animal:
+	var node: Node3D
+	var big := false                # deer or rabbit
+	var dead := false
+	var gone := 0.0                 # seconds until it comes back after being collected
+	var heading := Vector3.ZERO
+	var timer := 0.0
+	var scared := 0.0
 
 
 class Place:
 	var key: String
 	var title: String
 	var prompt: String
+	var room := ""                  # "" = out on the street
 	var door: Vector3
 	var open_from := 0.0
 	var open_to := 24.0
@@ -74,6 +111,31 @@ var focus: Node3D                  # shelf item close enough to grab
 var reach := 0.0
 var basket_mesh: MeshInstance3D
 var press_pos := Vector2.INF
+var has_rifle := false
+var ammo := 0
+var shot_cool := 0.0
+var rob_cool := 0.0
+var room := ""                     # which building interior the player is in
+var room_origin := Vector3.ZERO
+var room_half := Vector2(10.8, 8.2)
+var handles: Array[Dictionary] = []   # things you can click with your hand
+var carrying := false              # holding a parcel at work
+var parcels := 0
+var parcel_mesh: MeshInstance3D
+var parcel_pile: Array[Node3D] = []
+var shelf_boxes: Array[Node3D] = []
+var car: Node3D                    # the player's own car
+var car_block: CollisionShape3D
+var body_shape: CapsuleShape3D
+var driving := false
+var near_car := false
+var car_speed := 0.0
+var car_heading := PI * 0.5
+var fuel := 60.0
+var traffic: Array[Node3D] = []
+var rifle_mesh: MeshInstance3D
+var animals: Array[Animal] = []
+var thugs: Array[Person] = []
 var shifts := 0
 var wage := 40                     # per hour
 var over_reason := ""
@@ -261,8 +323,8 @@ func _build_world() -> void:
 	lamp_mat.emission = Color(1.0, 0.9, 0.6)
 
 	# Ground, road, pavements.
-	_box(Vector3(160, 1, 110), Vector3(0, -0.5, 0), _mat(Color(0.34, 0.56, 0.3)))
-	_solid(Vector3(160, 1, 110), Vector3(0, -0.5, 0))
+	_box(Vector3(180, 1, 220), Vector3(0, -0.5, 40), _mat(Color(0.34, 0.56, 0.3)))
+	_solid(Vector3(180, 1, 220), Vector3(0, -0.5, 40))
 	_box(Vector3(160, 0.04, 6), Vector3(0, 0.02, 1.5), _mat(Color(0.25, 0.26, 0.29)))
 	var dash := _mat(Color(0.9, 0.9, 0.85))
 	for k in range(-19, 20):
@@ -274,7 +336,7 @@ func _build_world() -> void:
 	_building("home", "הבית שלי", -24, 9, 4.2, Color(0.85, 0.7, 0.48), Color(0.68, 0.28, 0.2), 0, 24)
 	_building("market", "סופרמרקט", -8, 12, 4.2, Color(0.78, 0.8, 0.84), Color(0.15, 0.55, 0.3), 7, 22)
 	_building("cafe", "קפה ומסעדה", 8, 9, 4.2, Color(0.82, 0.72, 0.58), Color(0.7, 0.4, 0.18), 8, 23)
-	_building("work", "המשרד", 24, 12, 10.5, Color(0.55, 0.62, 0.72), Color(0.25, 0.3, 0.4), 8, 24)
+	_building("work", "העבודה", 24, 12, 10.5, Color(0.55, 0.62, 0.72), Color(0.25, 0.3, 0.4), 8, 20)
 
 	# Street lamps.
 	var pole_mat := _mat(Color(0.2, 0.2, 0.22))
@@ -306,8 +368,8 @@ func _build_world() -> void:
 		_tree(pos)
 	for k in 16:
 		_tree(Vector3(rng.randf_range(-48, 48), 0, rng.randf_range(-26, -17)))
-	for x: float in [-41.0, 41.0]:
-		_tree(Vector3(x, 0, -8))
+	_tree(Vector3(-41, 0, -8))
+	_building("guns", "חנות נשק", 40, 9, 4.2, Color(0.5, 0.52, 0.45), Color(0.25, 0.3, 0.2), 9, 19)
 
 	# Passers-by on the pavements.
 	for k in 6:
@@ -318,6 +380,11 @@ func _build_world() -> void:
 		add_child(n.root)
 		npcs.append(n)
 	_build_store()
+	_build_interiors()
+	_sign("ליער ↓", Vector3(8, 2.6, 7.4), 80)
+	_box(Vector3(0.15, 2.2, 0.15), Vector3(8, 1.1, 7.4), _mat(Color(0.2, 0.2, 0.22)))
+	_build_forest()
+	_build_cars()
 
 
 func _make_person(shirt: Color, pants: Color, into: Person = null) -> Person:
@@ -372,6 +439,7 @@ func _build_player() -> void:
 	player = CharacterBody3D.new()
 	var cs := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
+	body_shape = cap
 	cap.radius = 0.4
 	cap.height = 1.9
 	cs.shape = cap
@@ -381,13 +449,21 @@ func _build_player() -> void:
 	player.add_child(me.root)
 	basket_mesh = _box(Vector3(0.5, 0.32, 0.38), Vector3(0, -0.85, 0.12), _mat(Color(0.85, 0.2, 0.2)), me.limbs[2])
 	basket_mesh.visible = false
+	rifle_mesh = _box(Vector3(0.1, 0.1, 1.3), Vector3(0, -0.6, 0.35), _mat(Color(0.25, 0.17, 0.1)), me.limbs[3])
+	rifle_mesh.visible = false
+	parcel_mesh = _box(Vector3(0.6, 0.5, 0.6), Vector3(0, 1.15, 0.5), _mat(Color(0.72, 0.55, 0.32)), me.root)
+	parcel_mesh.visible = false
 	add_child(player)
 	_reset_position()
 
 
 func _reset_position() -> void:
 	inside = false
+	room = ""
+	carrying = false
+	_park_car(CAR_HOME, PI * 0.5)
 	_return_all()
+	_reset_forest()
 	player.position = places[0].door + Vector3(0, 0, 1.2)
 	player.velocity = Vector3.ZERO
 	me.root.rotation.y = 0.0
@@ -522,30 +598,56 @@ func _cafe(price: int, food: float, boost: float, hours: float, msg: String) -> 
 	_refresh_panel()
 
 
-func _work() -> void:
-	if clock > 16.0:
-		_toast("מאוחר מדי להתחיל משמרת. בוא מחר ב-8:00.")
+func _rest() -> void:
+	if energy > 90.0:
+		_toast("אתה לא עייף עכשיו.")
+		return
+	_time_skip("נחים על הספה...", func() -> void:
+		_skip(1.0, "awake")
+		energy = minf(energy + 16.0, 100.0)
+		_toast("נחת שעה על הספה."))
+
+
+func _take_parcel() -> void:
+	if carrying:
+		_toast("כבר יש לך חבילה ביד. שים אותה על המדף.")
+		return
+	if clock < 8.0 or clock >= 20.0:
+		_toast("העבודה נגמרה להיום. חוזרים מחר ב-8:00.")
 		_play("no")
 		return
-	if energy < 25.0:
+	if energy < 10.0:
 		_toast("אתה עייף מדי לעבוד. לך לישון.")
 		_play("no")
 		return
-	if hunger < 15.0:
+	if hunger < 5.0:
 		_toast("אתה רעב מדי לעבוד. לך לאכול.")
 		_play("no")
 		return
-	_time_skip("עובדים...", func() -> void:
-		_skip(SHIFT_HOURS, "work")
-		var pay := int(wage * SHIFT_HOURS)
-		money += pay
-		shifts += 1
-		_play("pay")
-		if shifts % 5 == 0:
-			wage += 8
-			_toast("קיבלת ₪%d, וגם העלאה! השכר עכשיו ₪%d לשעה." % [pay, wage])
-		else:
-			_toast("סיימת משמרת וקיבלת ₪%d." % pay))
+	carrying = true
+	reach = 0.35
+	_play("pick")
+	_update_hud()
+
+
+func _drop_parcel() -> void:
+	if not carrying:
+		_toast("קודם לוקחים חבילה מהשולחן.")
+		return
+	carrying = false
+	reach = 0.35
+	parcels += 1
+	shifts = parcels / 8
+	_skip(0.5, "work")
+	var pay := wage / 2
+	money += pay
+	_play("pay")
+	if parcels % 40 == 0:
+		wage += 8
+		_toast("קיבלת ₪%d, וגם העלאה! השכר עכשיו ₪%d לשעה." % [pay, wage])
+	else:
+		_toast("חבילה מספר %d על המדף. הרווחת ₪%d." % [parcels, pay])
+	_update_hud()
 
 
 func _time_skip(text: String, apply: Callable) -> void:
@@ -610,13 +712,12 @@ func _refresh_panel() -> void:
 		panel_text.text = _h("סגור עכשיו. פתוח בין %s ל-%s." % [_time_text(p.open_from), _time_text(p.open_to)])
 	else:
 		match p.key:
-			"home":
+			"fridge":
 				panel_text.text = _h("המקרר ריק. צריך לקנות אוכל בסופר." if fridge.is_empty() else "מה לאכול מהמקרר?")
 				for pid in PRODUCTS.size():
 					var have := fridge.count(pid)
 					if have > 0:
 						_add_action("%s ×%d" % [PRODUCTS[pid]["name"], have], _eat.bind(pid))
-				_add_action("לישון", _sleep)
 			"checkout":
 				if basket.is_empty():
 					panel_text.text = _h("הסל ריק. קחו מוצרים מהמדפים.")
@@ -630,13 +731,27 @@ func _refresh_panel() -> void:
 					_add_action("לשלם ₪%d" % _basket_total(), _pay)
 					_add_action("להחזיר מוצר אחד", _return_last)
 					_add_action("להחזיר הכול למדף", _return_all_action)
-			"cafe":
+			"cafe_counter":
 				panel_text.text = _h("אוכלים כאן ועכשיו, בלי לחזור הביתה")
 				_add_action("ארוחה חמה · ₪55", _cafe.bind(55, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
 				_add_action("קפה · ₪14", _cafe.bind(14, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
-			"work":
-				panel_text.text = _h("שכר: ₪%d לשעה · משמרות שעבדת: %d" % [wage, shifts])
-				_add_action("לעבוד משמרת (%d שעות) · ₪%d" % [int(SHIFT_HOURS), int(wage * SHIFT_HOURS)], _work)
+			"gas":
+				var price := _fuel_price()
+				if not driving:
+					panel_text.text = _h("בואו עם הרכב כדי לתדלק.")
+				elif price <= 0:
+					panel_text.text = _h("המכל מלא.")
+				else:
+					panel_text.text = _h("דלק במכל: %d%%" % int(fuel))
+					_add_action("למלא מכל · ₪%d" % price, _refuel)
+			"gun_counter":
+				panel_text.text = _h(("יש לך רובה ציד · כדורים: %d" % ammo) if has_rifle else "כדי לצוד ביער צריך רובה ציד וכדורים")
+				if not has_rifle:
+					_add_action("רובה ציד · ₪%d" % RIFLE_PRICE, _buy_rifle)
+				else:
+					_add_action("10 כדורים · ₪%d" % AMMO_PRICE, _buy_ammo)
+				if fridge.has(MEAT):
+					_add_action("למכור בשר ציד (יש %d) · ₪%d" % [fridge.count(MEAT), PRODUCTS[MEAT]["price"]], _sell_meat)
 	var close := Button.new()
 	close.text = _h("לצאת")
 	close.focus_mode = Control.FOCUS_NONE
@@ -671,14 +786,22 @@ func _physics_process(delta: float) -> void:
 	var input := _move_input() if walking else Vector2.ZERO
 	# Tired or starving people walk slower.
 	var speed := WALK_SPEED * (0.6 if (energy < 15.0 or hunger < 10.0) else 1.0)
-	player.velocity = Vector3(input.x * speed, -4.0, input.y * speed)
-	player.move_and_slide()
-	if inside:
-		player.position.x = clampf(player.position.x, STORE.x - 10.8, STORE.x + 10.8)
-		player.position.z = clampf(player.position.z, STORE.z - 7.9, STORE.z + 8.2)
+	if driving:
+		_drive(input, delta)
 	else:
-		player.position.x = clampf(player.position.x, -42.0, 42.0)
-		player.position.z = clampf(player.position.z, -5.6, 26.0)
+		player.velocity = Vector3(input.x * speed, -4.0, input.y * speed)
+		player.move_and_slide()
+	_update_traffic(delta)
+	if inside:
+		player.position.x = clampf(player.position.x, room_origin.x - room_half.x, room_origin.x + room_half.x)
+		player.position.z = clampf(player.position.z, room_origin.z - room_half.y, room_origin.z + room_half.y)
+	else:
+		player.position.x = clampf(player.position.x, -44.0, 46.0)
+		player.position.z = clampf(player.position.z, -5.6, FOREST_END)
+	if driving:
+		player.position.z = minf(player.position.z, FOREST_Z - 6.0)   # no driving among the trees
+		car.position = player.position
+		car.rotation.y = car_heading
 	if input.length_squared() > 0.01:
 		me.root.rotation.y = lerp_angle(me.root.rotation.y, atan2(input.x, input.y), 12.0 * delta)
 	_animate(me, input.length_squared() > 0.01, delta)
@@ -692,9 +815,14 @@ func _physics_process(delta: float) -> void:
 	_apply_daylight()
 	near = null
 	for p in places:
-		if p.door.distance_to(player.position) < 2.2:
+		if driving:
+			if p.key == "gas" and fuel < 95.0 and p.door.distance_to(player.position) < 5.0:
+				near = p
+		elif p.room == room and p.door.distance_to(player.position) < 2.2:
 			near = p
+	near_car = not driving and not inside and car.position.distance_to(player.position) < 3.2
 	_update_focus()
+	_update_forest(delta)
 	_update_hud()
 
 
@@ -706,7 +834,7 @@ func _process(delta: float) -> void:
 	if state == State.MENU:
 		want = Vector3(sin(Time.get_ticks_msec() * 0.0002) * 14.0, 1.0, -3.0)
 	cam_focus = cam_focus.lerp(want, 1.0 - exp(-5.0 * delta))
-	cam.position = cam_focus + (Vector3(0, 7.0, 6.5) if inside else Vector3(0, 11.5, 13.0))
+	cam.position = cam_focus + (Vector3(0, 7.0, 6.5) if inside else (Vector3(0, 15.0, 16.0) if driving else Vector3(0, 11.5, 13.0)))
 	cam.look_at(cam_focus)
 	pad.queue_redraw()
 
@@ -747,10 +875,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			elif key >= KEY_1 and key <= KEY_9 and key - KEY_1 < actions.size():
 				actions[key - KEY_1].call()
 		elif key in [KEY_E, KEY_ENTER, KEY_SPACE]:
-			if near != null:
-				_interact(near)
-			elif focus != null:
-				_pick(focus)
+			_use()
 
 
 # ---------------------------------------------------------- game states ----
@@ -765,6 +890,10 @@ func _new_game() -> void:
 	fridge = [0, 5]
 	shifts = 0
 	wage = 40
+	parcels = 0
+	has_rifle = false
+	ammo = 0
+	fuel = 60.0
 	_begin()
 	_toast("בוקר טוב! לך לעבודה, קנה אוכל ושמור על עצמך.")
 
@@ -788,7 +917,13 @@ func _continue_game() -> void:
 				fridge.append(int(v))
 	shifts = int(cfg.get_value("life", "shifts", 0))
 	wage = int(cfg.get_value("life", "wage", 40))
+	has_rifle = bool(cfg.get_value("life", "rifle", false))
+	ammo = int(cfg.get_value("life", "ammo", 0))
+	fuel = float(cfg.get_value("life", "fuel", 60.0))
+	parcels = int(cfg.get_value("life", "parcels", shifts * 8))
 	_begin()
+	_park_car(Vector3(float(cfg.get_value("life", "car_x", CAR_HOME.x)), 0, float(cfg.get_value("life", "car_z", CAR_HOME.z))),
+		float(cfg.get_value("life", "car_rot", PI * 0.5)))
 	_toast("ברוך שובך! יום %d." % day)
 
 
@@ -810,7 +945,9 @@ func _save() -> void:
 		return
 	var cfg := ConfigFile.new()
 	for pair: Array in [["day", day], ["clock", clock], ["money", money], ["hunger", hunger],
-			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage]]:
+			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage],
+			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels],
+			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
 
@@ -833,12 +970,14 @@ func _show_menu() -> void:
 		buttons.append(["להמשיך", _continue_game])
 	buttons.append(["משחק חדש", _new_game])
 	_overlay("חיים בעיר", "\n".join([
-		"עבדו במשרד כדי להרוויח כסף, קנו אוכל בסופר,",
+		"עבדו בעבודה כדי להרוויח כסף, קנו אוכל בסופר,",
 		"אכלו ושנו בבית, ושלמו ₪%d שכר דירה כל %d ימים." % [RENT, RENT_DAYS],
 		"",
 		"תנועה: חיצים או WASD · כניסה לבניין: E",
 		"בטלפון: גוררים אצבע על המסך כדי ללכת",
-		"בסופר: לוחצים על מוצר במדף כדי לקחת אותו, ומשלמים בקופה",
+		"נכנסים לכל בניין, ובפנים לוחצים על דברים כדי להשתמש בהם",
+		"ביער שמדרום: צדים עם רובה מחנות הנשק, ובורחים מהאנשים באדום",
+		"הרכב שלך חונה ליד הבית: נכנסים עם E ונוסעים עם החיצים",
 	]), buttons)
 
 
@@ -974,8 +1113,7 @@ func _build_hud() -> void:
 	prompt.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	prompt.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	prompt.pressed.connect(func() -> void:
-		if near != null:
-			_interact(near))
+		_use())
 	prompt.visible = false
 	hud.add_child(prompt)
 
@@ -1058,15 +1196,26 @@ func _update_hud() -> void:
 		_h("כסף: ₪%d" % money),
 		_h("אוכל בבית: %d" % fridge.size()),
 		_h("שכר דירה: %s" % rent_when),
-		_h("בסל: %d מוצרים · ₪%d" % [basket.size(), _basket_total()]) if inside else "",
+		_h("בסל: %d מוצרים · ₪%d" % [basket.size(), _basket_total()]) if room == "market" else "",
+		_h("כדורים: %d" % ammo) if has_rifle and not inside else "",
+		_h("דלק: %d%%" % int(fuel)) if driving else "",
 	])
+	rifle_mesh.visible = has_rifle and _in_forest()
 	basket_mesh.visible = not basket.is_empty()
+	parcel_mesh.visible = carrying
+	for k in parcel_pile.size():
+		parcel_pile[k].visible = not (carrying and k == 0)
+	for k in shelf_boxes.size():
+		shelf_boxes[k].visible = k < parcels % (shelf_boxes.size() + 1)
 	(bars["hunger"] as ProgressBar).value = hunger
 	(bars["energy"] as ProgressBar).value = energy
 	(bars["health"] as ProgressBar).value = health
-	prompt.visible = playing and near != null and open_place == null and not busy
+	prompt.visible = playing and (near != null or near_car or driving) and open_place == null and not busy
 	if prompt.visible:
-		prompt.text = _h(near.prompt)
+		if near != null:
+			prompt.text = _h(near.prompt)
+		else:
+			prompt.text = _h("לצאת מהרכב" if driving else "להיכנס לרכב שלי")
 
 
 func _toast(text: String) -> void:
@@ -1085,7 +1234,7 @@ func _toast(text: String) -> void:
 # ---------------------------------------------------------------- audio ----
 
 ## Sounds are synthesised at startup, so the game ships no audio files.
-func _tone(f0: float, f1: float, dur: float, vol: float) -> AudioStreamWAV:
+func _tone(f0: float, f1: float, dur: float, vol: float, noise: float = 0.0) -> AudioStreamWAV:
 	var rate := 22050
 	var count := int(dur * rate)
 	var data := PackedByteArray()
@@ -1094,7 +1243,8 @@ func _tone(f0: float, f1: float, dur: float, vol: float) -> AudioStreamWAV:
 	for i in count:
 		var k := float(i) / count
 		phase += TAU * lerpf(f0, f1, k) / rate
-		data.encode_s16(i * 2, int(sin(phase) * vol * (1.0 - k) * 32000.0))
+		var wave := lerpf(sin(phase), rng.randf_range(-1.0, 1.0), noise)
+		data.encode_s16(i * 2, int(wave * vol * (1.0 - k) * 32000.0))
 	var wav := AudioStreamWAV.new()
 	wav.format = AudioStreamWAV.FORMAT_16_BITS
 	wav.mix_rate = rate
@@ -1109,6 +1259,9 @@ func _build_sounds() -> void:
 		"pay": _tone(880, 1320, 0.3, 0.25),
 		"no": _tone(220, 150, 0.3, 0.3),
 		"pick": _tone(620, 760, 0.1, 0.25),
+		"bang": _tone(140, 40, 0.35, 0.6, 0.8),
+		"alarm": _tone(500, 900, 0.5, 0.3),
+		"engine": _tone(90, 180, 0.5, 0.35, 0.25),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -1204,7 +1357,7 @@ func _build_store() -> void:
 		Vector3(-8, 0, -7.6), Vector3(-4, 0, -7.6), Vector3(0, 0, -7.6), Vector3(4, 0, -7.6), Vector3(8, 0, -7.6),
 		Vector3(1, 0, -1.5), Vector3(5, 0, -1.5), Vector3(9, 0, -1.5),
 	]
-	for pid in PRODUCTS.size():
+	for pid in slots.size():
 		_shelf(pid, STORE + slots[pid])
 
 	# Checkout: counter, till, cashier, and a mat to stand on.
@@ -1218,6 +1371,7 @@ func _build_store() -> void:
 	_sign("קופה", desk + Vector3(0, 3.2, -1.3), 72)
 	_box(Vector3(2.4, 0.04, 1.4), desk + Vector3(0, 0.03, 1.7), _mat(Color(0.95, 0.75, 0.2)))
 	var till := Place.new()
+	till.room = "market"
 	till.key = "checkout"
 	till.title = "קופה"
 	till.prompt = "לשלם בקופה"
@@ -1226,6 +1380,7 @@ func _build_store() -> void:
 
 	_box(Vector3(2.6, 0.04, 1.4), STORE + Vector3(0, 0.03, 7.9), _mat(Color(0.25, 0.7, 0.4)))
 	var out := Place.new()
+	out.room = "market"
 	out.key = "store_exit"
 	out.title = "יציאה"
 	out.prompt = "לצאת מהסופר"
@@ -1237,39 +1392,61 @@ func _interact(p: Place) -> void:
 	if busy or state != State.PLAY:
 		return
 	match p.key:
-		"market":
-			if not _is_open(p):
-				_toast("הסופר סגור. פתוח בין %s ל-%s." % [_time_text(p.open_from), _time_text(p.open_to)])
-				_play("no")
-				return
-			inside = true
-			for item in store_items:
-				item.visible = true
-			player.position = STORE + Vector3(0, 0, 5.5)
-			me.root.rotation.y = PI
-			cam_focus = player.position
-			near = null
-			_play("door")
-			_apply_daylight()
-			_toast("לחצו על מוצר במדף כדי לקחת אותו. משלמים בקופה.")
-		"store_exit":
-			if not basket.is_empty():
-				_toast("קודם משלמים בקופה, או מחזירים את המוצרים למדף.")
-				_play("no")
-				return
-			inside = false
-			focus = null
-			for place in places:
-				if place.key == "market":
-					player.position = place.door + Vector3(0, 0, 1.2)
-			me.root.rotation.y = 0.0
-			cam_focus = player.position
-			near = null
-			_play("door")
-			_apply_daylight()
-			_update_hud()
+		"home", "market", "cafe", "work", "guns":
+			_enter_room(p)
+		"store_exit", "exit":
+			_leave_room()
+		"bed":
+			_sleep()
+		"sofa":
+			_rest()
+		"parcel_in":
+			_take_parcel()
+		"parcel_out":
+			_drop_parcel()
 		_:
 			_open_panel(p)
+
+
+func _enter_room(p: Place) -> void:
+	if not _is_open(p):
+		_toast("%s: סגור עכשיו. פתוח בין %s ל-%s." % [p.title, _time_text(p.open_from), _time_text(p.open_to)])
+		_play("no")
+		return
+	inside = true
+	room = p.key
+	room_origin = ROOMS[room]["origin"]
+	room_half = ROOMS[room]["half"]
+	if room == "market":
+		for item in store_items:
+			item.visible = true
+	player.position = room_origin + Vector3(0, 0, room_half.y - 2.7)
+	me.root.rotation.y = PI
+	cam_focus = player.position
+	near = null
+	_play("door")
+	_apply_daylight()
+	_toast(ROOM_HINTS[room])
+
+
+func _leave_room() -> void:
+	if room == "market" and not basket.is_empty():
+		_toast("קודם משלמים בקופה, או מחזירים את המוצרים למדף.")
+		_play("no")
+		return
+	for place in places:
+		if place.key == room and place.room == "":
+			player.position = place.door + Vector3(0, 0, 1.2)
+	inside = false
+	room = ""
+	carrying = false
+	focus = null
+	me.root.rotation.y = 0.0
+	cam_focus = player.position
+	near = null
+	_play("door")
+	_apply_daylight()
+	_update_hud()
 
 
 func _basket_total() -> int:
@@ -1312,7 +1489,13 @@ func _update_focus() -> void:
 
 ## Click/tap position (canvas coordinates) -> the shelf item drawn under it.
 func _tap(pos: Vector2) -> void:
-	if not inside or state != State.PLAY or open_place != null or busy:
+	if state != State.PLAY or open_place != null or busy:
+		return
+	if not inside:
+		_tap_forest(pos)
+		return
+	if room != "market":
+		_tap_handles(pos)
 		return
 	var hit: Node3D
 	var best := 70.0
@@ -1391,3 +1574,764 @@ func _return_all() -> void:
 func _return_all_action() -> void:
 	_return_all()
 	_refresh_panel()
+
+
+# --------------------------------------------------------------- forest ----
+
+func _in_forest() -> bool:
+	return not inside and player.position.z > FOREST_Z - 2.0
+
+
+func _forest_point() -> Vector3:
+	return Vector3(rng.randf_range(-40, 42), 0, rng.randf_range(FOREST_Z + 6.0, FOREST_END - 4.0))
+
+
+func _pine(pos: Vector3) -> void:
+	var h := rng.randf_range(4.0, 7.0)
+	_box(Vector3(0.35, 1.4, 0.35), pos + Vector3(0, 0.7, 0), _mat(Color(0.33, 0.22, 0.13)))
+	_solid(Vector3(0.6, 2.0, 0.6), pos + Vector3(0, 1.0, 0))
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = h * 0.3
+	cone.height = h
+	cone.radial_segments = 8
+	var c := MeshInstance3D.new()
+	c.mesh = cone
+	c.material_override = _mat(Color.from_hsv(rng.randf_range(0.3, 0.38), 0.65, rng.randf_range(0.28, 0.42)))
+	c.position = pos + Vector3(0, 1.2 + h * 0.5, 0)
+	add_child(c)
+
+
+func _make_animal(big: bool) -> Animal:
+	var a := Animal.new()
+	a.big = big
+	a.node = Node3D.new()
+	if big:  # deer
+		var fur := _mat(Color(0.55, 0.36, 0.2))
+		_box(Vector3(0.55, 0.6, 1.3), Vector3(0, 1.05, 0), fur, a.node)
+		_box(Vector3(0.3, 0.7, 0.3), Vector3(0, 1.55, 0.65), fur, a.node)
+		_box(Vector3(0.32, 0.3, 0.5), Vector3(0, 1.95, 0.8), fur, a.node)
+		for sx: float in [-0.2, 0.2]:
+			_box(Vector3(0.06, 0.45, 0.06), Vector3(sx, 2.3, 0.7), _mat(Color(0.85, 0.8, 0.7)), a.node)
+			for sz: float in [-0.5, 0.5]:
+				_box(Vector3(0.14, 0.8, 0.14), Vector3(sx, 0.4, sz), fur, a.node)
+	else:    # rabbit
+		var fur := _mat(Color(0.8, 0.78, 0.74))
+		_ball(0.28, Vector3(0, 0.3, 0), fur, a.node, Vector3(1, 1, 1.4))
+		_ball(0.18, Vector3(0, 0.55, 0.3), fur, a.node)
+		for sx: float in [-0.08, 0.08]:
+			_box(Vector3(0.07, 0.35, 0.05), Vector3(sx, 0.85, 0.28), fur, a.node)
+	add_child(a.node)
+	animals.append(a)
+	return a
+
+
+func _build_forest() -> void:
+	_sign("היער", Vector3(0, 3.0, FOREST_Z - 3.0), 110)
+	_box(Vector3(0.2, 2.6, 0.2), Vector3(0, 1.3, FOREST_Z - 3.0), _mat(Color(0.3, 0.2, 0.12)))
+	for k in 150:
+		var pos := Vector3(rng.randf_range(-70, 70), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
+		if absf(pos.x) < 3.0 and pos.z < FOREST_Z + 14.0:
+			continue                       # keep a path in from the sign
+		_pine(pos)
+	for k in 8:
+		_make_animal(k < 4)
+	for k in 3:
+		var t := _make_person(Color(0.85, 0.08, 0.08), Color(0.6, 0.05, 0.05))
+		add_child(t.root)
+		thugs.append(t)
+	_reset_forest()
+
+
+func _reset_forest() -> void:
+	rob_cool = 0.0
+	for a in animals:
+		a.dead = false
+		a.gone = 0.0
+		a.scared = 0.0
+		a.node.visible = true
+		a.node.rotation = Vector3.ZERO
+		a.node.position = _forest_point()
+	for t in thugs:
+		t.chasing = false
+		t.wait = 0.0
+		t.root.position = _forest_point() + Vector3(0, 0, 12)
+		t.root.position.z = minf(t.root.position.z, FOREST_END - 2.0)
+		t.target = t.root.position
+
+
+func _update_forest(delta: float) -> void:
+	shot_cool = maxf(shot_cool - delta, 0.0)
+	rob_cool = maxf(rob_cool - delta, 0.0)
+	var here := player.position
+	for a in animals:
+		if a.gone > 0.0:
+			a.gone -= delta
+			if a.gone <= 0.0:
+				a.dead = false
+				a.node.visible = true
+				a.node.rotation = Vector3.ZERO
+				a.node.position = _forest_point()
+			continue
+		if a.dead:
+			if a.node.position.distance_to(here) < 1.9:
+				_collect(a)
+			continue
+		var away := a.node.position - here
+		away.y = 0.0
+		a.scared = maxf(a.scared - delta, 0.0)
+		if away.length() < 7.0 and not inside:
+			a.scared = 1.5
+		var speed := 0.0
+		if a.scared > 0.0:
+			a.heading = away.normalized()
+			speed = 7.5 if a.big else 6.0
+		else:
+			a.timer -= delta
+			if a.timer <= 0.0:
+				a.timer = rng.randf_range(1.5, 4.5)
+				var angle := rng.randf() * TAU
+				a.heading = Vector3(cos(angle), 0, sin(angle)) if rng.randf() < 0.65 else Vector3.ZERO
+			speed = 1.6
+		if a.heading != Vector3.ZERO:
+			a.node.position += a.heading * speed * delta
+			a.node.rotation.y = lerp_angle(a.node.rotation.y, atan2(a.heading.x, a.heading.z), 8.0 * delta)
+		a.node.position.x = clampf(a.node.position.x, -42.0, 44.0)
+		a.node.position.z = clampf(a.node.position.z, FOREST_Z + 3.0, FOREST_END - 2.0)
+
+	for t in thugs:
+		var to_me := here - t.root.position
+		to_me.y = 0.0
+		var dist := to_me.length()
+		var in_reach := _in_forest() and here.z > FOREST_Z + 1.0
+		if t.chasing and (not in_reach or dist > 24.0 or rob_cool > 0.0):
+			t.chasing = false
+		elif not t.chasing and in_reach and dist < 13.0 and rob_cool <= 0.0:
+			t.chasing = true
+			_toast("אדם רע באדום רודף אחריך! ברח מהיער!")
+			_play("alarm")
+		var step := Vector3.ZERO
+		if t.chasing:
+			step = to_me.normalized() * 5.6
+			if dist < 1.3:
+				_robbed()
+		else:
+			var to_target := t.target - t.root.position
+			if to_target.length() < 1.0:
+				t.wait -= delta
+				if t.wait <= 0.0:
+					t.wait = rng.randf_range(1.0, 4.0)
+					t.target = _forest_point()
+			else:
+				step = to_target.normalized() * 2.0
+		t.root.position += step * delta
+		t.root.position.z = maxf(t.root.position.z, FOREST_Z + 2.0)
+		if step != Vector3.ZERO:
+			t.root.rotation.y = lerp_angle(t.root.rotation.y, atan2(step.x, step.z), 10.0 * delta)
+		_animate(t, step != Vector3.ZERO, delta * (1.8 if t.chasing else 1.0))
+
+
+func _robbed() -> void:
+	var stolen := mini(money, maxi(50, int(money * 0.3)))
+	money -= stolen
+	health = maxf(health - 12.0, 1.0)
+	rob_cool = 18.0
+	for t in thugs:
+		t.chasing = false
+		t.target = _forest_point()
+	_play("no")
+	_toast("שדדו אותך! לקחו לך ₪%d. צא מהיער!" % stolen)
+
+
+func _nearest_animal() -> Animal:
+	var best: Animal
+	var best_d := 30.0
+	for a in animals:
+		if a.dead or a.gone > 0.0:
+			continue
+		var d := a.node.position.distance_to(player.position)
+		if d < best_d:
+			best_d = d
+			best = a
+	return best
+
+
+## Tap or click on an animal on screen to shoot at it.
+func _tap_forest(pos: Vector2) -> void:
+	if not _in_forest():
+		return
+	var hit: Animal
+	var best := 80.0
+	for a in animals:
+		if a.dead or a.gone > 0.0:
+			continue
+		var world := a.node.position + Vector3(0, 1.0 if a.big else 0.4, 0)
+		if cam.is_position_behind(world):
+			continue
+		var d := cam.unproject_position(world).distance_to(pos)
+		if d < best:
+			best = d
+			hit = a
+	if hit != null:
+		_shoot(hit)
+
+
+func _shoot(a: Animal) -> void:
+	if a == null or shot_cool > 0.0:
+		return
+	if not has_rifle:
+		_toast("כדי לצוד צריך רובה ציד. קונים אותו בחנות הנשק ברחוב.")
+		shot_cool = 1.0
+		return
+	if ammo <= 0:
+		_toast("נגמרו הכדורים. קונים עוד בחנות הנשק.")
+		_play("no")
+		shot_cool = 1.0
+		return
+	var to_animal := a.node.position - player.position
+	to_animal.y = 0.0
+	var dist := to_animal.length()
+	if dist > 30.0:
+		_toast("רחוק מדי. צריך להתקרב בשקט.")
+		shot_cool = 0.5
+		return
+	ammo -= 1
+	shot_cool = 0.9
+	reach = 0.4
+	me.root.rotation.y = atan2(to_animal.x, to_animal.z)
+	_play("bang")
+	for other in animals:                  # the shot startles everything nearby
+		if other.node.position.distance_to(player.position) < 35.0:
+			other.scared = 4.0
+			var flee: Vector3 = other.node.position - player.position
+			flee.y = 0.0
+			other.heading = flee.normalized()
+	# Close shots always hit; far ones often miss, more so at small targets.
+	var chance := clampf(1.25 - dist / (32.0 if a.big else 24.0), 0.1, 1.0)
+	if rng.randf() < chance:
+		a.dead = true
+		a.scared = 0.0
+		a.node.rotation.z = PI * 0.5
+		_toast("פגעת! לך לאסוף את הבשר.")
+	else:
+		_toast("פספסת! החיה בורחת.")
+	_update_hud()
+
+
+func _collect(a: Animal) -> void:
+	var pieces := 2 if a.big else 1
+	var room := FRIDGE_MAX - fridge.size()
+	if room <= 0:
+		if a.timer <= 0.0:                 # do not repeat the message every frame
+			_toast("אין מקום במקרר לבשר. מכור או אכול משהו קודם.")
+		a.timer = 3.0
+		return
+	pieces = mini(pieces, room)
+	for k in pieces:
+		fridge.append(MEAT)
+	a.gone = 50.0
+	a.node.visible = false
+	_play("pick")
+	_toast("אספת %d נתחי בשר ציד. אפשר לאכול בבית או למכור בחנות הנשק." % pieces)
+
+
+func _buy_rifle() -> void:
+	if has_rifle:
+		_toast("כבר יש לך רובה ציד.")
+		return
+	if money < RIFLE_PRICE:
+		_toast("אין מספיק כסף (חסרים ₪%d)." % (RIFLE_PRICE - money))
+		_play("no")
+		return
+	money -= RIFLE_PRICE
+	has_rifle = true
+	ammo += 5
+	_play("pay")
+	_toast("קנית רובה ציד, וקיבלת 5 כדורים. היער נמצא מדרום לפארק.")
+	_refresh_panel()
+
+
+func _buy_ammo() -> void:
+	if not has_rifle:
+		_toast("קודם צריך לקנות רובה ציד.")
+		return
+	if money < AMMO_PRICE:
+		_toast("אין מספיק כסף.")
+		_play("no")
+		return
+	money -= AMMO_PRICE
+	ammo += 10
+	_play("pay")
+	_toast("קנית 10 כדורים.")
+	_refresh_panel()
+
+
+func _sell_meat() -> void:
+	var at := fridge.find(MEAT)
+	if at < 0:
+		return
+	fridge.remove_at(at)
+	money += int(PRODUCTS[MEAT]["price"])
+	_play("pay")
+	_toast("מכרת נתח בשר ציד.")
+	_refresh_panel()
+
+
+# ----------------------------------------------------------------- cars ----
+
+func _make_car(color: Color) -> Node3D:
+	var n := Node3D.new()
+	_box(Vector3(1.9, 0.6, 4.2), Vector3(0, 0.7, 0), _mat(color), n)
+	_box(Vector3(1.7, 0.6, 2.2), Vector3(0, 1.3, -0.25), _mat(Color(0.2, 0.3, 0.42)), n)
+	_box(Vector3(1.72, 0.1, 2.22), Vector3(0, 1.62, -0.25), _mat(color.darkened(0.15)), n)
+	var wheel := CylinderMesh.new()
+	wheel.top_radius = 0.38
+	wheel.bottom_radius = 0.38
+	wheel.height = 0.3
+	var rubber := _mat(Color(0.08, 0.08, 0.09))
+	for sx: float in [-0.95, 0.95]:
+		for sz: float in [-1.35, 1.35]:
+			var w := MeshInstance3D.new()
+			w.mesh = wheel
+			w.material_override = rubber
+			w.rotation.z = PI * 0.5
+			w.position = Vector3(sx, 0.38, sz)
+			n.add_child(w)
+		_box(Vector3(0.4, 0.2, 0.08), Vector3(sx * 0.65, 0.78, 2.11), lamp_mat, n)
+		_box(Vector3(0.4, 0.2, 0.08), Vector3(sx * 0.65, 0.78, -2.11), _mat(Color(0.8, 0.05, 0.05)), n)
+	add_child(n)
+	return n
+
+
+func _build_cars() -> void:
+	car = _make_car(Color(0.15, 0.4, 0.85))
+	var block := StaticBody3D.new()
+	car_block = CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.9, 1.6, 4.2)
+	car_block.shape = shape
+	car_block.position.y = 0.8
+	block.add_child(car_block)
+	car.add_child(block)
+
+	# Two lanes of traffic that loop along the street.
+	for k in 5:
+		var t := _make_car(Color.from_hsv(rng.randf(), rng.randf_range(0.2, 0.75), rng.randf_range(0.5, 0.95)))
+		var east := k % 2 == 0
+		t.position = Vector3(rng.randf_range(-80, 80), 0, 3.6 if east else 1.5)
+		t.rotation.y = PI * 0.5 if east else -PI * 0.5
+		t.set_meta("dir", 1.0 if east else -1.0)
+		t.set_meta("top", rng.randf_range(7.0, 11.0))
+		t.set_meta("speed", 8.0)
+		traffic.append(t)
+
+	# Petrol pump on the far pavement.
+	_box(Vector3(0.8, 1.8, 0.6), GAS_PUMP + Vector3(0, 0.9, 0), _mat(Color(0.85, 0.15, 0.12)))
+	_box(Vector3(0.6, 0.5, 0.62), GAS_PUMP + Vector3(0, 1.3, 0), _mat(Color(0.92, 0.92, 0.9)))
+	_box(Vector3(2.6, 0.2, 2.0), GAS_PUMP + Vector3(0, 3.2, 0), _mat(Color(0.85, 0.15, 0.12)))
+	for sx: float in [-1.1, 1.1]:
+		_box(Vector3(0.15, 3.2, 0.15), GAS_PUMP + Vector3(sx, 1.6, 0.6), _mat(Color(0.3, 0.3, 0.32)))
+	_solid(Vector3(0.8, 1.8, 0.6), GAS_PUMP + Vector3(0, 0.9, 0))
+	_sign("דלק", GAS_PUMP + Vector3(0, 3.9, 0), 80)
+	var gas := Place.new()
+	gas.key = "gas"
+	gas.title = "תחנת דלק"
+	gas.prompt = "לתדלק"
+	gas.door = GAS_PUMP + Vector3(0, 0, -1.6)
+	places.append(gas)
+
+
+func _park_car(pos: Vector3, heading: float) -> void:
+	driving = false
+	near_car = false
+	car_speed = 0.0
+	car_heading = heading
+	if car != null:
+		car.position = pos
+		car.rotation.y = heading
+		car_block.disabled = false
+	body_shape.radius = 0.4
+	body_shape.height = 1.9
+	if me.root != null:
+		me.root.visible = true
+
+
+## The one "do the obvious thing here" button: E, Enter, Space or the prompt.
+func _use() -> void:
+	if state != State.PLAY or open_place != null or busy:
+		return
+	if driving:
+		if near != null:
+			_interact(near)
+		elif absf(car_speed) > 3.0:
+			_toast("קודם עוצרים את הרכב.")
+		else:
+			_exit_car()
+	elif near != null:
+		_interact(near)
+	elif focus != null:
+		_pick(focus)
+	elif near_car:
+		_enter_car()
+	elif _in_forest():
+		_shoot(_nearest_animal())
+
+
+func _enter_car() -> void:
+	driving = true
+	near_car = false
+	car_speed = 0.0
+	car_block.disabled = true
+	body_shape.radius = 0.9
+	player.position = car.position
+	me.root.visible = false
+	_play("engine")
+	if fuel <= 0.0:
+		_toast("אין דלק ברכב.")
+	else:
+		_toast("נוסעים! מכוונים עם החיצים או עם האצבע.")
+
+
+func _exit_car() -> void:
+	var left := Vector3(cos(car_heading), 0, -sin(car_heading))
+	var spot := car.position
+	_park_car(car.position, car_heading)
+	player.position = spot + left * 1.9
+	if player.position.z < -5.4:               # never step out into a building
+		player.position = spot - left * 1.9
+	_play("door")
+	_save()
+
+
+func _drive(input: Vector2, delta: float) -> void:
+	var want := Vector3(input.x, 0, input.y)
+	if want.length() > 0.15 and fuel > 0.0:
+		var grip := clampf(absf(car_speed) / 4.0, 0.35, 1.0)
+		car_heading = rotate_toward(car_heading, atan2(want.x, want.z), 2.8 * grip * delta)
+		car_speed = move_toward(car_speed, CAR_TOP_SPEED * minf(want.length(), 1.0), 9.0 * delta)
+	else:
+		car_speed = move_toward(car_speed, 0.0, 14.0 * delta)
+	var before := player.position
+	player.velocity = Vector3(sin(car_heading), 0, cos(car_heading)) * car_speed + Vector3(0, -4.0, 0)
+	player.move_and_slide()
+	var moved := Vector3(player.position.x - before.x, 0, player.position.z - before.z).length()
+	if delta > 0.0 and moved < absf(car_speed) * delta * 0.5:
+		car_speed = moved / delta                # ran into something
+	var had_fuel := fuel > 0.0
+	fuel = maxf(fuel - moved / 12.0, 0.0)
+	if had_fuel and fuel <= 0.0:
+		_toast("נגמר הדלק! צריך ללכת ברגל, או לתדלק בפעם הבאה בזמן.")
+		_play("no")
+
+
+func _update_traffic(delta: float) -> void:
+	var mine := player.position if not inside else Vector3(0, 0, 999)
+	for t in traffic:
+		var dir: float = t.get_meta("dir")
+		var want: float = t.get_meta("top")
+		# Brake for the player (on foot or in the car), a parked car, or the car ahead.
+		var blockers: Array[Vector3] = [mine, car.position]
+		for other in traffic:
+			if other != t:
+				blockers.append(other.position)
+		for b in blockers:
+			var ahead := (b.x - t.position.x) * dir
+			if ahead > 0.0 and ahead < 9.0 and absf(b.z - t.position.z) < 2.0:
+				want = 0.0
+		var now: float = move_toward(t.get_meta("speed"), want, 12.0 * delta)
+		t.set_meta("speed", now)
+		t.position.x += dir * now * delta
+		if t.position.x * dir > 85.0:
+			t.position.x = -85.0 * dir
+
+
+func _fuel_price() -> int:
+	return int(ceilf((100.0 - fuel) * 0.7))
+
+
+func _refuel() -> void:
+	var price := _fuel_price()
+	if money < price:
+		_toast("אין מספיק כסף לתדלוק מלא (₪%d)." % price)
+		_play("no")
+		return
+	money -= price
+	fuel = 100.0
+	_play("pay")
+	_toast("המכל מלא.")
+	_refresh_panel()
+
+
+# ------------------------------------------------------------ interiors ----
+
+## Floor, three walls (the camera side stays open) and a way out.
+func _room(key: String, floor_color: Color, wall_color: Color) -> Vector3:
+	var o: Vector3 = ROOMS[key]["origin"]
+	var half: Vector2 = ROOMS[key]["half"]
+	var w := half.x * 2.0 + 2.0
+	var d := half.y * 2.0 + 2.0
+	_box(Vector3(w, 1, d), o + Vector3(0, -0.5, 0), _mat(floor_color))
+	_solid(Vector3(w, 1, d), o + Vector3(0, -0.5, 0))
+	var wall := _mat(wall_color)
+	_box(Vector3(w, 4.5, 0.5), o + Vector3(0, 2.25, -half.y - 0.75), wall)
+	_solid(Vector3(w, 4.5, 0.5), o + Vector3(0, 2.25, -half.y - 0.75))
+	for side: float in [-1.0, 1.0]:
+		_box(Vector3(0.5, 4.5, d), o + Vector3(side * (half.x + 0.75), 2.25, 0), wall)
+		_solid(Vector3(0.5, 4.5, d), o + Vector3(side * (half.x + 0.75), 2.25, 0))
+	_box(Vector3(2.6, 0.04, 1.4), o + Vector3(0, 0.03, half.y - 0.3), _mat(Color(0.25, 0.7, 0.4)))
+	var out := Place.new()
+	out.room = key
+	out.key = "exit"
+	out.title = "יציאה"
+	out.prompt = "לצאת החוצה"
+	out.door = o + Vector3(0, 0, half.y - 0.3)
+	places.append(out)
+	return o
+
+
+## A place to stand (marked on the floor) where E or the prompt button acts.
+func _spot(room_key: String, key: String, title: String, prompt_text: String, pos: Vector3) -> Place:
+	_box(Vector3(1.6, 0.04, 1.2), pos + Vector3(0, 0.03, 0), _mat(Color(0.95, 0.75, 0.2)))
+	var p := Place.new()
+	p.room = room_key
+	p.key = key
+	p.title = title
+	p.prompt = prompt_text
+	p.door = pos
+	places.append(p)
+	return p
+
+
+## Something you can click or tap with your hand when you stand close to it.
+func _handle(node: Node3D, room_key: String, action: Callable) -> void:
+	handles.append({"node": node, "room": room_key, "action": action})
+
+
+func _tap_handles(pos: Vector2) -> void:
+	var hit: Dictionary = {}
+	var best := 90.0
+	for h in handles:
+		if h["room"] != room:
+			continue
+		var node: Node3D = h["node"]
+		if not node.visible or cam.is_position_behind(node.global_position):
+			continue
+		var d := cam.unproject_position(node.global_position).distance_to(pos)
+		if d < best:
+			best = d
+			hit = h
+	if hit.is_empty():
+		return
+	var target: Node3D = hit["node"]
+	var to_target := target.global_position - player.position
+	if Vector3(to_target.x, 0, to_target.z).length() > 3.4:
+		_toast("צריך להתקרב כדי להגיע עם היד.")
+		return
+	reach = 0.35
+	me.root.rotation.y = atan2(to_target.x, to_target.z)
+	(hit["action"] as Callable).call()
+
+
+func _tag(text: String, pos: Vector3, size: int = 52) -> void:
+	var l := Label3D.new()
+	l.text = _h(text)
+	l.font = font
+	l.font_size = size
+	l.pixel_size = 0.01
+	l.outline_size = 14
+	l.outline_modulate = Color(0.05, 0.08, 0.15)
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.position = pos
+	add_child(l)
+
+
+func _chair(pos: Vector3, back_side: float, color: Color) -> void:
+	var m := _mat(color)
+	_box(Vector3(0.6, 0.1, 0.6), pos + Vector3(0, 0.55, 0), m)
+	_box(Vector3(0.6, 0.7, 0.1), pos + Vector3(0, 0.95, back_side * 0.25), m)
+	for sx: float in [-0.25, 0.25]:
+		for sz: float in [-0.25, 0.25]:
+			_box(Vector3(0.08, 0.5, 0.08), pos + Vector3(sx, 0.25, sz), m)
+
+
+func _table(pos: Vector3, size: Vector2, color: Color) -> void:
+	var m := _mat(color)
+	_box(Vector3(size.x, 0.1, size.y), pos + Vector3(0, 0.95, 0), m)
+	for sx: float in [-1.0, 1.0]:
+		for sz: float in [-1.0, 1.0]:
+			_box(Vector3(0.12, 0.9, 0.12), pos + Vector3(sx * (size.x * 0.5 - 0.12), 0.45, sz * (size.y * 0.5 - 0.12)), m)
+	_solid(Vector3(size.x, 1.0, size.y), pos + Vector3(0, 0.5, 0))
+
+
+func _build_interiors() -> void:
+	_build_home()
+	_build_cafe()
+	_build_work()
+	_build_gun_shop()
+
+
+func _build_home() -> void:
+	var o := _room("home", Color(0.62, 0.48, 0.34), Color(0.86, 0.8, 0.68))
+	var wood := Color(0.45, 0.3, 0.18)
+	_box(Vector3(5.0, 0.03, 3.6), o + Vector3(1.5, 0.02, 1.0), _mat(Color(0.6, 0.2, 0.22)))      # rug
+
+	# Bed
+	var bed := o + Vector3(-5.6, 0, -3.8)
+	_box(Vector3(2.2, 0.5, 3.6), bed + Vector3(0, 0.25, 0), _mat(wood))
+	var mattress := _box(Vector3(2.0, 0.25, 3.4), bed + Vector3(0, 0.62, 0), _mat(Color(0.93, 0.93, 0.9)))
+	_box(Vector3(2.02, 0.27, 2.0), bed + Vector3(0, 0.64, 0.7), _mat(Color(0.25, 0.4, 0.75)))
+	_box(Vector3(1.4, 0.2, 0.7), bed + Vector3(0, 0.85, -1.25), _mat(Color(1, 1, 1)))
+	_box(Vector3(2.2, 1.3, 0.2), bed + Vector3(0, 0.65, -1.85), _mat(wood))
+	_solid(Vector3(2.2, 1.0, 3.6), bed + Vector3(0, 0.5, 0))
+	_tag("מיטה", bed + Vector3(0, 2.0, 0))
+	var bed_spot := _spot("home", "bed", "מיטה", "לישון במיטה", bed + Vector3(2.0, 0, 0.6))
+	_handle(mattress, "home", _interact.bind(bed_spot))
+
+	# Fridge and kitchen counter
+	var fridge_pos := o + Vector3(-2.2, 0, -5.4)
+	var fridge_box := _box(Vector3(1.1, 2.2, 0.9), fridge_pos + Vector3(0, 1.1, 0), _mat(Color(0.82, 0.85, 0.88)))
+	_box(Vector3(0.06, 0.8, 0.06), fridge_pos + Vector3(0.38, 1.3, 0.48), _mat(Color(0.3, 0.3, 0.32)))
+	_solid(Vector3(1.1, 2.2, 0.9), fridge_pos + Vector3(0, 1.1, 0))
+	_tag("מקרר", fridge_pos + Vector3(0, 2.7, 0))
+	var fridge_spot := _spot("home", "fridge", "המקרר", "לפתוח את המקרר", fridge_pos + Vector3(0, 0, 1.3))
+	_handle(fridge_box, "home", _interact.bind(fridge_spot))
+	_box(Vector3(2.8, 1.0, 0.8), o + Vector3(0.2, 0.5, -5.5), _mat(Color(0.9, 0.9, 0.86)))
+	_box(Vector3(2.8, 0.08, 0.85), o + Vector3(0.2, 1.04, -5.5), _mat(Color(0.3, 0.3, 0.33)))
+	_box(Vector3(0.8, 0.05, 0.5), o + Vector3(0.6, 1.09, -5.5), _mat(Color(0.6, 0.65, 0.7)))
+	_solid(Vector3(2.8, 1.1, 0.8), o + Vector3(0.2, 0.55, -5.5))
+
+	# Sofa
+	var sofa := o + Vector3(4.6, 0, -5.0)
+	var fabric := _mat(Color(0.3, 0.5, 0.45))
+	var seat := _box(Vector3(3.2, 0.5, 1.1), sofa + Vector3(0, 0.35, 0), fabric)
+	_box(Vector3(3.2, 1.0, 0.3), sofa + Vector3(0, 0.8, -0.45), fabric)
+	for sx: float in [-1.5, 1.5]:
+		_box(Vector3(0.3, 0.8, 1.1), sofa + Vector3(sx, 0.5, 0), fabric)
+	_solid(Vector3(3.2, 1.0, 1.1), sofa + Vector3(0, 0.5, 0))
+	_tag("ספה", sofa + Vector3(0, 2.0, 0))
+	var sofa_spot := _spot("home", "sofa", "ספה", "לנוח על הספה", sofa + Vector3(0, 0, 1.4))
+	_handle(seat, "home", _interact.bind(sofa_spot))
+
+	# Dining table with four chairs
+	var table := o + Vector3(1.5, 0, 1.0)
+	_table(table, Vector2(2.4, 1.3), wood)
+	for sx: float in [-0.65, 0.65]:
+		_chair(table + Vector3(sx, 0, 1.05), 1.0, wood.lightened(0.15))
+		_chair(table + Vector3(sx, 0, -1.05), -1.0, wood.lightened(0.15))
+	_box(Vector3(0.35, 0.06, 0.35), table + Vector3(0, 1.03, 0), _mat(Color(0.95, 0.95, 0.9)))    # plate
+
+	# Wardrobe and a floor lamp
+	_box(Vector3(1.8, 2.6, 0.8), o + Vector3(-5.9, 1.3, 1.5), _mat(wood.darkened(0.1)))
+	_solid(Vector3(1.8, 2.6, 0.8), o + Vector3(-5.9, 1.3, 1.5))
+	_box(Vector3(0.1, 1.9, 0.1), o + Vector3(6.3, 0.95, -3.4), _mat(Color(0.2, 0.2, 0.22)))
+	_box(Vector3(0.6, 0.45, 0.6), o + Vector3(6.3, 2.05, -3.4), lamp_mat)
+
+
+func _build_cafe() -> void:
+	var o := _room("cafe", Color(0.5, 0.36, 0.26), Color(0.9, 0.82, 0.68))
+	var wood := Color(0.4, 0.26, 0.15)
+	_box(Vector3(6.0, 1.1, 1.0), o + Vector3(0, 0.55, -4.2), _mat(wood))
+	_box(Vector3(6.1, 0.08, 1.1), o + Vector3(0, 1.14, -4.2), _mat(Color(0.85, 0.8, 0.7)))
+	_solid(Vector3(6.0, 1.1, 1.0), o + Vector3(0, 0.55, -4.2))
+	var barista := _make_person(Color(0.25, 0.25, 0.28), Color(0.15, 0.15, 0.18))
+	barista.root.position = o + Vector3(0, 0, -5.4)
+	add_child(barista.root)
+
+	var meal := Node3D.new()
+	meal.position = o + Vector3(-1.6, 1.18, -4.1)
+	add_child(meal)
+	_box(Vector3(0.7, 0.05, 0.7), Vector3.ZERO, _mat(Color(0.96, 0.96, 0.93)), meal)
+	_ball(0.2, Vector3(-0.1, 0.15, 0), _mat(Color(0.7, 0.4, 0.2)), meal, Vector3(1.2, 0.7, 1))
+	_ball(0.12, Vector3(0.2, 0.1, 0.1), _mat(Color(0.3, 0.65, 0.25)), meal)
+	_tag("ארוחה חמה ₪55", meal.position + Vector3(0, 1.0, 0))
+	_handle(meal, "cafe", _cafe.bind(55, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
+
+	var cup := Node3D.new()
+	cup.position = o + Vector3(1.6, 1.18, -4.1)
+	add_child(cup)
+	_box(Vector3(0.28, 0.3, 0.28), Vector3(0, 0.15, 0), _mat(Color(0.95, 0.95, 0.95)), cup)
+	_box(Vector3(0.22, 0.02, 0.22), Vector3(0, 0.31, 0), _mat(Color(0.3, 0.18, 0.1)), cup)
+	_tag("קפה ₪14", cup.position + Vector3(0, 1.0, 0))
+	_handle(cup, "cafe", _cafe.bind(14, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
+
+	_spot("cafe", "cafe_counter", "קפה ומסעדה", "להזמין בדלפק", o + Vector3(0, 0, -2.8))
+	for x: float in [-5.0, 5.0]:
+		var t := o + Vector3(x, 0, 0.5)
+		_table(t, Vector2(1.4, 1.4), wood.lightened(0.2))
+		_chair(t + Vector3(0, 0, 1.15), 1.0, wood)
+		_chair(t + Vector3(0, 0, -1.15), -1.0, wood)
+
+
+func _build_work() -> void:
+	var o := _room("work", Color(0.5, 0.52, 0.55), Color(0.7, 0.74, 0.8))
+	var metal := Color(0.4, 0.42, 0.46)
+	var carton := _mat(Color(0.72, 0.55, 0.32))
+
+	# Table with the parcels waiting to be shelved.
+	var desk := o + Vector3(-7, 0, -2.5)
+	_table(desk, Vector2(3.0, 1.5), metal)
+	for k in 4:
+		var box := _box(Vector3(0.6, 0.5, 0.6), desk + Vector3(-0.95 + k * 0.65, 1.25, 0), carton)
+		parcel_pile.append(box)
+		_handle(box, "work", _take_parcel)
+	_tag("חבילות", desk + Vector3(0, 2.3, 0))
+	_spot("work", "parcel_in", "חבילות", "לקחת חבילה", desk + Vector3(0, 0, 1.6))
+
+	# Shelf where they go.
+	var shelf := o + Vector3(7, 0, -6.3)
+	_box(Vector3(4.2, 3.0, 0.15), shelf + Vector3(0, 1.5, -0.35), _mat(metal))
+	var board: MeshInstance3D
+	for y: float in [0.6, 1.6, 2.6]:
+		board = _box(Vector3(4.2, 0.1, 0.9), shelf + Vector3(0, y, 0), _mat(metal))
+		if is_equal_approx(y, 1.6):
+			_handle(board, "work", _drop_parcel)
+	_solid(Vector3(4.2, 3.0, 0.9), shelf + Vector3(0, 1.5, 0))
+	for k in 8:
+		var stored := _box(Vector3(0.6, 0.5, 0.6), shelf + Vector3(-1.5 + (k % 4) * 1.0, 0.9 + (k / 4) * 1.0, 0), carton)
+		stored.visible = false
+		shelf_boxes.append(stored)
+	_tag("מדף", shelf + Vector3(0, 3.6, 0))
+	_spot("work", "parcel_out", "מדף", "לשים חבילה על המדף", shelf + Vector3(0, 0, 1.4))
+
+	# Office corner: two desks with screens, and the manager.
+	for x: float in [-2.0, 1.5]:
+		var d := o + Vector3(x, 0, -5.6)
+		_table(d, Vector2(2.2, 1.1), Color(0.75, 0.72, 0.66))
+		_box(Vector3(0.9, 0.6, 0.08), d + Vector3(0, 1.4, -0.2), _mat(Color(0.1, 0.12, 0.16)))
+		_box(Vector3(0.1, 0.2, 0.1), d + Vector3(0, 1.1, -0.2), _mat(Color(0.1, 0.12, 0.16)))
+		_chair(d + Vector3(0, 0, 1.0), 1.0, Color(0.2, 0.22, 0.28))
+	var boss := _make_person(Color(0.9, 0.9, 0.92), Color(0.15, 0.17, 0.25))
+	boss.root.position = o + Vector3(-4.2, 0, -5.2)
+	add_child(boss.root)
+	_tag("המנהל", boss.root.position + Vector3(0, 2.6, 0))
+
+
+func _build_gun_shop() -> void:
+	var o := _room("guns", Color(0.36, 0.34, 0.3), Color(0.55, 0.57, 0.5))
+	_box(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.2), _mat(Color(0.3, 0.24, 0.18)))
+	_solid(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.2))
+	var seller := _make_person(Color(0.35, 0.4, 0.25), Color(0.2, 0.2, 0.18))
+	seller.root.position = o + Vector3(0, 0, -4.4)
+	add_child(seller.root)
+
+	var rifle := Node3D.new()
+	rifle.position = o + Vector3(-1.5, 1.2, -3.1)
+	add_child(rifle)
+	_box(Vector3(1.5, 0.1, 0.1), Vector3(0.15, 0.05, 0), _mat(Color(0.15, 0.15, 0.17)), rifle)
+	_box(Vector3(0.6, 0.18, 0.12), Vector3(-0.7, 0.03, 0), _mat(Color(0.4, 0.26, 0.14)), rifle)
+	_tag("רובה ציד ₪%d" % RIFLE_PRICE, rifle.position + Vector3(0, 0.9, 0))
+	_handle(rifle, "guns", _buy_rifle)
+
+	var box := Node3D.new()
+	box.position = o + Vector3(1.5, 1.2, -3.1)
+	add_child(box)
+	for k in 3:
+		_box(Vector3(0.3, 0.2, 0.22), Vector3(-0.35 + k * 0.35, 0.1, 0), _mat(Color(0.75, 0.6, 0.15)), box)
+	_tag("10 כדורים ₪%d" % AMMO_PRICE, box.position + Vector3(0, 0.9, 0))
+	_handle(box, "guns", _buy_ammo)
+
+	_spot("guns", "gun_counter", "חנות נשק", "לדבר עם המוכר", o + Vector3(0, 0, -1.8))
+	# Display racks along the walls.
+	for side: float in [-1.0, 1.0]:
+		_box(Vector3(0.4, 2.4, 3.0), o + Vector3(side * 5.6, 1.2, -2.0), _mat(Color(0.25, 0.2, 0.15)))
+		_solid(Vector3(0.4, 2.4, 3.0), o + Vector3(side * 5.6, 1.2, -2.0))
