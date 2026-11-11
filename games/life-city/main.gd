@@ -2,28 +2,28 @@ extends Node3D
 ## Life in the City: a small everyday-life sim. Walk around town, work shifts
 ## for money, buy food, eat, sleep and pay the rent. The scene is built in code.
 
-const HOUR_SECONDS := 25.0         # real seconds per game hour while walking
+const HOUR_SECONDS := 40.0         # real seconds per game hour while walking
 const WALK_SPEED := 7.0
-const RENT := 450
+const RENT := 300
 const RENT_DAYS := 3
 const SHIFT_HOURS := 4.0
 const FRIDGE_MAX := 12
 const ITEM_SCALE := 1.5
 const STORE := Vector3(0, 0, -200)   # the supermarket interior lives far from the street
 const PRODUCTS: Array[Dictionary] = [
-	{"name": "לחם", "price": 9, "food": 22.0},
-	{"name": "גבינה", "price": 14, "food": 18.0},
-	{"name": "חלב", "price": 7, "food": 12.0},
-	{"name": "תפוח", "price": 3, "food": 8.0},
-	{"name": "פסטה", "price": 8, "food": 30.0},
-	{"name": "ביצים", "price": 13, "food": 28.0},
-	{"name": "עוף", "price": 32, "food": 55.0},
-	{"name": "שוקולד", "price": 7, "food": 10.0},
+	{"name": "לחם", "price": 6, "food": 22.0},
+	{"name": "גבינה", "price": 9, "food": 18.0},
+	{"name": "חלב", "price": 5, "food": 12.0},
+	{"name": "תפוח", "price": 2, "food": 8.0},
+	{"name": "פסטה", "price": 5, "food": 30.0},
+	{"name": "ביצים", "price": 8, "food": 28.0},
+	{"name": "עוף", "price": 20, "food": 55.0},
+	{"name": "שוקולד", "price": 4, "food": 10.0},
 	{"name": "בשר ציד", "price": 80, "food": 45.0},   # only from hunting, never on a shelf
 ]
 const MEAT := 8
-const RIFLE_PRICE := 600
-const AMMO_PRICE := 40
+const RIFLE_PRICE := 350
+const AMMO_PRICE := 20
 const FOREST_Z := 36.0             # the forest starts this far south of the street
 const FOREST_END := 100.0
 const ROOMS := {
@@ -35,6 +35,8 @@ const ROOMS := {
 	"clinic": {"origin": Vector3(800, 0, -200), "half": Vector2(7, 5.5)},
 	"diner": {"origin": Vector3(1000, 0, -200), "half": Vector2(9, 6.5)},
 	"build": {"origin": Vector3(1200, 0, -200), "half": Vector2(10, 7)},
+	"music": {"origin": Vector3(1400, 0, -200), "half": Vector2(6, 5)},
+	"hall": {"origin": Vector3(1600, 0, -200), "half": Vector2(11, 8)},
 }
 const ROOM_HINTS := {
 	"home": "בבית: לוחצים על המיטה, המקרר או הספה.",
@@ -45,6 +47,8 @@ const ROOM_HINTS := {
 	"clinic": "לחצו על הרופאה כדי לקבל טיפול.",
 	"diner": "עבודה במסעדה: לוקחים מנה מהמטבח ומגישים לשולחן.",
 	"build": "עבודה בבנייה: לוקחים לבנים מהערימה ומניחים בקיר.",
+	"music": "לחצו על הגיטרה כדי לקנות אותה, או דברו עם המוכר על שיעור.",
+	"hall": "עולים לבמה ומופיעים עם הגיטרה. חברים שלך יבואו לראות.",
 }
 ## Hand jobs: carry something from one spot to another. Pay scales with your wage.
 const JOBS := {
@@ -53,15 +57,24 @@ const JOBS := {
 	"build": {"pay": 30, "tire": 3.5, "from": 6.0, "to": 16.0, "tips": 0, "what": "לבנים"},
 }
 const CAR_HOME := Vector3(-18, 0, -0.5)
-const CAN_PRICE := 30
+const WEST := -80.0                # the town fence
+const EAST := 120.0
+const GUITAR_PRICE := 400
+const LESSON_PRICE := 40
+const NAMES: Array[String] = ["דני", "מיכל", "יוסי", "נועה", "אבי", "תמר", "רון", "שירה", "איתי", "מאיה", "עומר", "יעל",
+	"גיל", "ליאת", "אורי", "הדס", "נדב", "רותי", "אלון", "דנה", "משה", "ענת", "בועז", "קרן", "עידו", "טל"]
+const CHATS: Array[String] = ["שלום! איזה יום יפה.", "מה שלומך? טוב לראות אותך.", "שמעת? במסעדה מחפשים עובדים.", "ביער יש הרבה צבאים השנה.",
+	"בלילה עדיף להיזהר מהאנשים באדום.", "אני אוהב לשבת בפארק ליד האגם.", "הרופאה במרפאה ממש נחמדה.", "באולם ההופעות יש מופעים כל ערב.",
+	"שיהיה לך יום נהדר!", "אם תופיע באולם, אני אבוא לראות."]
+const CAN_PRICE := 15
 const CAN_FUEL := 25.0
 const JEEP := 2
 const CAR_LOT := Vector3(-37, 0, 10.5)
 const CARS: Array[Dictionary] = [
 	{"name": "הרכב הישן", "price": 0, "color": Color(0.15, 0.4, 0.85), "top": 17.0, "use": 1.0, "note": ""},
-	{"name": "משפחתית חדשה", "price": 2500, "color": Color(0.8, 0.12, 0.12), "top": 21.0, "use": 0.75, "note": "חסכונית בדלק"},
-	{"name": "ג'יפ", "price": 4000, "color": Color(0.2, 0.38, 0.2), "top": 19.0, "use": 1.15, "note": "נוסע גם ביער"},
-	{"name": "מכונית ספורט", "price": 7000, "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
+	{"name": "משפחתית חדשה", "price": 1200, "color": Color(0.8, 0.12, 0.12), "top": 21.0, "use": 0.75, "note": "חסכונית בדלק"},
+	{"name": "ג'יפ", "price": 2000, "color": Color(0.2, 0.38, 0.2), "top": 19.0, "use": 1.15, "note": "נוסע גם ביער"},
+	{"name": "מכונית ספורט", "price": 3500, "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
 ]
 const GAS_PUMP := Vector3(15, 0, 5.6)
 const SAVE_PATH := "user://life-city.cfg"
@@ -79,6 +92,13 @@ class Person:
 	var town := false               # a robber who works the streets at night
 	var target := Vector3.ZERO
 	var wait := 0.0
+	var name := ""
+	var level := 0                  # how well you know each other; 3 = friend
+	var talked_day := 0
+	var pause := 0.0                # stands still while chatting
+	var bubble: Label3D
+	var bubble_t := 0.0
+	var hello_cool := 0.0
 
 
 class Animal:
@@ -156,6 +176,13 @@ var car_heading := PI * 0.5
 var fuel := 60.0
 var traffic: Array[Node3D] = []
 var car_model := 0
+var near_npc: Person               # a townsperson close enough to talk to
+var has_guitar := false
+var skill := 0                     # guitar skill, 0..15
+var last_show_day := 0
+var guitar_mesh: Node3D
+var audience: Array[Person] = []
+var edge_cool := 0.0
 var rent_owed := 0                 # unpaid rent; the flat stays locked until it is renewed
 var has_can := false               # carrying a jerry can of petrol
 var can_mesh: MeshInstance3D
@@ -349,15 +376,15 @@ func _build_world() -> void:
 	lamp_mat.emission = Color(1.0, 0.9, 0.6)
 
 	# Ground, road, pavements.
-	_box(Vector3(280, 1, 240), Vector3(15, -0.5, 30), _mat(Color(0.34, 0.56, 0.3)))
-	_solid(Vector3(280, 1, 240), Vector3(15, -0.5, 30))
-	_box(Vector3(240, 0.04, 6), Vector3(15, 0.02, 1.5), _mat(Color(0.25, 0.26, 0.29)))
+	_box(Vector3(360, 1, 260), Vector3(20, -0.5, 35), _mat(Color(0.34, 0.56, 0.3)))
+	_solid(Vector3(360, 1, 260), Vector3(20, -0.5, 35))
+	_box(Vector3(320, 0.04, 6), Vector3(20, 0.02, 1.5), _mat(Color(0.25, 0.26, 0.29)))
 	var dash := _mat(Color(0.9, 0.9, 0.85))
-	for k in range(-25, 33):
+	for k in range(-34, 44):
 		_box(Vector3(1.8, 0.02, 0.2), Vector3(k * 4.0, 0.05, 1.5), dash)
 	var paving := _mat(Color(0.58, 0.56, 0.53))
-	_box(Vector3(240, 0.04, 4.5), Vector3(15, 0.015, -3.75), paving)
-	_box(Vector3(240, 0.04, 2.0), Vector3(15, 0.015, 5.5), paving)
+	_box(Vector3(320, 0.04, 4.5), Vector3(20, 0.015, -3.75), paving)
+	_box(Vector3(320, 0.04, 2.0), Vector3(20, 0.015, 5.5), paving)
 
 	_building("home", "הבית שלי", -24, 9, 4.2, Color(0.85, 0.7, 0.48), Color(0.68, 0.28, 0.2), 0, 24)
 	_building("market", "סופרמרקט", -8, 12, 4.2, Color(0.78, 0.8, 0.84), Color(0.15, 0.55, 0.3), 7, 22)
@@ -366,7 +393,7 @@ func _build_world() -> void:
 
 	# Street lamps.
 	var pole_mat := _mat(Color(0.2, 0.2, 0.22))
-	for x: float in [-48.0, -32.0, -16.0, 0.0, 16.0, 32.0, 48.0, 64.0, 80.0]:
+	for x: float in [-64.0, -48.0, -32.0, -16.0, 0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0]:
 		_box(Vector3(0.18, 4.2, 0.18), Vector3(x, 2.1, -1.9), pole_mat)
 		_box(Vector3(0.9, 0.25, 0.5), Vector3(x, 4.2, -1.6), lamp_mat)
 
@@ -380,6 +407,28 @@ func _build_world() -> void:
 	pond_mi.material_override = _mat(Color(0.3, 0.6, 0.85))
 	pond_mi.position = Vector3(4, 0.03, 14)
 	add_child(pond_mi)
+	# The pond is real water: a stone bank around it, reeds, and no walking or driving in.
+	var bank := CylinderMesh.new()
+	bank.top_radius = 5.0
+	bank.bottom_radius = 5.2
+	bank.height = 0.05
+	var bank_mi := MeshInstance3D.new()
+	bank_mi.mesh = bank
+	bank_mi.material_override = _mat(Color(0.62, 0.6, 0.55))
+	bank_mi.position = Vector3(4, 0.02, 14)
+	add_child(bank_mi)
+	var water := StaticBody3D.new()
+	var water_shape := CollisionShape3D.new()
+	var round := CylinderShape3D.new()
+	round.radius = 4.6
+	round.height = 3.0
+	water_shape.shape = round
+	water.add_child(water_shape)
+	water.position = Vector3(4, 1.5, 14)
+	add_child(water)
+	for k in 10:
+		var angle := k * TAU / 10.0 + 0.3
+		_box(Vector3(0.08, rng.randf_range(0.7, 1.2), 0.08), Vector3(4 + cos(angle) * 4.3, 0.45, 14 + sin(angle) * 4.3), _mat(Color(0.3, 0.5, 0.2)))
 	_sign("הפארק", Vector3(-6, 2.6, 8.2), 72)
 	_box(Vector3(0.15, 2.2, 0.15), Vector3(-6, 1.1, 8.2), pole_mat)
 	var bench := _mat(Color(0.5, 0.33, 0.2))
@@ -401,20 +450,23 @@ func _build_world() -> void:
 		_tree(pos)
 	for k in 16:
 		_tree(Vector3(rng.randf_range(-48, 48), 0, rng.randf_range(-26, -17)))
+	_building("music", "חנות מוזיקה", -74, 9, 4.2, Color(0.55, 0.4, 0.6), Color(0.3, 0.18, 0.4), 9, 20)
+	_building("hall", "אולם הופעות", -58, 15, 8.5, Color(0.75, 0.3, 0.3), Color(0.35, 0.1, 0.12), 17, 24)
 	_building("clinic", "מרפאה", -40, 10, 4.2, Color(0.9, 0.92, 0.94), Color(0.75, 0.15, 0.15), 8, 20)
 	_building("diner", "מסעדה", 56, 11, 4.2, Color(0.8, 0.5, 0.35), Color(0.45, 0.15, 0.12), 11, 23)
 	_building("build", "אתר בנייה", 72, 12, 7.0, Color(0.6, 0.58, 0.55), Color(0.9, 0.6, 0.1), 6, 16)
 	_build_town_extras()
+	_build_edges()
+	_build_neighbourhood()
 	_building("guns", "חנות נשק", 40, 9, 4.2, Color(0.5, 0.52, 0.45), Color(0.25, 0.3, 0.2), 9, 19)
 
-	# Passers-by on the pavements.
-	for k in 14:
-		var n := _make_person(Color.from_hsv(rng.randf(), 0.55, 0.85), Color.from_hsv(rng.randf(), 0.3, 0.4))
+	# Passers-by on the pavements, each with a name.
+	for k in 18:
+		var n := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.88), Color.from_hsv(rng.randf(), 0.3, 0.42))
 		n.dir = 1.0 if k % 2 == 0 else -1.0
 		n.speed = rng.randf_range(1.6, 2.6)
-		n.root.position = Vector3(rng.randf_range(-46, 78), 0, 5.6 if k % 3 == 0 else rng.randf_range(-2.6, -2.0))
-		add_child(n.root)
-		npcs.append(n)
+		n.root.position = Vector3(rng.randf_range(WEST + 4.0, EAST - 4.0), 0, 5.6 if k % 3 == 0 else rng.randf_range(-2.6, -2.0))
+		_add_townsperson(n)
 	_build_store()
 	_build_interiors()
 	_sign("ליער ↓", Vector3(8, 2.6, 7.4), 80)
@@ -426,39 +478,61 @@ func _build_world() -> void:
 func _make_person(shirt: Color, pants: Color, into: Person = null) -> Person:
 	var p := into if into else Person.new()
 	p.root = Node3D.new()
-	var skin := _mat(Color(0.93, 0.74, 0.58))
+	var tones: Array[Color] = [Color(0.96, 0.8, 0.66), Color(0.9, 0.72, 0.56), Color(0.78, 0.58, 0.42), Color(0.6, 0.42, 0.3), Color(0.45, 0.31, 0.22)]
+	var hairs: Array[Color] = [Color(0.12, 0.09, 0.07), Color(0.3, 0.19, 0.1), Color(0.55, 0.38, 0.18), Color(0.85, 0.7, 0.4), Color(0.6, 0.6, 0.62), Color(0.55, 0.2, 0.1)]
+	var skin := _mat(tones[rng.randi_range(0, 4)] if into == null else tones[1])
+	var hair := _mat(hairs[rng.randi_range(0, 5)] if into == null else hairs[1])
+	var shirt_mat := _mat(shirt)
 	var torso := CapsuleMesh.new()
 	torso.radius = 0.3
 	torso.height = 0.95
 	var t := MeshInstance3D.new()
 	t.mesh = torso
-	t.material_override = _mat(shirt)
+	t.material_override = shirt_mat
 	t.position.y = 1.15
 	p.root.add_child(t)
+	_box(Vector3(0.16, 0.14, 0.16), Vector3(0, 1.62, 0), skin, p.root)                 # neck
 	var head := SphereMesh.new()
 	head.radius = 0.26
-	head.height = 0.52
+	head.height = 0.54
 	var hd := MeshInstance3D.new()
 	hd.mesh = head
 	hd.material_override = skin
 	hd.position.y = 1.86
 	p.root.add_child(hd)
-	_box(Vector3(0.5, 0.2, 0.5), Vector3(0, 2.03, -0.04), _mat(Color(0.2, 0.13, 0.08)), p.root)
+	# Hair: a cap of hair, and for some people long hair down the back.
+	_ball(0.275, Vector3(0, 1.93, -0.04), hair, p.root, Vector3(1.0, 0.8, 1.0))
+	if into == null and rng.randf() < 0.45:
+		_box(Vector3(0.48, 0.5, 0.14), Vector3(0, 1.72, -0.2), hair, p.root)
+	# Face: eyes with a highlight, eyebrows, and a smile.
 	var dark := _mat(Color(0.08, 0.08, 0.1))
 	for sx: float in [-0.1, 0.1]:
-		_box(Vector3(0.06, 0.06, 0.04), Vector3(sx, 1.9, 0.25), dark, p.root)
+		_ball(0.045, Vector3(sx, 1.9, 0.235), _mat(Color(1, 1, 1)), p.root)
+		_ball(0.026, Vector3(sx, 1.9, 0.27), dark, p.root)
+		_box(Vector3(0.09, 0.02, 0.03), Vector3(sx, 1.975, 0.24), hair, p.root)
+	_box(Vector3(0.13, 0.025, 0.03), Vector3(0, 1.765, 0.245), _mat(Color(0.7, 0.25, 0.25)), p.root)
+	for sx: float in [-0.055, 0.055]:
+		_box(Vector3(0.035, 0.03, 0.03), Vector3(sx * 1.45, 1.782, 0.24), _mat(Color(0.7, 0.25, 0.25)), p.root)
+	_box(Vector3(0.05, 0.07, 0.05), Vector3(0, 1.84, 0.27), skin, p.root)              # nose
+	var shoe := _mat(Color(0.12, 0.1, 0.1))
 	for sx: float in [-0.15, 0.15]:
 		var hip := Node3D.new()
 		hip.position = Vector3(sx, 0.75, 0)
 		p.root.add_child(hip)
-		_box(Vector3(0.22, 0.75, 0.24), Vector3(0, -0.375, 0), _mat(pants), hip)
+		_box(Vector3(0.22, 0.68, 0.24), Vector3(0, -0.34, 0), _mat(pants), hip)
+		_box(Vector3(0.23, 0.1, 0.34), Vector3(0, -0.7, 0.05), shoe, hip)
 		p.limbs.append(hip)
 	for sx: float in [-0.4, 0.4]:
 		var shoulder := Node3D.new()
 		shoulder.position = Vector3(sx, 1.5, 0)
 		p.root.add_child(shoulder)
-		_box(Vector3(0.16, 0.7, 0.16), Vector3(0, -0.35, 0), skin, shoulder)
+		_box(Vector3(0.18, 0.32, 0.18), Vector3(0, -0.14, 0), shirt_mat, shoulder)      # sleeve
+		_box(Vector3(0.14, 0.4, 0.14), Vector3(0, -0.48, 0), skin, shoulder)
+		_ball(0.09, Vector3(0, -0.7, 0), skin, shoulder)                               # hand
 		p.limbs.append(shoulder)
+	if into == null:
+		var tall := rng.randf_range(0.92, 1.08)
+		p.root.scale = Vector3(tall, tall, tall)
 	return p
 
 
@@ -487,6 +561,13 @@ func _build_player() -> void:
 	basket_mesh.visible = false
 	can_mesh = _box(Vector3(0.4, 0.5, 0.22), Vector3(0, -0.85, 0.05), _mat(Color(0.85, 0.12, 0.1)), me.limbs[2])
 	can_mesh.visible = false
+	guitar_mesh = Node3D.new()
+	guitar_mesh.position = Vector3(0, 1.15, -0.34)
+	guitar_mesh.rotation.z = 0.5
+	me.root.add_child(guitar_mesh)
+	_box(Vector3(0.42, 0.5, 0.1), Vector3(0, -0.2, 0), _mat(Color(0.7, 0.42, 0.18)), guitar_mesh)
+	_box(Vector3(0.1, 0.7, 0.06), Vector3(0, 0.35, 0), _mat(Color(0.3, 0.18, 0.1)), guitar_mesh)
+	guitar_mesh.visible = false
 	rifle_mesh = _box(Vector3(0.1, 0.1, 1.3), Vector3(0, -0.6, 0.35), _mat(Color(0.25, 0.17, 0.1)), me.limbs[3])
 	rifle_mesh.visible = false
 	parcel_mesh = _box(Vector3(0.6, 0.5, 0.6), Vector3(0, 1.15, 0.5), _mat(Color(0.72, 0.55, 0.32)), me.root)
@@ -537,14 +618,14 @@ func _apply_daylight() -> void:
 func _tick(hours: float, mode: String) -> void:
 	match mode:
 		"work":
-			hunger -= 5.5 * hours
-			energy -= 7.5 * hours
+			hunger -= 3.6 * hours
+			energy -= 5.0 * hours
 		"sleep":
-			hunger -= 1.5 * hours
+			hunger -= 1.0 * hours
 			energy += 12.5 * hours
 		_:
-			hunger -= 4.0 * hours
-			energy -= 4.5 * hours
+			hunger -= 2.4 * hours
+			energy -= 2.8 * hours
 	hunger = clampf(hunger, 0.0, 100.0)
 	energy = clampf(energy, 0.0, 100.0)
 	if hunger <= 0.0:
@@ -789,8 +870,8 @@ func _refresh_panel() -> void:
 					_add_action("להחזיר הכול למדף", _return_all_action)
 			"cafe_counter":
 				panel_text.text = _h("אוכלים כאן ועכשיו, בלי לחזור הביתה")
-				_add_action("ארוחה חמה · ₪55", _cafe.bind(55, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
-				_add_action("קפה · ₪14", _cafe.bind(14, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
+				_add_action("ארוחה חמה · ₪30", _cafe.bind(30, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
+				_add_action("קפה · ₪8", _cafe.bind(8, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
 			"gas":
 				var price := _fuel_price()
 				if not driving:
@@ -807,10 +888,16 @@ func _refresh_panel() -> void:
 			"home":
 				panel_text.text = _h("כדי להיכנס הביתה צריך לחדש את שכר הדירה. בינתיים אפשר לישון על ספסל בפארק.")
 				_add_action("לחדש שכר דירה · ₪%d" % rent_owed, _pay_rent)
+			"music_counter":
+				panel_text.text = _h(("רמת הנגינה שלך: %d מתוך 15" % skill) if has_guitar else "גיטרה פותחת לך הופעות באולם ונגינה ברחוב.")
+				if not has_guitar:
+					_add_action("גיטרה · ₪%d" % GUITAR_PRICE, _buy_guitar)
+				elif skill < 15:
+					_add_action("שיעור נגינה (שעה) · ₪%d" % LESSON_PRICE, _lesson)
 			"doctor":
 				panel_text.text = _h("בריאות: %d מתוך 100" % int(health))
-				_add_action("בדיקה וטיפול מלא · ₪120", _treat.bind(120, 100.0, 1.0))
-				_add_action("ויטמינים · ₪40", _treat.bind(40, 25.0, 0.25))
+				_add_action("בדיקה וטיפול מלא · ₪60", _treat.bind(60, 100.0, 1.0))
+				_add_action("ויטמינים · ₪20", _treat.bind(20, 25.0, 0.25))
 			"dealer":
 				panel_text.text = _h("הרכב שלך: %s. רכב חדש מחליף אותו ומגיע עם מכל מלא." % CARS[car_model]["name"])
 				for k in range(1, CARS.size()):
@@ -848,10 +935,19 @@ func _move_input() -> Vector2:
 
 func _physics_process(delta: float) -> void:
 	for n in npcs:
+		n.pause = maxf(n.pause - delta, 0.0)
+		n.hello_cool = maxf(n.hello_cool - delta, 0.0)
+		if n.bubble_t > 0.0:
+			n.bubble_t -= delta
+			if n.bubble_t <= 0.0:
+				n.bubble.visible = false
+		if n.speed <= 0.0 or n.pause > 0.0:
+			_animate(n, false, delta)
+			continue
 		n.root.position.x += n.dir * n.speed * delta
-		if n.root.position.x > 82.0:
+		if n.root.position.x > EAST - 2.0:
 			n.dir = -1.0
-		elif n.root.position.x < -50.0:
+		elif n.root.position.x < WEST + 2.0:
 			n.dir = 1.0
 		n.root.rotation.y = PI * 0.5 * n.dir
 		_animate(n, true, delta)
@@ -870,7 +966,7 @@ func _physics_process(delta: float) -> void:
 		player.position.x = clampf(player.position.x, room_origin.x - room_half.x, room_origin.x + room_half.x)
 		player.position.z = clampf(player.position.z, room_origin.z - room_half.y, room_origin.z + room_half.y)
 	else:
-		player.position.x = clampf(player.position.x, -52.0, 84.0)
+		player.position.x = clampf(player.position.x, WEST, EAST)
 		player.position.z = clampf(player.position.z, -5.6, FOREST_END)
 	if driving:
 		if car_model != JEEP:
@@ -896,6 +992,21 @@ func _physics_process(delta: float) -> void:
 		elif p.room == room and p.door.distance_to(player.position) < 2.2:
 			near = p
 	near_car = not driving and not inside and car.position.distance_to(player.position) < 3.2
+	near_npc = null
+	if not driving and not inside:
+		var closest := 2.6
+		for n in npcs:
+			var d := n.root.position.distance_to(player.position)
+			if d < closest:
+				closest = d
+				near_npc = n
+			if d < 3.5 and n.hello_cool <= 0.0 and n.bubble_t <= 0.0:
+				_say(n, "שלום %s!" % ("חבר" if n.level >= 3 else ""), 2.0)       # a friendly hello as you pass
+				n.hello_cool = 40.0
+		edge_cool = maxf(edge_cool - delta, 0.0)
+		if edge_cool <= 0.0 and (player.position.x <= WEST + 0.05 or player.position.x >= EAST - 0.05 or player.position.z >= FOREST_END - 0.05):
+			edge_cool = 12.0
+			_toast("כאן נגמרת העיר. הגדר סוגרת את הדרך.")
 	_update_focus()
 	_update_forest(delta)
 	_update_hud()
@@ -967,6 +1078,12 @@ func _new_game() -> void:
 	wage = 40
 	parcels = 0
 	rent_owed = 0
+	has_guitar = false
+	skill = 0
+	last_show_day = 0
+	for n in npcs:
+		n.level = 0
+		n.talked_day = 0
 	has_rifle = false
 	ammo = 0
 	fuel = 60.0
@@ -1002,6 +1119,13 @@ func _continue_game() -> void:
 	fuel = float(cfg.get_value("life", "fuel", 60.0))
 	parcels = int(cfg.get_value("life", "parcels", shifts * 8))
 	rent_owed = int(cfg.get_value("life", "rent_owed", 0))
+	has_guitar = bool(cfg.get_value("life", "guitar", false))
+	skill = int(cfg.get_value("life", "skill", 0))
+	last_show_day = int(cfg.get_value("life", "last_show", 0))
+	var known: Variant = cfg.get_value("life", "known", [])
+	for k in npcs.size():
+		npcs[k].level = int(known[k]) if known is Array and k < (known as Array).size() else 0
+		npcs[k].talked_day = 0
 	_begin()
 	_park_car(Vector3(float(cfg.get_value("life", "car_x", CAR_HOME.x)), 0, float(cfg.get_value("life", "car_z", CAR_HOME.z))),
 		float(cfg.get_value("life", "car_rot", PI * 0.5)))
@@ -1028,6 +1152,7 @@ func _save() -> void:
 	for pair: Array in [["day", day], ["clock", clock], ["money", money], ["hunger", hunger],
 			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage],
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
+			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading],
 			["can", has_can], ["car_model", car_model]]:
 		cfg.set_value("life", pair[0], pair[1])
@@ -1286,6 +1411,9 @@ func _update_hud() -> void:
 	basket_mesh.visible = not basket.is_empty()
 	parcel_mesh.visible = carrying
 	can_mesh.visible = has_can and not driving
+	guitar_mesh.visible = has_guitar
+	for k in audience.size():
+		audience[k].root.visible = k < 2 + _friends() * 2
 	for k in parcel_pile.size():
 		parcel_pile[k].visible = not (carrying and k == 0)
 	for k in shelf_boxes.size():
@@ -1293,12 +1421,17 @@ func _update_hud() -> void:
 	(bars["hunger"] as ProgressBar).value = hunger
 	(bars["energy"] as ProgressBar).value = energy
 	(bars["health"] as ProgressBar).value = health
-	prompt.visible = playing and (near != null or near_car or driving) and open_place == null and not busy
+	prompt.visible = playing and (near != null or near_car or driving or near_npc != null) and open_place == null and not busy
 	if prompt.visible:
 		if near != null:
 			prompt.text = _h(near.prompt)
 		else:
-			prompt.text = _h("לצאת מהרכב" if driving else ("למלא דלק מהמיכל" if _can_pour() else "להיכנס לרכב שלי"))
+			if driving:
+				prompt.text = _h("לצאת מהרכב")
+			elif near_car:
+				prompt.text = _h("למלא דלק מהמיכל" if _can_pour() else "להיכנס לרכב שלי")
+			else:
+				prompt.text = _h("לדבר עם %s" % near_npc.name)
 
 
 func _toast(text: String) -> void:
@@ -1475,12 +1608,16 @@ func _interact(p: Place) -> void:
 	if busy or state != State.PLAY:
 		return
 	match p.key:
-		"home", "market", "cafe", "work", "guns", "clinic", "diner", "build":
+		"home", "market", "cafe", "work", "guns", "clinic", "diner", "build", "music", "hall":
 			_enter_room(p)
 		"store_exit", "exit":
 			_leave_room()
 		"bench":
 			_bench_sleep()
+		"stage":
+			_perform()
+		"busk":
+			_busk()
 		"bed":
 			_sleep()
 		"sofa":
@@ -1671,7 +1808,7 @@ func _in_forest() -> bool:
 
 
 func _forest_point() -> Vector3:
-	return Vector3(rng.randf_range(-40, 42), 0, rng.randf_range(FOREST_Z + 6.0, FOREST_END - 4.0))
+	return Vector3(rng.randf_range(WEST + 5.0, EAST - 5.0), 0, rng.randf_range(FOREST_Z + 6.0, FOREST_END - 4.0))
 
 
 func _pine(pos: Vector3) -> void:
@@ -1717,8 +1854,8 @@ func _make_animal(big: bool) -> Animal:
 func _build_forest() -> void:
 	_sign("היער", Vector3(0, 3.0, FOREST_Z - 3.0), 110)
 	_box(Vector3(0.2, 2.6, 0.2), Vector3(0, 1.3, FOREST_Z - 3.0), _mat(Color(0.3, 0.2, 0.12)))
-	for k in 150:
-		var pos := Vector3(rng.randf_range(-70, 70), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
+	for k in 260:
+		var pos := Vector3(rng.randf_range(-105, 145), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
 		if absf(pos.x) < 3.0 and pos.z < FOREST_Z + 14.0:
 			continue                       # keep a path in from the sign
 		_pine(pos)
@@ -1784,7 +1921,7 @@ func _update_forest(delta: float) -> void:
 		if a.heading != Vector3.ZERO:
 			a.node.position += a.heading * speed * delta
 			a.node.rotation.y = lerp_angle(a.node.rotation.y, atan2(a.heading.x, a.heading.z), 8.0 * delta)
-		a.node.position.x = clampf(a.node.position.x, -42.0, 44.0)
+		a.node.position.x = clampf(a.node.position.x, WEST + 2.0, EAST - 2.0)
 		a.node.position.z = clampf(a.node.position.z, FOREST_Z + 3.0, FOREST_END - 2.0)
 
 	for t in thugs:
@@ -2052,7 +2189,7 @@ func _build_cars() -> void:
 	for k in 9:
 		var t := _make_car(Color.from_hsv(rng.randf(), rng.randf_range(0.2, 0.75), rng.randf_range(0.5, 0.95)))
 		var east := k % 2 == 0
-		t.position = Vector3(rng.randf_range(-95, 125), 0, 3.6 if east else 1.5)
+		t.position = Vector3(rng.randf_range(-130, 165), 0, 3.6 if east else 1.5)
 		t.rotation.y = PI * 0.5 if east else -PI * 0.5
 		t.set_meta("dir", 1.0 if east else -1.0)
 		t.set_meta("top", rng.randf_range(7.0, 11.0))
@@ -2109,6 +2246,8 @@ func _use() -> void:
 		_pour_can()
 	elif near_car:
 		_enter_car()
+	elif near_npc != null:
+		_talk(near_npc)
 	elif _in_forest():
 		_shoot(_nearest_animal())
 
@@ -2154,7 +2293,7 @@ func _drive(input: Vector2, delta: float) -> void:
 	if delta > 0.0 and moved < absf(car_speed) * delta * 0.5:
 		car_speed = moved / delta                # ran into something
 	var had_fuel := fuel > 0.0
-	fuel = maxf(fuel - moved / 12.0 * float(CARS[car_model]["use"]), 0.0)
+	fuel = maxf(fuel - moved / 32.0 * float(CARS[car_model]["use"]), 0.0)
 	if had_fuel and fuel <= 0.0:
 		_toast("נגמר הדלק! צא מהרכב, קנה מיכל דלק בתחנה והבא אותו לרכב.")
 		_play("no")
@@ -2177,14 +2316,14 @@ func _update_traffic(delta: float) -> void:
 		var now: float = move_toward(t.get_meta("speed"), want, 12.0 * delta)
 		t.set_meta("speed", now)
 		t.position.x += dir * now * delta
-		if dir > 0.0 and t.position.x > 130.0:
-			t.position.x = -100.0
-		elif dir < 0.0 and t.position.x < -100.0:
-			t.position.x = 130.0
+		if dir > 0.0 and t.position.x > 172.0:
+			t.position.x = -135.0
+		elif dir < 0.0 and t.position.x < -135.0:
+			t.position.x = 172.0
 
 
 func _fuel_price() -> int:
-	return int(ceilf((100.0 - fuel) * 0.7))
+	return int(ceilf((100.0 - fuel) * 0.4))
 
 
 func _refuel() -> void:
@@ -2309,6 +2448,8 @@ func _build_interiors() -> void:
 	_build_clinic()
 	_build_diner()
 	_build_site()
+	_build_music_shop()
+	_build_hall()
 
 
 func _build_home() -> void:
@@ -2384,16 +2525,16 @@ func _build_cafe() -> void:
 	_box(Vector3(0.7, 0.05, 0.7), Vector3.ZERO, _mat(Color(0.96, 0.96, 0.93)), meal)
 	_ball(0.2, Vector3(-0.1, 0.15, 0), _mat(Color(0.7, 0.4, 0.2)), meal, Vector3(1.2, 0.7, 1))
 	_ball(0.12, Vector3(0.2, 0.1, 0.1), _mat(Color(0.3, 0.65, 0.25)), meal)
-	_tag("ארוחה חמה ₪55", meal.position + Vector3(0, 1.0, 0))
-	_handle(meal, "cafe", _cafe.bind(55, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
+	_tag("ארוחה חמה ₪30", meal.position + Vector3(0, 1.0, 0))
+	_handle(meal, "cafe", _cafe.bind(30, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
 
 	var cup := Node3D.new()
 	cup.position = o + Vector3(1.6, 1.18, -4.1)
 	add_child(cup)
 	_box(Vector3(0.28, 0.3, 0.28), Vector3(0, 0.15, 0), _mat(Color(0.95, 0.95, 0.95)), cup)
 	_box(Vector3(0.22, 0.02, 0.22), Vector3(0, 0.31, 0), _mat(Color(0.3, 0.18, 0.1)), cup)
-	_tag("קפה ₪14", cup.position + Vector3(0, 1.0, 0))
-	_handle(cup, "cafe", _cafe.bind(14, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
+	_tag("קפה ₪8", cup.position + Vector3(0, 1.0, 0))
+	_handle(cup, "cafe", _cafe.bind(8, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
 
 	_spot("cafe", "cafe_counter", "קפה ומסעדה", "להזמין בדלפק", o + Vector3(0, 0, -2.8))
 	for x: float in [-5.0, 5.0]:
@@ -2569,7 +2710,7 @@ func _hospital() -> void:
 
 func _thug_point(t: Person) -> Vector3:
 	if t.town:
-		return Vector3(rng.randf_range(-48, 80), 0, rng.randf_range(-3.5, 28.0))
+		return Vector3(rng.randf_range(WEST + 4.0, EAST - 4.0), 0, rng.randf_range(-3.5, 28.0))
 	return _forest_point()
 
 
@@ -2590,9 +2731,9 @@ func _block(pos: Vector3, size: Vector3, color: Color) -> void:
 func _build_town_extras() -> void:
 	# A second row of apartment blocks behind the street.
 	var palette: Array[Color] = [Color(0.78, 0.74, 0.66), Color(0.66, 0.7, 0.76), Color(0.8, 0.68, 0.6), Color(0.7, 0.75, 0.68)]
-	for k in 11:
+	for k in 16:
 		var h := rng.randf_range(9.0, 19.0)
-		_block(Vector3(-60 + k * 15.0 + rng.randf_range(-1.5, 1.5), 0, -27), Vector3(rng.randf_range(9, 12), h, 9), palette[k % 4])
+		_block(Vector3(-95 + k * 15.0 + rng.randf_range(-1.5, 1.5), 0, -27), Vector3(rng.randf_range(9, 12), h, 9), palette[k % 4])
 	# Houses south of the road, east of the park.
 	for k in 4:
 		var hp := Vector3(52 + k * 9.5, 0, 14)
@@ -2727,3 +2868,258 @@ func _build_site() -> void:
 	foreman.root.position = o + Vector3(2.5, 0, -2.5)
 	add_child(foreman.root)
 	_tag("מנהל העבודה", foreman.root.position + Vector3(0, 2.6, 0))
+
+
+# -------------------------------------------- neighbours, music and edges ----
+
+func _add_townsperson(n: Person) -> void:
+	n.name = NAMES[npcs.size() % NAMES.size()]
+	n.bubble = Label3D.new()
+	n.bubble.font = font
+	n.bubble.font_size = 44
+	n.bubble.pixel_size = 0.01
+	n.bubble.outline_size = 14
+	n.bubble.outline_modulate = Color(0.05, 0.08, 0.15)
+	n.bubble.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	n.bubble.no_depth_test = true
+	n.bubble.position = Vector3(0, 2.75, 0)
+	n.bubble.visible = false
+	n.root.add_child(n.bubble)
+	add_child(n.root)
+	npcs.append(n)
+
+
+func _say(n: Person, text: String, seconds: float) -> void:
+	n.bubble.text = _h(text.strip_edges().replace(" !", "!"))
+	n.bubble.visible = true
+	n.bubble_t = seconds
+
+
+func _friends() -> int:
+	var count := 0
+	for n in npcs:
+		if n.level >= 3:
+			count += 1
+	return count
+
+
+func _known_levels() -> Array:
+	var out: Array = []
+	for n in npcs:
+		out.append(n.level)
+	return out
+
+
+func _talk(n: Person) -> void:
+	n.pause = 4.0
+	n.hello_cool = 40.0
+	var to_me := player.position - n.root.position
+	n.root.rotation.y = atan2(to_me.x, to_me.z)
+	me.root.rotation.y = atan2(-to_me.x, -to_me.z)
+	_play("pick")
+	if n.talked_day == day:
+		_say(n, "כבר דיברנו היום. נתראה מחר!", 3.5)
+		return
+	n.talked_day = day
+	n.level += 1
+	if n.level == 1:
+		_say(n, "נעים מאוד, אני %s!" % n.name, 4.0)
+		_toast("הכרת את %s. דברו שוב בימים הבאים כדי להתיידד." % n.name)
+	elif n.level == 3:
+		_say(n, "אנחנו חברים עכשיו!", 4.0)
+		_toast("%s ואתה חברים עכשיו! חברים באים להופעות שלך. (חברים: %d)" % [n.name, _friends()])
+		_play("pay")
+	else:
+		_say(n, CHATS[rng.randi_range(0, CHATS.size() - 1)], 4.5)
+
+
+func _buy_guitar() -> void:
+	if has_guitar:
+		_toast("כבר יש לך גיטרה.")
+		return
+	if money < GUITAR_PRICE:
+		_toast("אין מספיק כסף (חסרים ₪%d)." % (GUITAR_PRICE - money))
+		_play("no")
+		return
+	money -= GUITAR_PRICE
+	has_guitar = true
+	_play("pay")
+	_toast("קנית גיטרה! אפשר לנגן בפינת הנגינה ברחוב, ולהופיע באולם בערב.")
+	_refresh_panel()
+
+
+func _lesson() -> void:
+	if money < LESSON_PRICE:
+		_toast("אין מספיק כסף.")
+		_play("no")
+		return
+	money -= LESSON_PRICE
+	_time_skip("לומדים לנגן...", func() -> void:
+		_skip(1.0, "awake")
+		skill = mini(skill + 1, 15)
+		_toast("השתפרת! רמת הנגינה שלך: %d." % skill))
+
+
+func _busk() -> void:
+	if not has_guitar:
+		_toast("כדי לנגן צריך גיטרה. קונים אותה בחנות המוזיקה.")
+		return
+	if energy < 12.0:
+		_toast("אתה עייף מדי לנגן.")
+		return
+	_time_skip("מנגנים ברחוב...", func() -> void:
+		_skip(1.0, "awake")
+		energy = maxf(energy - 5.0, 0.0)
+		var coins := 10 + skill * 3 + rng.randi_range(0, 18)
+		money += coins
+		if rng.randf() < 0.35:
+			skill = mini(skill + 1, 15)
+		_play("pay")
+		_toast("ניגנת שעה, ועוברים ושבים נתנו לך ₪%d." % coins))
+
+
+func _perform() -> void:
+	if not has_guitar:
+		_toast("כדי להופיע צריך גיטרה. קונים אותה בחנות המוזיקה.")
+		return
+	if last_show_day == day:
+		_toast("כבר הופעת היום. ההופעה הבאה מחר בערב.")
+		return
+	if energy < 20.0:
+		_toast("אתה עייף מדי להופיע.")
+		return
+	var crowd := 2 + _friends() * 2
+	_time_skip("מופיעים על הבמה...", func() -> void:
+		last_show_day = day
+		_skip(2.0, "awake")
+		energy = maxf(energy - 12.0, 0.0)
+		var pay := 60 + skill * 12 + _friends() * 30 + rng.randi_range(0, 40)
+		money += pay
+		skill = mini(skill + 1, 15)
+		_play("pay")
+		_save()
+		_toast("איזו הופעה! היו %d אנשים בקהל, והרווחת ₪%d." % [mini(crowd, audience.size()), pay]))
+
+
+func _build_music_shop() -> void:
+	var o := _room("music", Color(0.4, 0.32, 0.26), Color(0.72, 0.62, 0.74))
+	_box(Vector3(4.6, 1.1, 1.0), o + Vector3(0, 0.55, -3.2), _mat(Color(0.3, 0.2, 0.3)))
+	_solid(Vector3(4.6, 1.1, 1.0), o + Vector3(0, 0.55, -3.2))
+	var seller := _make_person(Color(0.55, 0.3, 0.6), Color(0.2, 0.2, 0.25))
+	seller.root.position = o + Vector3(0, 0, -4.4)
+	add_child(seller.root)
+	var guitar := Node3D.new()
+	guitar.position = o + Vector3(-3.6, 1.0, -1.0)
+	add_child(guitar)
+	_box(Vector3(0.7, 0.85, 0.16), Vector3(0, -0.2, 0), _mat(Color(0.75, 0.45, 0.18)), guitar)
+	_ball(0.14, Vector3(0, -0.15, 0.08), _mat(Color(0.12, 0.08, 0.05)), guitar, Vector3(1, 1, 0.3))
+	_box(Vector3(0.14, 1.0, 0.08), Vector3(0, 0.7, 0), _mat(Color(0.3, 0.18, 0.1)), guitar)
+	_box(Vector3(0.9, 0.5, 0.5), o + Vector3(-3.6, 0.25, -1.0), _mat(Color(0.2, 0.2, 0.22)))
+	_tag("גיטרה ₪%d" % GUITAR_PRICE, guitar.position + Vector3(0, 1.7, 0))
+	_handle(guitar, "music", _buy_guitar)
+	# A keyboard and a drum kit, just for show.
+	_box(Vector3(2.2, 0.15, 0.6), o + Vector3(3.8, 1.0, -1.2), _mat(Color(0.1, 0.1, 0.12)))
+	_box(Vector3(2.1, 0.03, 0.4), o + Vector3(3.8, 1.09, -1.15), _mat(Color(0.95, 0.95, 0.95)))
+	for sx: float in [-0.9, 0.9]:
+		_box(Vector3(0.08, 0.95, 0.08), o + Vector3(3.8 + sx, 0.47, -1.2), _mat(Color(0.3, 0.3, 0.32)))
+	for k in 3:
+		var drum := CylinderMesh.new()
+		drum.top_radius = 0.4 - k * 0.07
+		drum.bottom_radius = drum.top_radius
+		drum.height = 0.5
+		var d := MeshInstance3D.new()
+		d.mesh = drum
+		d.material_override = _mat(Color(0.75, 0.1, 0.15))
+		d.position = o + Vector3(3.0 + k * 0.85, 0.5 + k * 0.2, 2.2)
+		add_child(d)
+	_spot("music", "music_counter", "חנות מוזיקה", "לדבר עם המוכר", o + Vector3(0, 0, -1.8))
+
+
+func _build_hall() -> void:
+	var o := _room("hall", Color(0.3, 0.2, 0.2), Color(0.42, 0.14, 0.16))
+	# Stage with curtains, a microphone and speakers.
+	_box(Vector3(16, 0.08, 4.6), o + Vector3(0, 0.04, -5.6), _mat(Color(0.5, 0.36, 0.22)))
+	for sx: float in [-1.0, 1.0]:
+		_box(Vector3(3.0, 4.4, 0.3), o + Vector3(sx * 8.5, 2.2, -8.2), _mat(Color(0.65, 0.08, 0.1)))
+		_box(Vector3(1.0, 1.6, 0.9), o + Vector3(sx * 6.6, 0.8, -7.2), _mat(Color(0.1, 0.1, 0.12)))
+		_solid(Vector3(1.0, 1.6, 0.9), o + Vector3(sx * 6.6, 0.8, -7.2))
+	_box(Vector3(0.06, 1.5, 0.06), o + Vector3(0, 0.75, -4.4), _mat(Color(0.2, 0.2, 0.22)))
+	_ball(0.1, o + Vector3(0, 1.55, -4.4), _mat(Color(0.3, 0.3, 0.32)), self)
+	for sx: float in [-4.0, 0.0, 4.0]:
+		_box(Vector3(0.5, 0.3, 0.5), o + Vector3(sx, 4.2, -5.0), lamp_mat)
+	_tag("הבמה", o + Vector3(0, 3.2, -6.5), 72)
+	_spot("hall", "stage", "הבמה", "לעלות לבמה ולהופיע", o + Vector3(0, 0, -5.4))
+	# Rows of seats; your friends fill them.
+	for row in 2:
+		for col in 6:
+			var seat := o + Vector3(-6.25 + col * 2.5, 0, 0.5 + row * 2.4)
+			_chair(seat, 1.0, Color(0.5, 0.1, 0.12))
+			var fan := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.85), Color.from_hsv(rng.randf(), 0.3, 0.4))
+			fan.root.position = seat + Vector3(0, 0, -0.75)
+			fan.root.rotation.y = PI
+			fan.root.visible = false
+			add_child(fan.root)
+			audience.append(fan)
+
+
+func _fence(from: Vector3, to: Vector3) -> void:
+	var wood := _mat(Color(0.45, 0.32, 0.2))
+	var span := to - from
+	var count := int(span.length() / 4.0)
+	for k in count + 1:
+		_box(Vector3(0.25, 1.6, 0.25), from + span * (float(k) / count) + Vector3(0, 0.8, 0), wood)
+	var mid := (from + to) * 0.5
+	var size := Vector3(absf(span.x) + 0.2, 0.14, 0.12) if absf(span.x) > absf(span.z) else Vector3(0.12, 0.14, absf(span.z) + 0.2)
+	for y: float in [0.6, 1.2]:
+		_box(size, mid + Vector3(0, y, 0), wood)
+
+
+## The edge of town: a fence all round, and a gate with a raised boom where the road leaves.
+func _build_edges() -> void:
+	for x: float in [WEST - 1.6, EAST + 1.6]:
+		_fence(Vector3(x, 0, -6.5), Vector3(x, 0, -2.2))
+		_fence(Vector3(x, 0, 5.2), Vector3(x, 0, FOREST_END + 1.6))
+		var steel := _mat(Color(0.3, 0.32, 0.36))
+		for z: float in [-1.9, 4.9]:
+			_box(Vector3(0.4, 4.6, 0.4), Vector3(x, 2.3, z), steel)
+		_box(Vector3(0.5, 0.5, 7.4), Vector3(x, 4.6, 1.5), steel)
+		_sign("יציאה מהעיר", Vector3(x, 5.5, 1.5), 72)
+		var boom := _box(Vector3(0.16, 0.16, 5.6), Vector3(x, 2.6, 0.2), _mat(Color(0.9, 0.15, 0.12)))
+		boom.rotation.x = -0.6
+		_box(Vector3(1.4, 2.4, 1.4), Vector3(x, 1.2, -4.0), _mat(Color(0.85, 0.82, 0.7)))     # guard booth
+		_box(Vector3(1.6, 0.2, 1.6), Vector3(x, 2.5, -4.0), steel)
+	_fence(Vector3(WEST - 1.6, 0, FOREST_END + 1.6), Vector3(EAST + 1.6, 0, FOREST_END + 1.6))
+
+
+func _build_neighbourhood() -> void:
+	# Houses at the east end, and a neighbour standing outside each home in town.
+	var palette: Array[Color] = [Color(0.82, 0.74, 0.6), Color(0.68, 0.76, 0.8), Color(0.8, 0.66, 0.62)]
+	var doorsteps: Array[Vector3] = []
+	for k in 3:
+		var hp := Vector3(90 + k * 11.0, 0, -10)
+		_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k]))
+		_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
+		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+		for sx: float in [-2.5, 2.5]:
+			_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
+		_solid(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0))
+		doorsteps.append(hp + Vector3(1.8, 0, 5.0))
+	for k in 4:
+		doorsteps.append(Vector3(52 + k * 9.5 + 1.6, 0, 9.6))
+	for k in doorsteps.size():
+		var n := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.88), Color.from_hsv(rng.randf(), 0.3, 0.42))
+		n.speed = 0.0
+		n.root.position = doorsteps[k]
+		n.root.rotation.y = 0.0 if k < 3 else PI
+		_add_townsperson(n)
+	# A music corner on the pavement for playing in the street.
+	var corner := Vector3(22, 0, 5.6)
+	_box(Vector3(2.2, 0.05, 1.6), corner + Vector3(0, 0.04, 0), _mat(Color(0.6, 0.3, 0.6)))
+	_sign("פינת נגינה", corner + Vector3(0, 2.4, 0.9), 56)
+	_box(Vector3(0.12, 2.0, 0.12), corner + Vector3(0, 1.0, 0.9), _mat(Color(0.2, 0.2, 0.22)))
+	var busk := Place.new()
+	busk.key = "busk"
+	busk.title = "פינת נגינה"
+	busk.prompt = "לנגן ברחוב"
+	busk.door = corner
+	places.append(busk)
