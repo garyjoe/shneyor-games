@@ -114,6 +114,7 @@ class Person:
 	var bubble: Label3D
 	var bubble_t := 0.0
 	var hello_cool := 0.0
+	var down := 0.0                 # a robber who was shot stays away this long
 
 
 class Animal:
@@ -211,6 +212,9 @@ const LAKE := Vector3(-128, 0, 18)
 const FARM := Vector3(166, 0, 16)
 var play_home_day := 0
 const PICNIC := Vector3(0, 0, FOREST_Z + 9.0)
+var run_on := false                 # the touch "run" toggle
+var running := false
+var run_button: Button
 const KIDS: Array[int] = [1, 2, 3, 4]      # places of the children in `family`
 const KID_ROOMS: Array[float] = [13.6, 17.6, -13.6, -17.6]   # x of each child's bedroom
 const SCHOOL_DOOR := Vector3(126, 0, -4.7)
@@ -1060,6 +1064,12 @@ func _physics_process(delta: float) -> void:
 	var input := _move_input() if walking else Vector2.ZERO
 	# Tired or starving people walk slower.
 	var speed := WALK_SPEED * (0.6 if (energy < 15.0 or hunger < 10.0 or bladder >= 95.0) else 1.0)
+	# Running: hold Shift, or switch on the run button. It is faster but tiring.
+	running = walking and not driving and not carrying and energy >= 15.0 and input.length_squared() > 0.01 \
+			and (run_on or Input.is_physical_key_pressed(KEY_SHIFT))
+	if running:
+		speed *= 1.75
+		energy = maxf(energy - delta * 0.12, 0.0)
 	if driving:
 		_drive(input, delta)
 	else:
@@ -1079,7 +1089,7 @@ func _physics_process(delta: float) -> void:
 		car.rotation.y = car_heading
 	if input.length_squared() > 0.01:
 		me.root.rotation.y = lerp_angle(me.root.rotation.y, atan2(input.x, input.y), 12.0 * delta)
-	_animate(me, input.length_squared() > 0.01, delta)
+	_animate(me, input.length_squared() > 0.01, delta * (1.6 if running else 1.0))
 	reach = maxf(reach - delta, 0.0)
 	if reach > 0.0:
 		me.limbs[3].rotation.x = -1.9          # arm stretched out to the shelf
@@ -1448,6 +1458,18 @@ func _build_hud() -> void:
 	prompt.visible = false
 	hud.add_child(prompt)
 
+	run_button = Button.new()
+	run_button.focus_mode = Control.FOCUS_NONE
+	run_button.toggle_mode = true
+	run_button.text = _h("ריצה")
+	run_button.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 30)
+	run_button.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	run_button.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	run_button.toggled.connect(func(on: bool) -> void:
+		run_on = on
+		run_button.text = _h("ריצה ✓" if on else "ריצה"))
+	hud.add_child(run_button)
+
 	var center := CenterContainer.new()
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1517,6 +1539,7 @@ func _layout() -> void:
 
 
 func _update_hud() -> void:
+	run_button.visible = state == State.PLAY and not driving and open_place == null and not busy
 	var playing := state == State.PLAY
 	info_label.visible = playing
 	stats_box.visible = playing
@@ -1898,7 +1921,8 @@ func _tap(pos: Vector2) -> void:
 	if state != State.PLAY or open_place != null or busy:
 		return
 	if not inside:
-		_tap_forest(pos)
+		if not _tap_thug(pos):
+			_tap_forest(pos)
 		return
 	if room != "market":
 		_tap_handles(pos)
@@ -2108,6 +2132,18 @@ func _update_forest(delta: float) -> void:
 		a.node.position.z = clampf(a.node.position.z, FOREST_Z + 3.0, FOREST_END - 2.0)
 
 	for t in thugs:
+		if t.down > 0.0:
+			# Shot: lies still for a moment, then is gone until the timer runs out.
+			t.chasing = false
+			t.down -= delta
+			if t.down < 57.0:
+				t.root.visible = false
+			if t.down <= 0.0:
+				t.root.rotation = Vector3.ZERO
+				t.root.position = _thug_point(t)
+				t.target = t.root.position
+				t.root.visible = not t.town
+			continue
 		var to_me := here - t.root.position
 		to_me.y = 0.0
 		var dist := to_me.length()
@@ -2441,6 +2477,8 @@ func _use() -> void:
 		_family_talk(near_kin)
 	elif near_npc != null:
 		_talk(near_npc)
+	elif _nearest_thug() != null:
+		_shoot_thug(_nearest_thug())
 	elif _in_forest():
 		_shoot(_nearest_animal())
 
@@ -4174,3 +4212,78 @@ func _build_outskirts() -> void:
 			_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
 		_solid(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0))
 		_tree(hp + Vector3(5.5, 0, 2.0))
+
+
+# ------------------------------------------------- fighting off robbers ----
+
+## A robber you can see and reach with the rifle: awake, visible and not too far.
+func _nearest_thug() -> Person:
+	if inside or driving or not has_rifle:
+		return null
+	var best: Person
+	var best_d := 22.0
+	for t in thugs:
+		if t.down > 0.0 or not t.root.visible:
+			continue
+		var d := t.root.position.distance_to(player.position)
+		if d < best_d:
+			best_d = d
+			best = t
+	return best
+
+
+func _tap_thug(pos: Vector2) -> bool:
+	if driving:
+		return false
+	var hit: Person
+	var best := 80.0
+	for t in thugs:
+		if t.down > 0.0 or not t.root.visible:
+			continue
+		var world := t.root.position + Vector3(0, 1.1, 0)
+		if cam.is_position_behind(world):
+			continue
+		var d := cam.unproject_position(world).distance_to(pos)
+		if d < best:
+			best = d
+			hit = t
+	if hit == null:
+		return false
+	_shoot_thug(hit)
+	return true
+
+
+func _shoot_thug(t: Person) -> void:
+	if shot_cool > 0.0 or _shabbat_block():
+		return
+	if not has_rifle:
+		_toast("בלי רובה אפשר רק לברוח. רובה קונים בחנות הנשק.")
+		shot_cool = 1.0
+		return
+	if ammo <= 0:
+		_toast("נגמרו הכדורים! ברח!")
+		_play("no")
+		shot_cool = 1.0
+		return
+	var to_thug := t.root.position - player.position
+	to_thug.y = 0.0
+	var dist := to_thug.length()
+	if dist > 28.0:
+		_toast("הוא רחוק מדי.")
+		shot_cool = 0.5
+		return
+	ammo -= 1
+	shot_cool = 0.9
+	reach = 0.4
+	me.root.rotation.y = atan2(to_thug.x, to_thug.z)
+	_play("bang")
+	if rng.randf() < clampf(1.25 - dist / 26.0, 0.15, 1.0):
+		t.down = 60.0
+		t.chasing = false
+		t.root.rotation.z = PI * 0.5
+		money += 60
+		_toast("פגעת באיש הרע! המשטרה לקחה אותו, וקיבלת פרס של ₪60.")
+		_play("pay")
+	else:
+		_toast("פספסת! הוא עדיין רודף אחריך.")
+	_update_hud()
