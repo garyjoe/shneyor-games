@@ -198,6 +198,11 @@ var friday_note_day := 0
 var candles_day := 0               # the Friday the candles were lit on
 var kiddush_day := 0
 var prayed_day := 0
+var prayed_slot := 0               # day * 3 + (0 morning, 1 afternoon, 2 evening)
+var family: Array[Person] = []     # wife, son, daughter, baby
+var family_joy := 70.0
+var near_kin: Person
+var joy_warned := false
 var flames: Array[Node3D] = []
 var near_npc: Person               # a townsperson close enough to talk to
 var has_guitar := false
@@ -610,7 +615,11 @@ func _build_player() -> void:
 	cs.shape = cap
 	cs.position.y = 0.95
 	player.add_child(cs)
-	_make_person(Color(0.2, 0.5, 0.95), Color(0.15, 0.2, 0.4), me)
+	_make_person(Color(0.95, 0.95, 0.97), Color(0.12, 0.13, 0.2), me)
+	_kippah(me.root, Color(0.1, 0.12, 0.35))
+	for sx: float in [-0.2, 0.2]:                # tzitzit at the hips
+		for sz: float in [-0.12, 0.12]:
+			_box(Vector3(0.02, 0.3, 0.02), Vector3(sx, 0.86, sz), _mat(Color(1, 1, 1)), me.root)
 	player.add_child(me.root)
 	basket_mesh = _box(Vector3(0.5, 0.32, 0.38), Vector3(0, -0.72, 0.14), _mat(Color(0.85, 0.2, 0.2)), me.limbs[2])
 	basket_mesh.visible = false
@@ -715,6 +724,7 @@ func _new_day() -> void:
 		rent_owed += RENT
 		_toast("הגיע הזמן לחדש שכר דירה: ₪%d. משלמים בדלת של הבית." % rent_owed)
 		_play("alarm")
+	_family_day()
 	_save()
 
 
@@ -742,7 +752,7 @@ func _eat(pid: int) -> void:
 	hunger = minf(hunger + float(PRODUCTS[pid]["food"]), 100.0)
 	_skip(0.33, "awake")
 	_play("eat")
-	_toast("אכלת %s." % PRODUCTS[pid]["name"])
+	_toast("בירכת ואכלת %s." % PRODUCTS[pid]["name"])
 	_refresh_panel()
 
 
@@ -1056,6 +1066,7 @@ func _physics_process(delta: float) -> void:
 			near = p
 	near_car = not driving and not inside and car.position.distance_to(player.position) < 3.2
 	_watch_week()
+	_update_family(delta)
 	near_npc = null
 	if not driving and not inside:
 		var closest := 2.6
@@ -1149,6 +1160,10 @@ func _new_game() -> void:
 	candles_day = 0
 	kiddush_day = 0
 	prayed_day = 0
+	prayed_slot = 0
+	family_joy = 70.0
+	for kin in family:
+		kin.talked_day = 0
 	friday_note_day = 0
 	was_shabbat = false
 	for n in npcs:
@@ -1193,6 +1208,7 @@ func _continue_game() -> void:
 	skill = int(cfg.get_value("life", "skill", 0))
 	last_show_day = int(cfg.get_value("life", "last_show", 0))
 	bladder = float(cfg.get_value("life", "bladder", 0.0))
+	family_joy = float(cfg.get_value("life", "family", 70.0))
 	candles_day = int(cfg.get_value("life", "candles", 0))
 	kiddush_day = int(cfg.get_value("life", "kiddush", 0))
 	was_shabbat = _is_shabbat()
@@ -1226,7 +1242,7 @@ func _save() -> void:
 	for pair: Array in [["day", day], ["clock", clock], ["money", money], ["hunger", hunger],
 			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage],
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
-			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["candles", candles_day], ["kiddush", kiddush_day],
+			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["family", family_joy], ["candles", candles_day], ["kiddush", kiddush_day],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading],
 			["can", has_can], ["car_model", car_model]]:
 		cfg.set_value("life", pair[0], pair[1])
@@ -1356,7 +1372,8 @@ func _build_hud() -> void:
 	hud.add_child(box)
 	stats_box = box
 	for def: Array in [["hunger", "שובע", Color(1.0, 0.62, 0.2)], ["energy", "אנרגיה", Color(0.3, 0.7, 1.0)],
-			["health", "בריאות", Color(0.95, 0.3, 0.4)], ["toilet", "שירותים", Color(0.55, 0.8, 0.4)]]:
+			["health", "בריאות", Color(0.95, 0.3, 0.4)], ["toilet", "שירותים", Color(0.55, 0.8, 0.4)],
+			["family", "משפחה", Color(0.9, 0.5, 0.85)]]:
 		var row := HBoxContainer.new()
 		row.alignment = BoxContainer.ALIGNMENT_END
 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1496,10 +1513,11 @@ func _update_hud() -> void:
 	(bars["energy"] as ProgressBar).value = energy
 	(bars["health"] as ProgressBar).value = health
 	(bars["toilet"] as ProgressBar).value = 100.0 - bladder
+	(bars["family"] as ProgressBar).value = family_joy
 	var lit := candles_day > 0 and (day == candles_day or (day == candles_day + 1 and clock < 19.0))
 	for f in flames:
 		f.visible = lit
-	prompt.visible = playing and (near != null or near_car or driving or near_npc != null) and open_place == null and not busy
+	prompt.visible = playing and (near != null or near_car or driving or near_npc != null or near_kin != null) and open_place == null and not busy
 	if prompt.visible:
 		if near != null:
 			prompt.text = _h(near.prompt)
@@ -1509,7 +1527,7 @@ func _update_hud() -> void:
 			elif near_car:
 				prompt.text = _h("למלא דלק מהמיכל" if _can_pour() else "להיכנס לרכב שלי")
 			else:
-				prompt.text = _h("לדבר עם %s" % near_npc.name)
+				prompt.text = _h("לדבר עם %s" % (near_kin.name if near_kin != null else near_npc.name))
 
 
 func _toast(text: String) -> void:
@@ -2373,6 +2391,8 @@ func _use() -> void:
 		_pour_can()
 	elif near_car:
 		_enter_car()
+	elif near_kin != null:
+		_family_talk(near_kin)
 	elif near_npc != null:
 		_talk(near_npc)
 	elif _in_forest():
@@ -2704,6 +2724,8 @@ func _build_home() -> void:
 	_tag("נרות שבת", table + Vector3(0, 2.1, 0), 40)
 	_handle(sticks, "home", _light_candles)
 	_spot("home", "table", "שולחן האוכל", "לשבת לשולחן", table + Vector3(-2.5, 0, 0))
+
+	_build_family(o)
 
 	# --- Desk by the wall
 	_table(o + Vector3(-10.4, 0, 3.6), Vector2(1.4, 2.4), wood.lightened(0.1))
@@ -3415,19 +3437,26 @@ func _table_action() -> void:
 		_skip(1.0, "awake")
 		hunger = minf(hunger + 60.0, 100.0)
 		health = minf(health + 8.0, 100.0)
-		_toast("עשית קידוש ואכלת סעודת שבת. שבת שלום!"))
+		family_joy = minf(family_joy + 15.0, 100.0)
+		for kin in family:
+			_say(kin, "שבת שלום!", 5.0)
+		_toast("עשית קידוש ואכלת סעודת שבת עם המשפחה. שבת שלום!"))
 
 
 func _pray() -> void:
-	if prayed_day == day:
-		_toast("כבר התפללת היום.")
+	# Three prayers a day: morning, afternoon and evening.
+	var part := 0 if clock < 12.0 else (1 if clock < 17.0 else 2)
+	var names: Array[String] = ["שחרית", "מנחה", "ערבית"]
+	if prayed_slot == day * 3 + part:
+		_toast("כבר התפללת %s היום." % names[part])
 		return
+	prayed_slot = day * 3 + part
 	prayed_day = day
 	var shabbat := _is_shabbat()
-	_time_skip("תפילת שבת..." if shabbat else "מתפללים...", func() -> void:
-		_skip(1.5 if shabbat else 0.5, "awake")
-		health = minf(health + (10.0 if shabbat else 3.0), 100.0)
-		_toast("התפללת בבית הכנסת. שבת שלום!" if shabbat else "התפללת בבית הכנסת."))
+	_time_skip("תפילת %s..." % names[part], func() -> void:
+		_skip(1.0 if shabbat else 0.4, "awake")
+		health = minf(health + (6.0 if shabbat else 2.0), 100.0)
+		_toast(("התפללת %s בבית הכנסת. שבת שלום!" if shabbat else "התפללת %s בבית הכנסת.") % names[part]))
 
 
 func _use_toilet() -> void:
@@ -3497,3 +3526,158 @@ func _build_restroom() -> void:
 	loo.prompt = "להיכנס לשירותים"
 	loo.door = at + Vector3(0, 0, -2.2)
 	places.append(loo)
+
+
+# --------------------------------------------------------------- family ----
+
+func _kippah(root: Node3D, color: Color) -> void:
+	_ball(0.13, Vector3(0, 1.93, -0.03), _mat(color), root, Vector3(1.0, 0.32, 1.0))
+
+
+func _bubble_for(n: Person, height: float) -> void:
+	n.bubble = Label3D.new()
+	n.bubble.font = font
+	n.bubble.font_size = 44
+	n.bubble.pixel_size = 0.01
+	n.bubble.outline_size = 14
+	n.bubble.outline_modulate = Color(0.05, 0.08, 0.15)
+	n.bubble.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	n.bubble.no_depth_test = true
+	n.bubble.position = Vector3(0, height, 0)
+	n.bubble.visible = false
+	n.root.add_child(n.bubble)
+
+
+func _build_family(o: Vector3) -> void:
+	# Mother, with her hair covered.
+	var mother := _make_person(Color(0.55, 0.3, 0.55), Color(0.3, 0.2, 0.35))
+	mother.name = "רחל"
+	_ball(0.215, Vector3(0, 1.82, -0.04), _mat(Color(0.8, 0.3, 0.45)), mother.root, Vector3(1.02, 0.9, 1.05))
+	_cap(0.16, 0.5, Vector3(0, 0.75, 0), _mat(Color(0.3, 0.2, 0.35)), mother.root, Vector3(1.5, 1.0, 1.1))   # skirt
+	mother.root.scale = Vector3(0.97, 0.97, 0.97)
+	mother.speed = 1.3
+	# Son with a kippah, and daughter.
+	var son := _make_person(Color(0.95, 0.95, 0.95), Color(0.15, 0.2, 0.4))
+	son.name = "דוד"
+	_kippah(son.root, Color(0.15, 0.4, 0.75))
+	son.root.scale = Vector3(0.68, 0.68, 0.68)
+	son.speed = 2.2
+	var daughter := _make_person(Color(0.95, 0.6, 0.75), Color(0.5, 0.25, 0.45))
+	daughter.name = "שרה"
+	_cap(0.16, 0.45, Vector3(0, 0.78, 0), _mat(Color(0.5, 0.25, 0.45)), daughter.root, Vector3(1.5, 1.0, 1.1))
+	daughter.root.scale = Vector3(0.58, 0.58, 0.58)
+	daughter.speed = 2.0
+	var spots: Array[Vector3] = [Vector3(1.5, 0, -5.0), Vector3(2.5, 0, 4.0), Vector3(-1.5, 0, 4.5)]
+	var walkers: Array[Person] = [mother, son, daughter]
+	for k in 3:
+		walkers[k].root.position = o + spots[k]
+		walkers[k].target = walkers[k].root.position
+		add_child(walkers[k].root)
+		_bubble_for(walkers[k], 2.75)
+		_handle(walkers[k].root, "home", _family_talk.bind(walkers[k]))
+		family.append(walkers[k])
+	# The baby, in a cot in the bedroom.
+	var cot := o + Vector3(-6.0, 0, -4.4)
+	var rail := _mat(Color(0.95, 0.93, 0.85))
+	_box(Vector3(1.3, 0.1, 0.8), cot + Vector3(0, 0.5, 0), rail)
+	for sx: float in [-0.6, 0.6]:
+		_box(Vector3(0.08, 0.9, 0.8), cot + Vector3(sx, 0.55, 0), rail)
+	for sz: float in [-0.36, 0.36]:
+		_box(Vector3(1.3, 0.5, 0.06), cot + Vector3(0, 0.8, sz), rail)
+	_solid(Vector3(1.3, 1.0, 0.8), cot + Vector3(0, 0.5, 0))
+	var baby := Person.new()
+	baby.name = "התינוק יוסי"
+	baby.root = Node3D.new()
+	baby.root.position = cot + Vector3(0, 0.6, 0)
+	add_child(baby.root)
+	_cap(0.14, 0.5, Vector3(0.1, 0.12, 0), _mat(Color(0.65, 0.85, 0.95)), baby.root, Vector3(1, 1, 1))
+	baby.root.get_child(0).rotation.z = PI * 0.5
+	_ball(0.13, Vector3(-0.3, 0.14, 0), _mat(Color(0.96, 0.8, 0.66)), baby.root)
+	_bubble_for(baby, 1.6)
+	_handle(baby.root, "home", _family_talk.bind(baby))
+	family.append(baby)
+	# Mezuzah by the way out.
+	_box(Vector3(0.06, 0.28, 0.06), o + Vector3(1.5, 1.6, ROOMS["home"]["half"].y + 0.2), _mat(Color(0.75, 0.7, 0.5)))
+
+
+func _update_family(delta: float) -> void:
+	near_kin = null
+	if room != "home":
+		return
+	var o: Vector3 = ROOMS["home"]["origin"]
+	var stops: Array[Vector3] = [Vector3(-1, 0, 3.5), Vector3(2.5, 0, 4.5), Vector3(3, 0, -3.5), Vector3(-7, 0, -1.5), Vector3(0, 0, -0.5),
+		Vector3(-8, 0, 5.5), Vector3(1.5, 0, -5.5), Vector3(9.5, 0, 5.5), Vector3(-1.5, 0, 6.0), Vector3(3.5, 0, 1.0)]
+	var closest := 2.3
+	for kin in family:
+		if kin.bubble_t > 0.0:
+			kin.bubble_t -= delta
+			if kin.bubble_t <= 0.0:
+				kin.bubble.visible = false
+		var d := kin.root.position.distance_to(player.position)
+		if d < closest:
+			closest = d
+			near_kin = kin
+		if kin.limbs.is_empty():
+			continue                     # the baby stays in the cot
+		kin.pause = maxf(kin.pause - delta, 0.0)
+		var to_target := kin.target - kin.root.position
+		to_target.y = 0.0
+		if kin.pause > 0.0 or to_target.length() < 0.4:
+			_animate(kin, false, delta)
+			kin.wait -= delta
+			if kin.wait <= 0.0 and kin.pause <= 0.0:
+				kin.wait = rng.randf_range(2.0, 7.0)
+				kin.target = o + stops[rng.randi_range(0, stops.size() - 1)]
+			continue
+		var step := to_target.normalized() * kin.speed
+		kin.root.position += step * delta
+		kin.root.rotation.y = lerp_angle(kin.root.rotation.y, atan2(step.x, step.z), 8.0 * delta)
+		_animate(kin, true, delta)
+
+
+func _family_talk(kin: Person) -> void:
+	kin.pause = 4.0
+	var to_me := player.position - kin.root.position
+	if not kin.limbs.is_empty():
+		kin.root.rotation.y = atan2(to_me.x, to_me.z)
+	me.root.rotation.y = atan2(-to_me.x, -to_me.z)
+	_play("pick")
+	var lines: Array[String]
+	match family.find(kin):
+		0:
+			lines = ["שלום! איך היה היום שלך?", "הילדים חיכו לך.", "תודה שאתה דואג לנו.", "אל תשכח לקנות חלה לשבת."]
+		1:
+			lines = ["אבא! בוא נשחק!", "אבא, למדתי היום בחומש.", "אפשר לבוא איתך לבית הכנסת?"]
+		2:
+			lines = ["אבא! ציירתי לך ציור.", "אבא, תקרא לי סיפור?", "אני אוהבת אותך, אבא."]
+		_:
+			lines = ["גו גו!", "(התינוק מחייך אליך)", "(התינוק צוחק)"]
+	_say(kin, "שבת שלום, אבא!" if (_is_shabbat() and family.find(kin) in [1, 2]) else lines[rng.randi_range(0, lines.size() - 1)], 4.5)
+	if kin.talked_day != day:
+		kin.talked_day = day
+		family_joy = minf(family_joy + 6.0, 100.0)
+		_update_hud()
+
+
+## Once a day the family eats from the fridge, and misses you a little.
+func _family_day() -> void:
+	family_joy = maxf(family_joy - 6.0, 0.0)
+	var eaten := 0
+	while eaten < 3 and not fridge.is_empty():
+		var pick := -1
+		for k in fridge.size():                  # leave the Shabbat challah and grape juice alone
+			if fridge[k] != CHALLAH and fridge[k] != GRAPE_JUICE:
+				pick = k
+				break
+		if pick < 0:
+			break
+		fridge.remove_at(pick)
+		eaten += 1
+	if eaten < 3:
+		family_joy = maxf(family_joy - 12.0, 0.0)
+		_toast("לא היה מספיק אוכל בבית למשפחה. צריך למלא את המקרר.")
+	if family_joy < 25.0 and not joy_warned:
+		joy_warned = true
+		_toast("המשפחה מתגעגעת אליך. בוא הביתה, דבר איתם והבא אוכל.")
+	elif family_joy >= 40.0:
+		joy_warned = false
