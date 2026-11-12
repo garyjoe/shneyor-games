@@ -284,6 +284,15 @@ var roamers: Array[Roamer] = []
 var atv_rider: Node3D
 var fov_kick := 0.0
 const ATV := 4
+const PEN := Vector3(107, 5, 24.5)       # the sheep's pasture on the hill
+const MEADOW := Vector3(118, 0, 58)      # where they graze in the forest, south of the hill
+var riding := false                      # you are on your donkey
+var my_donkey: Roamer
+var near_donkey := false
+var herding := false
+var herd_stage := 0                      # 0 = on the way out, 1 = grazing, 2 = on the way home
+var graze_t := 0.0
+var beacon: MeshInstance3D
 const PARK := Vector3(-52, 0, 11)    # your own parking lot, next to the car lot
 var owned: Array[bool] = [true, false, false, false, false]
 var parked: Array[Node3D] = []
@@ -397,6 +406,7 @@ func _ready() -> void:
 	_build_lights()
 	_build_hill_farm()
 	_build_parking()
+	_build_donkey()
 	_merge_static()
 	var gfx := ConfigFile.new()
 	if gfx.load("user://life-city-gfx.cfg") == OK:
@@ -1182,9 +1192,11 @@ func _refresh_panel() -> void:
 					_add_action("להאכיל את הפרות עם הילדים", _feed_cows)
 			"hill":
 				panel_text.text = _h("חוות הגבעה: כבשים, חמורים, כרם וזיתים. תמיד שמחים לעזרה!")
-				_add_action("לעזור לרעות את הכבשים (שעה) · ₪18", _herd_sheep)
+				if herding:
+					_add_action("להפסיק את המרעה", _stop_herd.bind(false))
+				else:
+					_add_action("לצאת למרעה עם הכבשים · ₪40", _herd_sheep)
 				_add_action("לבצור ענבים בכרם (שעה) · ₪15", _pick_grapes)
-				_add_action("לרכוב על החמור סיבוב", _donkey_ride)
 				if not hill_me:
 					_add_action("להצטרף לנערי הגבעה", _join_hill)
 			"kids_out":
@@ -1249,6 +1261,8 @@ func _physics_process(delta: float) -> void:
 	_update_roamers(delta)
 	_follow_ground()
 	_update_patrol(delta)
+	_update_herd(delta)
+	near_donkey = my_donkey != null and not riding and not driving and not inside and my_donkey.node.position.distance_to(player.position) < 2.6
 	if player.position.distance_to(last_tick_pos) > 2.5:
 		player.reset_physics_interpolation()      # a teleport (door, wake-up): do not glide there
 	last_tick_pos = player.position
@@ -1277,7 +1291,7 @@ func _physics_process(delta: float) -> void:
 	# Tired or starving people walk slower.
 	var speed := WALK_SPEED * (0.6 if (energy < 15.0 or hunger < 10.0 or bladder >= 95.0) else 1.0)
 	# Running: hold Shift, or switch on the run button. It is faster but tiring.
-	running = walking and not driving and not carrying and energy >= 15.0 and input.length_squared() > 0.01 \
+	running = walking and not driving and not riding and not carrying and energy >= 15.0 and input.length_squared() > 0.01 \
 			and (run_on or Input.is_physical_key_pressed(KEY_SHIFT))
 	if running:
 		speed *= 1.75
@@ -1286,6 +1300,8 @@ func _physics_process(delta: float) -> void:
 		_drive(input, delta)
 	else:
 		var go := _stick_world(input)
+		if riding:
+			speed = 9.5
 		player.velocity = Vector3(go.x * speed, -4.0, go.z * speed)
 		player.move_and_slide()
 	_update_traffic(delta)
@@ -1314,7 +1330,10 @@ func _physics_process(delta: float) -> void:
 				step_t = 0.36
 				_play("step")
 				_footprint()
-	_animate(me, input.length_squared() > 0.01, delta * (1.6 if running else 1.0))
+	if riding:
+		_ride_tick(input.length_squared() > 0.01, delta)
+	else:
+		_animate(me, input.length_squared() > 0.01, delta * (1.6 if running else 1.0))
 	reach = maxf(reach - delta, 0.0)
 	if reach > 0.0:
 		me.limbs[3].rotation.x = -1.9          # arm stretched out to the shelf
@@ -1480,6 +1499,10 @@ func _unhandled_input(e: InputEvent) -> void:
 # ---------------------------------------------------------- game states ----
 
 func _new_game() -> void:
+	if riding:
+		_dismount()
+	if herding:
+		_stop_herd(false)
 	owned.assign([true, false, false, false, false])
 	hill_me = false
 	hill_gear.visible = false
@@ -1904,10 +1927,14 @@ func _update_hud() -> void:
 	var lit := candles_day > 0 and (day == candles_day or (day == candles_day + 1 and clock < 19.0))
 	for f in flames:
 		f.visible = lit
-	prompt.visible = playing and (near != null or near_car or driving or near_npc != null or near_kin != null) and open_place == null and not busy
+	prompt.visible = playing and (near != null or near_car or driving or riding or near_donkey or near_npc != null or near_kin != null) and open_place == null and not busy
 	if prompt.visible:
-		if near != null:
+		if riding:
+			prompt.text = _h("לרדת מהחמור")
+		elif near != null:
 			prompt.text = _h(near.prompt)
+		elif near_donkey and not driving:
+			prompt.text = _h("לעלות על החמור שלי")
 		else:
 			if driving:
 				prompt.text = _h("לצאת מהרכב")
@@ -2179,6 +2206,8 @@ func _interact(p: Place) -> void:
 
 
 func _enter_room(p: Place) -> void:
+	if riding:
+		_dismount()
 	if _is_shabbat() and p.key not in ["home", "shul", "clinic"]:
 		_toast("שבת היום, %s סגור. שבת שלום!" % p.title)
 		return
@@ -2877,8 +2906,12 @@ func _use() -> void:
 			_toast("קודם עוצרים את הרכב.")
 		else:
 			_exit_car()
+	elif riding:
+		_dismount()
 	elif near != null:
 		_interact(near)
+	elif near_donkey:
+		_mount()
 	elif focus != null:
 		_pick(focus)
 	elif near_car and _can_pour():
@@ -2898,6 +2931,8 @@ func _use() -> void:
 func _enter_car() -> void:
 	if _shabbat_block():
 		return
+	if riding:
+		_dismount()
 	driving = true
 	near_car = false
 	car_speed = 0.0
@@ -3117,7 +3152,7 @@ func _car_hits() -> void:
 			_play("thump")
 			_toast("פגעת בחיה עם הרכב.")
 	for r in roamers:
-		if r.air or r.lying > 0.0:
+		if r.air or r.lying > 0.0 or r == my_donkey:
 			continue
 		var rel := r.node.position - player.position
 		if absf(rel.dot(right)) < 1.4 and absf(rel.dot(nose)) < 2.7 and car_vel.dot(rel) > 0.0:
@@ -5963,8 +5998,11 @@ func _build_hill_farm() -> void:
 func _update_roamers(delta: float) -> void:
 	var resting := _is_shabbat()
 	var mine := player.position if not inside else Vector3(0, 0, 9999)
-	for r in roamers:
+	for idx in roamers.size():
+		var r := roamers[idx]
 		var n := r.node
+		if r == my_donkey:
+			continue
 		if r.air:
 			r.fly.y -= 22.0 * delta
 			n.position += r.fly * delta
@@ -6009,8 +6047,16 @@ func _update_roamers(delta: float) -> void:
 				if r.kind == "atv" and r.voice_cool <= 0.0:
 					r.voice_cool = 4.0
 					_play("honk")
+		elif herding and r.kind == "sheep" and herd_stage != 1:
+			# The flock trots after you, each ewe in her own place behind.
+			goal = mine + Vector3(cos(idx * 2.4), 0, sin(idx * 2.4)) * (2.2 + (idx % 3) * 1.1)
+			var gap_to := goal - n.position
+			gap_to.y = 0.0
+			pace = 0.0 if gap_to.length() < 0.8 else clampf(gap_to.length() * 1.6, 2.0, 10.5)
 		else:
 			var scare := 9.0 if driving and car_vel.length() > 3.0 else 3.0
+			if herding and r.kind == "sheep":
+				scare = 0.0                   # grazing: they are used to you
 			if d < scare and r.kind != "dog":
 				goal = n.position - gap.normalized() * 4.0          # scatter away from you
 				pace = r.speed * (4.0 if driving else 2.2)
@@ -6032,7 +6078,7 @@ func _update_roamers(delta: float) -> void:
 			n.position.y = _ground_y(n.position.x, n.position.z)
 			n.rotation.y = lerp_angle(n.rotation.y, atan2(dir.x, dir.z), 5.0 * delta)
 			r.phase += delta * (4.0 + pace * 3.0)
-		if r.path.is_empty():
+		if r.path.is_empty() and not (herding and r.kind == "sheep" and herd_stage != 1):
 			n.position.x = clampf(n.position.x, r.home.x - r.reach - 5.0, r.home.x + r.reach + 5.0)
 			n.position.z = clampf(n.position.z, r.home.z - r.reach - 5.0, r.home.z + r.reach + 5.0)
 		for k in r.legs.size():
@@ -6062,22 +6108,19 @@ func _hill_job(doing: String, done: String, pay: int, thanks: String) -> void:
 
 
 func _herd_sheep() -> void:
-	_hill_job("רועים את הכבשים בגבעה...", "רעית את הצאן והחזרת את כולן לדיר. הרווחת ₪%d.", 18, "תודה רבה! הכבשים אוהבות אותך.")
+	_close_panel()
+	if _shabbat_block():
+		return
+	herding = true
+	herd_stage = 0
+	beacon.visible = true
+	beacon.position = MEADOW + Vector3(0, 6.0, 0)
+	_play("baa")
+	_toast("יוצאים למרעה! הכבשים הולכות אחריך. רדו מההר והובל אותן לעמוד הירוק ביער, מדרום להר.")
 
 
 func _pick_grapes() -> void:
 	_hill_job("בוצרים ענבים בכרם...", "בצרת ארגזים של ענבים מתוקים. הרווחת ₪%d.", 15, "יישר כוח! יהיה יין טוב לקידוש.")
-
-
-func _donkey_ride() -> void:
-	_close_panel()
-	if _shabbat_block():
-		return
-	_time_skip("רוכבים על החמור סביב הגבעה...", func() -> void:
-		_skip(0.5, "awake")
-		family_joy = minf(family_joy + 2.0, 100.0)
-		_play("bray")
-		_toast("רכבת על החמור סיבוב שלם. איזה כיף!"))
 
 
 # ------------------------------------------------------- fewer draw calls ----
@@ -6504,3 +6547,108 @@ func _footprint() -> void:
 	var right := Vector3(cos(turn), 0, -sin(turn))
 	mark.position = player.position + right * side + Vector3(0, 0.1, 0)
 	mark.rotation.y = turn
+
+
+# ------------------------------------------- your donkey and the flock ----
+
+func _build_donkey() -> void:
+	my_donkey = _make_beast("donkey")
+	my_donkey.label = "החמור שלך"
+	my_donkey.node.position = Vector3(123.5, HILL_H, 19.0)
+	my_donkey.node.rotation.y = -1.2
+	_tag("החמור שלי", my_donkey.node.position + Vector3(0, 2.6, 0), 40)
+	beacon = _box(Vector3(0.5, 12.0, 0.5), MEADOW + Vector3(0, 6.0, 0), _mat(Color(0.3, 0.95, 0.4)))
+	var glow := beacon.material_override as StandardMaterial3D
+	glow.emission_enabled = true
+	glow.emission = Color(0.3, 0.95, 0.4)
+	glow.emission_energy_multiplier = 1.5
+	beacon.visible = false
+
+
+func _mount() -> void:
+	if _shabbat_block():
+		return
+	riding = true
+	me.root.position = Vector3(0, 0.52, -0.05)
+	_sit_astride(me)
+	_play("bray")
+	_toast("אתה רוכב על החמור! מכוונים כמו בהליכה. לרדת: אותו כפתור.")
+
+
+func _dismount() -> void:
+	riding = false
+	me.root.position = Vector3.ZERO
+	for limb in me.limbs:
+		limb.rotation = Vector3.ZERO
+	for joint in me.joints:
+		joint.rotation = Vector3.ZERO
+	var side := Vector3(cos(me.root.rotation.y), 0, -sin(me.root.rotation.y))
+	my_donkey.node.position = player.position
+	player.position += side * 1.2
+	_play("door")
+
+
+## While you ride, the donkey is under you and its legs do the walking.
+func _ride_tick(moving: bool, delta: float) -> void:
+	var d := my_donkey.node
+	d.position = player.position
+	d.rotation.y = me.root.rotation.y
+	if moving:
+		my_donkey.phase += delta * 13.0
+	for k in my_donkey.legs.size():
+		var swing := sin(my_donkey.phase + (0.0 if k % 3 == 0 else PI)) * 0.55 if moving else 0.0
+		my_donkey.legs[k].rotation.x = lerp_angle(my_donkey.legs[k].rotation.x, swing, 10.0 * delta)
+
+
+## Real shepherding: lead the flock down to the forest meadow, let them graze, and bring them home.
+func _update_herd(delta: float) -> void:
+	if not herding or state != State.PLAY:
+		return
+	var close := 0
+	for r in roamers:
+		if r.kind == "sheep" and r.node.position.distance_to(player.position) < 16.0:
+			close += 1
+	match herd_stage:
+		0:
+			if player.position.distance_to(MEADOW) < 8.0 and close >= 4:
+				herd_stage = 1
+				graze_t = 18.0
+				for r in roamers:
+					if r.kind == "sheep":
+						r.home = MEADOW
+						r.wait = 0.0
+				_play("baa")
+				_toast("הגעתם למרעה! הכבשים אוכלות עשב טרי. חכה לידן עד שישבעו.")
+		1:
+			graze_t -= delta
+			if graze_t <= 0.0:
+				herd_stage = 2
+				beacon.position = PEN + Vector3(0, 6.0, 0)
+				_play("baa")
+				_toast("הכבשים שבעות! עכשיו החזר אותן לדיר בחווה, אל העמוד הירוק שעל ההר.")
+		2:
+			if player.position.distance_to(PEN) < 8.0 and close >= 4:
+				_stop_herd(true)
+
+
+func _stop_herd(done: bool) -> void:
+	_close_panel()
+	herding = false
+	beacon.visible = false
+	for r in roamers:
+		if r.kind == "sheep":
+			r.home = PEN
+			r.wait = 0.0
+			if not done:
+				r.node.position = PEN + Vector3(rng.randf_range(-5, 5), 0, rng.randf_range(-5, 5))
+	if done:
+		money += 40
+		family_joy = minf(family_joy + 3.0, 100.0)
+		_play("pay")
+		_toast("כל הכבוד, רועה! כל העדר חזר שבע לדיר, והרווחת ₪40.")
+		for n in npcs:
+			if n.name == "הרועה אליה":
+				_say(n, "תודה רבה! הכבשים אוהבות אותך.", 5.0)
+	else:
+		_toast("המרעה הופסק. הכבשים חזרו לדיר.")
+	_update_hud()
