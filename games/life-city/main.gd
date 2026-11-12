@@ -87,11 +87,14 @@ const CAN_FUEL := 25.0
 const JEEP := 2
 const CAR_LOT := Vector3(-37, 0, 10.5)
 const CARS: Array[Dictionary] = [
-	{"name": "הרכב הישן", "price": 0, "color": Color(0.15, 0.4, 0.85), "top": 17.0, "use": 1.0, "note": ""},
-	{"name": "משפחתית חדשה", "price": 200, "color": Color(0.8, 0.12, 0.12), "top": 21.0, "use": 0.75, "note": "חסכונית בדלק"},
-	{"name": "ג'יפ", "price": 250, "color": Color(0.2, 0.38, 0.2), "top": 19.0, "use": 1.15, "note": "נוסע גם ביער"},
-	{"name": "מכונית ספורט", "price": 300, "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
+	{"name": "הרכב הישן", "price": 0, "model": "sedan", "color": Color(0.15, 0.4, 0.85), "top": 17.0, "use": 1.0, "note": ""},
+	{"name": "משפחתית חדשה", "price": 200, "model": "suv-luxury", "color": Color(0.8, 0.12, 0.12), "top": 21.0, "use": 0.75, "note": "חסכונית בדלק"},
+	{"name": "ג'יפ", "price": 250, "model": "suv", "color": Color(0.2, 0.38, 0.2), "top": 19.0, "use": 1.15, "note": "נוסע גם ביער"},
+	{"name": "מכונית ספורט", "price": 300, "model": "sedan-sports", "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
 ]
+const TRAFFIC_MODELS: Array[String] = ["sedan", "suv", "taxi", "van", "hatchback-sports", "truck", "delivery", "suv-luxury", "sedan"]
+const LEAF_TREES: Array[String] = ["tree_default", "tree_oak", "tree_detailed", "tree_fat"]
+const PINE_TREES: Array[String] = ["tree_pineTallA", "tree_pineTallB", "tree_pineDefaultA", "tree_pineRoundC"]
 const GAS_PUMP := Vector3(15, 0, 5.6)
 const SAVE_PATH := "user://life-city.cfg"
 
@@ -252,6 +255,7 @@ var chase := true                  # camera behind the player outdoors; false = 
 var cam_yaw := PI                  # which way the camera looks (PI = north, as the overhead view does)
 var cam_button: Button
 var tex_cache := {}
+var model_cache := {}
 var water_mat: ShaderMaterial
 var night_lights: Array[OmniLight3D] = []
 var headlight: SpotLight3D
@@ -410,6 +414,16 @@ func _building(key: String, title: String, x: float, w: float, h: float, wall: C
 
 
 func _tree(pos: Vector3) -> void:
+	_solid(Vector3(0.55, 2.4, 0.55), pos + Vector3(0, 1.2, 0))
+	var r := rng.randf_range(1.3, 1.9)
+	var ready := _model("nature/" + LEAF_TREES[rng.randi() % LEAF_TREES.size()])
+	if ready != null:
+		ready.position = pos
+		ready.rotation.y = rng.randf() * TAU
+		ready.scale = Vector3.ONE * (2.6 + r)
+		_regreen(ready, Color.from_hsv(rng.randf_range(0.27, 0.36), 0.6, rng.randf_range(0.42, 0.6)))
+		_limit(ready, 190.0)
+		return
 	var trunk := CylinderMesh.new()
 	trunk.top_radius = 0.22
 	trunk.bottom_radius = 0.3
@@ -419,9 +433,7 @@ func _tree(pos: Vector3) -> void:
 	t.material_override = _mat(Color(0.42, 0.28, 0.16))
 	t.position = pos + Vector3(0, 1.0, 0)
 	add_child(t)
-	_solid(Vector3(0.55, 2.4, 0.55), pos + Vector3(0, 1.2, 0))
 	var crown := SphereMesh.new()
-	var r := rng.randf_range(1.3, 1.9)
 	crown.radius = r
 	crown.height = r * 2.0
 	crown.radial_segments = 10
@@ -2190,8 +2202,16 @@ func _forest_point() -> Vector3:
 
 func _pine(pos: Vector3) -> void:
 	var h := rng.randf_range(4.0, 7.0)
-	_box(Vector3(0.35, 1.4, 0.35), pos + Vector3(0, 0.7, 0), _mat(Color(0.33, 0.22, 0.13)))
 	_solid(Vector3(0.6, 2.0, 0.6), pos + Vector3(0, 1.0, 0))
+	var ready := _model("nature/" + PINE_TREES[rng.randi() % PINE_TREES.size()])
+	if ready != null:
+		ready.position = pos
+		ready.rotation.y = rng.randf() * TAU
+		ready.scale = Vector3(1.25, 1.0, 1.25) * (h + 1.2) / 1.6
+		_regreen(ready, Color.from_hsv(rng.randf_range(0.3, 0.38), 0.65, rng.randf_range(0.28, 0.42)))
+		_limit(ready, 190.0)
+		return
+	_box(Vector3(0.35, 1.4, 0.35), pos + Vector3(0, 0.7, 0), _mat(Color(0.33, 0.22, 0.13)))
 	var cone := CylinderMesh.new()
 	cone.top_radius = 0.0
 	cone.bottom_radius = h * 0.3
@@ -2522,8 +2542,15 @@ func _sell_meat() -> void:
 
 # ----------------------------------------------------------------- cars ----
 
-func _make_car(color: Color) -> Node3D:
+func _make_car(color: Color, kind: String = "") -> Node3D:
 	var n := Node3D.new()
+	if kind == "":
+		kind = TRAFFIC_MODELS[rng.randi() % TRAFFIC_MODELS.size()]
+	var ready := _model("cars/" + kind, n)
+	if ready != null:
+		ready.scale = Vector3.ONE * 1.4          # the kit's cars are small next to our people
+		add_child(n)
+		return n
 	_box(Vector3(1.9, 0.6, 4.2), Vector3(0, 0.7, 0), _mat(color), n)
 	_box(Vector3(1.7, 0.6, 2.2), Vector3(0, 1.3, -0.25), _mat(Color(0.2, 0.3, 0.42)), n)
 	_box(Vector3(1.72, 0.1, 2.22), Vector3(0, 1.62, -0.25), _mat(color.darkened(0.15)), n)
@@ -2553,7 +2580,7 @@ func _set_car_model(model: int) -> void:
 		pos = car.position
 		car.queue_free()
 	car_model = model
-	car = _make_car(CARS[model]["color"])
+	car = _make_car(CARS[model]["color"], CARS[model]["model"])
 	if model == JEEP:
 		car.scale = Vector3(1.08, 1.25, 1.0)
 	var block := StaticBody3D.new()
@@ -2584,7 +2611,7 @@ func _build_cars() -> void:
 	places.append(dealer)
 	_box(Vector3(2.4, 0.04, 1.4), dealer.door + Vector3(0, 0.05, 0), _mat(Color(0.95, 0.75, 0.2)))
 	for k in range(1, CARS.size()):
-		var show := _make_car(CARS[k]["color"])
+		var show := _make_car(CARS[k]["color"], CARS[k]["model"])
 		if k == JEEP:
 			show.scale = Vector3(1.08, 1.25, 1.0)
 		show.position = CAR_LOT + Vector3(-8.5 + k * 4.25, 0, 1.0)
@@ -4878,11 +4905,12 @@ func _build_north() -> void:
 
 	# Police station, with a patrol car outside.
 	_building("police", "תחנת משטרה", 0, 13, 6.0, Color(0.82, 0.86, 0.92), Color(0.12, 0.2, 0.45), 0, 24, NORTH_Z - 10.0)
-	var patrol := _make_car(Color(0.95, 0.95, 0.97))
+	var patrol := _make_car(Color(0.95, 0.95, 0.97), "police")
 	patrol.position = Vector3(9, 0, NORTH_Z - 4.6)
 	patrol.rotation.y = PI * 0.5
-	_box(Vector3(1.92, 0.3, 1.2), Vector3(0, 0.75, 0.9), _mat(Color(0.12, 0.2, 0.45)), patrol)
-	_box(Vector3(0.9, 0.16, 0.3), Vector3(0, 1.75, -0.25), _mat(Color(0.2, 0.35, 0.95)), patrol)
+	if patrol.get_child_count() > 1:             # the plain box car gets a blue stripe
+		_box(Vector3(1.92, 0.3, 1.2), Vector3(0, 0.75, 0.9), _mat(Color(0.12, 0.2, 0.45)), patrol)
+		_box(Vector3(0.9, 0.16, 0.3), Vector3(0, 1.75, -0.25), _mat(Color(0.2, 0.35, 0.95)), patrol)
 	_solid(Vector3(4.2, 1.6, 1.9), patrol.position + Vector3(0, 0.8, 0))
 
 	# Houses along the north side of the second street.
@@ -5202,3 +5230,32 @@ func _update_lights(delta: float) -> void:
 			var at: Vector3 = near_lamps[k][1]
 			lamp.position = at + Vector3(0, 3.9, 0)
 			lamp.light_energy = dark * 2.4
+
+
+## A ready-made model from the models folder, added to the scene (or to "into").
+## Returns null when the file is missing, and the caller then builds the simple shape instead.
+func _model(path: String, into: Node = null) -> Node3D:
+	var file := "res://models/%s.glb" % path
+	if not model_cache.has(file):
+		model_cache[file] = load(file) if ResourceLoader.exists(file) else null
+	var scene: PackedScene = model_cache[file]
+	if scene == null:
+		return null
+	var node := scene.instantiate() as Node3D
+	if into == null:
+		add_child(node)
+	else:
+		into.add_child(node)
+	return node
+
+
+## The kit's leaves are turquoise; paint them a natural green (trunks keep their own colour).
+func _regreen(node: Node, green: Color) -> void:
+	var mi := node as MeshInstance3D
+	if mi != null and mi.mesh != null:
+		for k in mi.mesh.get_surface_count():
+			var was := mi.mesh.surface_get_material(k) as BaseMaterial3D
+			if was != null and was.albedo_color.b > was.albedo_color.r * 1.15:
+				mi.set_surface_override_material(k, _mat(green))
+	for child in node.get_children():
+		_regreen(child, green)
