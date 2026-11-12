@@ -111,6 +111,7 @@ class Person:
 	var speed := 2.0
 	var chasing := false            # robbers only
 	var town := false               # a robber who works the streets at night
+	var hill := false               # a sheep thief who hangs about the hill farm
 	var target := Vector3.ZERO
 	var wait := 0.0
 	var name := ""
@@ -283,11 +284,24 @@ var roamers: Array[Roamer] = []
 var atv_rider: Node3D
 var fov_kick := 0.0
 const ATV := 4
+const HILL_H := 5.0                  # how high the hill farm stands above the town
+var hill_me := false                 # you joined the hill boys: big kippah, sidelocks, hoodie
+var entered_from := Vector3.ZERO
+var hill_gear: Node3D
+var phone_button: Button
+var patrol_car: Node3D
+var patrol_path: Array[Vector3] = []
+var patrol_back := false
+var siren_t := 0.0
 const HILL := Vector3(120, 0, 21)    # the hill farm, between the street and the forest
 var last_tick_pos := Vector3.ZERO
 var cam_room := 1.0                 # how far out the chase camera is allowed, 0..1
 var cam_yaw := PI                  # which way the camera looks (PI = north, as the overhead view does)
 var cam_button: Button
+var quality := 2                     # drops by itself on a slow device: 1 = no shadows, 0 = also lower resolution
+var fps_time := 0.0
+var fps_frames := 0
+var paint_mat: StandardMaterial3D   # one shared material for everything that is merged; colours live in the mesh
 var tex_cache := {}
 var model_cache := {}
 var water_mat: ShaderMaterial
@@ -372,6 +386,7 @@ func _ready() -> void:
 	_build_car_effects()
 	_build_lights()
 	_build_hill_farm()
+	_merge_static()
 	get_window().size_changed.connect(_layout)
 	_layout()
 	_apply_daylight()
@@ -500,18 +515,18 @@ func _build_world() -> void:
 	env.fog_enabled = true
 	env.fog_mode = Environment.FOG_MODE_DEPTH
 	env.fog_depth_begin = 80.0
-	env.fog_depth_end = 250.0
+	env.fog_depth_end = 200.0
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
 	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 85.0
+	sun.directional_shadow_max_distance = 60.0
 	add_child(sun)
 
 	cam = Camera3D.new()
-	cam.far = 270.0
+	cam.far = 225.0
 	cam.near = 0.3                          # a tight depth range stops far road markings shimmering
 	cam.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	add_child(cam)
@@ -710,7 +725,11 @@ func _make_person(shirt: Color, pants: Color, into: Person = null, tone: int = -
 		p.limbs.append(shoulder)
 		elbows.append(elbow)
 	p.joints = knees + elbows
-	_limit(p.root, 85.0)
+	# Draw each person as a handful of pieces instead of forty.
+	_fuse(p.root)
+	for part in p.joints:
+		_fuse(part)
+	_limit(p.root, 70.0)
 	if into == null:
 		var tall := rng.randf_range(0.93, 1.07)
 		p.root.scale = Vector3(tall * rng.randf_range(0.95, 1.08), tall, tall)
@@ -1145,6 +1164,8 @@ func _refresh_panel() -> void:
 				_add_action("לעזור לרעות את הכבשים (שעה) · ₪18", _herd_sheep)
 				_add_action("לבצור ענבים בכרם (שעה) · ₪15", _pick_grapes)
 				_add_action("לרכוב על החמור סיבוב", _donkey_ride)
+				if not hill_me:
+					_add_action("להצטרף לנערי הגבעה", _join_hill)
 			"kids_out":
 				if kids != 0:
 					panel_text.text = _h("הילדים כבר לא בבית.")
@@ -1196,6 +1217,8 @@ func _physics_process(delta: float) -> void:
 	if atv_rider != null and is_instance_valid(atv_rider):
 		atv_rider.visible = driving
 	_update_roamers(delta)
+	_follow_ground()
+	_update_patrol(delta)
 	if player.position.distance_to(last_tick_pos) > 2.5:
 		player.reset_physics_interpolation()      # a teleport (door, wake-up): do not glide there
 	last_tick_pos = player.position
@@ -1300,6 +1323,20 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	# If the device cannot keep up, give up the costly extras rather than stutter.
+	if state == State.PLAY and quality > 0:
+		fps_time += delta
+		fps_frames += 1
+		if fps_time >= 4.0:
+			if fps_frames / fps_time < 27.0:
+				quality -= 1
+				if quality == 1:
+					sun.shadow_enabled = false
+					get_viewport().msaa_3d = Viewport.MSAA_DISABLED
+				else:
+					get_viewport().scaling_3d_scale = 0.7
+			fps_time = 0.0
+			fps_frames = 0
 	var view := get_viewport().get_visible_rect().size
 	var portrait := view.y > view.x
 	shake = maxf(shake - delta * 2.2, 0.0)
@@ -1396,6 +1433,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				_close_panel()
 			elif key >= KEY_1 and key <= KEY_9 and key - KEY_1 < actions.size():
 				actions[key - KEY_1].call()
+		elif key == KEY_P:
+			_call_police()
 		elif key == KEY_C:
 			_toggle_camera()
 		elif key in [KEY_E, KEY_ENTER, KEY_SPACE]:
@@ -1405,6 +1444,8 @@ func _unhandled_input(e: InputEvent) -> void:
 # ---------------------------------------------------------- game states ----
 
 func _new_game() -> void:
+	hill_me = false
+	hill_gear.visible = false
 	day = 1
 	clock = 7.0
 	money = 200
@@ -1465,6 +1506,8 @@ func _continue_game() -> void:
 	wage = int(cfg.get_value("life", "wage", 40))
 	has_rifle = bool(cfg.get_value("life", "rifle", false))
 	has_can = bool(cfg.get_value("life", "can", false))
+	hill_me = bool(cfg.get_value("life", "hill_me", false))
+	hill_gear.visible = hill_me
 	_set_car_model(clampi(int(cfg.get_value("life", "car_model", 0)), 0, CARS.size() - 1))
 	ammo = int(cfg.get_value("life", "ammo", 0))
 	fuel = float(cfg.get_value("life", "fuel", 60.0))
@@ -1511,7 +1554,7 @@ func _save() -> void:
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
 			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["family", family_joy], ["candles", candles_day], ["kiddush", kiddush_day],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading], ["car_damage", car_damage],
-			["can", has_can], ["car_model", car_model]]:
+			["can", has_can], ["car_model", car_model], ["hill_me", hill_me]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
 
@@ -1695,6 +1738,14 @@ func _build_hud() -> void:
 		run_button.text = _h("ריצה ✓" if on else "ריצה"))
 	hud.add_child(run_button)
 
+	phone_button = Button.new()
+	phone_button.focus_mode = Control.FOCUS_NONE
+	phone_button.text = _h("טלפון למשטרה")
+	phone_button.add_theme_font_size_override("font_size", 26)
+	phone_button.set_anchors_and_offsets_preset(Control.PRESET_CENTER_LEFT, Control.PRESET_MODE_MINSIZE, 30)
+	phone_button.pressed.connect(_call_police)
+	hud.add_child(phone_button)
+
 	cam_button = Button.new()
 	cam_button.focus_mode = Control.FOCUS_NONE
 	cam_button.text = _h("מצלמה: מאחור")
@@ -1775,6 +1826,7 @@ func _layout() -> void:
 func _update_hud() -> void:
 	run_button.visible = state == State.PLAY and not driving and open_place == null and not busy
 	cam_button.visible = state == State.PLAY and not inside and open_place == null and not busy
+	phone_button.visible = cam_button.visible
 	var playing := state == State.PLAY
 	info_label.visible = playing
 	stats_box.visible = playing
@@ -1865,6 +1917,8 @@ func _build_sounds() -> void:
 		"pick": _tone(620, 760, 0.1, 0.25),
 		"bang": _tone(140, 40, 0.35, 0.6, 0.8),
 		"alarm": _tone(500, 900, 0.5, 0.3),
+		"siren": _tone(620, 930, 0.45, 0.22),
+		"dial": _tone(1200, 1200, 0.12, 0.2),
 		"engine": _tone(90, 180, 0.5, 0.35, 0.25),
 		"crash": _tone(140, 35, 0.55, 0.8, 0.9),
 		"ouch": _tone(880, 330, 0.38, 0.3),
@@ -2093,6 +2147,7 @@ func _enter_room(p: Place) -> void:
 		_play("no")
 		return
 	inside = true
+	entered_from = p.door
 	room = p.key
 	room_origin = ROOMS[room]["origin"]
 	room_half = ROOMS[room]["half"]
@@ -2116,6 +2171,8 @@ func _leave_room() -> void:
 	for place in places:
 		if place.key == room and place.room == "":
 			player.position = place.door + Vector3(0, 0, 1.2)
+	if room == "home" and entered_from.y > 1.0:
+		player.position = entered_from + Vector3(0, 0.2, -1.2)       # you came in through the caravan on the hill
 	inside = false
 	room = ""
 	carrying = false
@@ -2279,7 +2336,7 @@ func _pine(pos: Vector3) -> void:
 		ready.rotation.y = rng.randf() * TAU
 		ready.scale = Vector3(1.25, 1.0, 1.25) * (h + 1.2) / 1.6
 		_regreen(ready, Color.from_hsv(rng.randf_range(0.3, 0.38), 0.65, rng.randf_range(0.28, 0.42)))
-		_limit(ready, 190.0)
+		_limit(ready, 140.0)
 		return
 	_box(Vector3(0.35, 1.4, 0.35), pos + Vector3(0, 0.7, 0), _mat(Color(0.33, 0.22, 0.13)))
 	var cone := CylinderMesh.new()
@@ -2325,6 +2382,8 @@ func _build_forest() -> void:
 		var pos := Vector3(rng.randf_range(-175, 215), 0, rng.randf_range(FOREST_Z, FOREST_END + 25.0))
 		if absf(pos.x) < 3.0 and pos.z < FOREST_Z + 14.0:
 			continue                       # keep a path in from the sign
+		if pos.x > 87.0 and pos.x < 157.0 and pos.z < 46.5:
+			continue                       # the hill stands here
 		_pine(pos)
 	for k in 20:
 		_make_animal(k < 9)
@@ -2416,6 +2475,11 @@ func _update_forest(delta: float) -> void:
 				t.chasing = false
 				continue
 			in_reach = not inside and not driving and here.z < FOREST_Z - 2.0
+		if t.hill:
+			in_reach = not inside and not driving and here.x > 72.0 and here.x < 160.0 and here.z > 6.0 and here.z < 48.0 and here.y < 2.0   # up on the farm you are safe
+		if patrol_car != null and patrol_car.visible and patrol_car.position.distance_to(t.root.position) < 30.0:
+			t.chasing = false                # they freeze when they hear the siren
+			in_reach = false
 		if t.chasing and (not in_reach or dist > 24.0 or rob_cool > 0.0):
 			t.chasing = false
 		var watched := false                 # robbers keep away when a police officer is close
@@ -2426,7 +2490,10 @@ func _update_forest(delta: float) -> void:
 			t.chasing = false
 		elif not t.chasing and in_reach and dist < (9.0 if t.town else 13.0) and rob_cool <= 0.0:
 			t.chasing = true
-			_toast("אדם רע באדום רודף אחריך! היכנס לבניין או לרכב!" if t.town else "אדם רע באדום רודף אחריך! ברח מהיער!")
+			if t.hill:
+				_toast("גנב כבשים באדום רודף אחריך! התקשר למשטרה (כפתור הטלפון) או ברח!")
+			else:
+				_toast("אדם רע באדום רודף אחריך! היכנס לבניין או לרכב!" if t.town else "אדם רע באדום רודף אחריך! ברח מהיער!")
 			_play("alarm")
 		var step := Vector3.ZERO
 		if t.chasing:
@@ -2448,7 +2515,7 @@ func _update_forest(delta: float) -> void:
 		t.root.position += step * delta
 		if t.town:
 			t.root.position.z = clampf(t.root.position.z, -4.5, FOREST_Z - 3.0)
-		else:
+		elif not t.hill:
 			t.root.position.z = maxf(t.root.position.z, FOREST_Z + 2.0)
 		if step != Vector3.ZERO:
 			t.root.rotation.y = lerp_angle(t.root.rotation.y, atan2(step.x, step.z), 10.0 * delta)
@@ -3031,8 +3098,9 @@ func _tumble(n: Person, delta: float) -> bool:
 		n.fly.y -= 22.0 * delta
 		n.root.position += n.fly * delta
 		n.root.rotation.x += n.spin * delta
-		if n.root.position.y <= 0.25 and n.fly.y < 0.0:
-			n.root.position.y = 0.25
+		var floor_y := _ground_y(n.root.position.x, n.root.position.z) + 0.25
+		if n.root.position.y <= floor_y and n.fly.y < 0.0:
+			n.root.position.y = floor_y
 			if not n.bounced and n.fly.y < -5.0:
 				# One bounce and a roll before coming to rest.
 				n.bounced = true
@@ -3712,6 +3780,15 @@ func _hospital() -> void:
 
 
 func _thug_point(t: Person) -> Vector3:
+	if t.hill:
+		# Round the foot of the hill, never up on the farm itself.
+		var spot := Vector3(80, 0, 12)
+		for attempt in 12:
+			var a := rng.randf() * TAU
+			spot = Vector3(clampf(122.0 + cos(a) * 40.0, 79.0, 159.0), 0, clampf(25.75 + sin(a) * 24.0, 7.5, 46.5))
+			if _ground_y(spot.x, spot.z) < 0.5:
+				break
+		return spot
 	if t.town:
 		return Vector3(rng.randf_range(WEST + 4.0, EAST - 4.0), 0, rng.randf_range(-3.5, 28.0))
 	return _forest_point()
@@ -5092,7 +5169,7 @@ func _build_north() -> void:
 
 	# The sea: a long sandy beach, and water to the horizon.
 	_box(Vector3(span, 0.04, 11.0), Vector3(mid, 0.02, SEA_Z - 5.0), _tex("sand", Color(0.62, 0.55, 0.4), 0.14))
-	_box(Vector3(span + 200.0, 0.06, 120.0), Vector3(mid, 0.03, SEA_Z - 70.0), _water())
+	_box(Vector3(span + 200.0, 0.06, 96.0), Vector3(mid, 0.03, SEA_Z - 58.0), _water())
 	_box(Vector3(span, 0.07, 1.2), Vector3(mid, 0.035, SEA_Z - 10.4), _mat(Color(0.85, 0.95, 1.0)))       # surf
 	for k in 14:
 		var px := Vector3(WEST + 14.0 + k * 24.0, 0, SEA_Z - 4.0 - (k % 2) * 2.0)
@@ -5672,6 +5749,8 @@ func _put_rider(r: Roamer, boy: Person, seat: Vector3) -> void:
 
 
 func _build_hill_farm() -> void:
+	var first_new := get_child_count()
+	var first_roamer := roamers.size()
 	var earth := _tex("sand", Color(0.52, 0.4, 0.26), 0.2)
 	var stone := _tex("plaster", Color(0.72, 0.68, 0.58), 0.5)
 	var wood := _mat(Color(0.45, 0.32, 0.2))
@@ -5806,6 +5885,46 @@ func _build_hill_farm() -> void:
 	hill.prompt = "לעזור בחוות הגבעה"
 	hill.door = Vector3(120, 0, 13.4)
 	places.append(hill)
+	# Everything above was laid out on flat ground; now carry it up onto the hill.
+	var lift := Vector3(0, HILL_H, 3.0)
+	for k in range(first_new, get_child_count()):
+		var thing := get_child(k) as Node3D
+		if thing != null and thing.position.x > 90.0 and thing.position.x < 150.0 and thing.position.z > 8.0:
+			thing.position += lift
+	for k in range(first_roamer, roamers.size()):
+		var r := roamers[k]
+		r.home += lift
+		r.target = r.node.position
+		for j in r.path.size():
+			r.path[j] += lift
+	hill.door += lift
+	# Your own caravan on the farm: the same home, with a door up here.
+	var mine := Place.new()
+	mine.key = "home"
+	mine.title = "הקרוואן שלי בחווה"
+	mine.prompt = "להיכנס הביתה"
+	mine.room = ""
+	mine.door = Vector3(127.9, HILL_H, 28.2)
+	places.append(mine)
+	_box(Vector3(2.0, 0.05, 1.3), mine.door + Vector3(0, 0.08, 0), _mat(Color(0.3, 0.6, 0.9)))
+	_tag("הבית שלי", mine.door + Vector3(0, 3.4, 0.6), 44)
+	_build_hill()
+	# Sheep thieves in red lurk round the hill. Shoot at them, run, or phone the police.
+	for k in 5:
+		var t := _make_person(Color(0.85, 0.08, 0.08), Color(0.6, 0.05, 0.05))
+		t.hill = true
+		t.name = "גנב כבשים"
+		add_child(t.root)
+		t.root.position = _thug_point(t)
+		t.target = t.root.position
+		thugs.append(t)
+	# The gear you wear once you join the hill boys.
+	hill_gear = Node3D.new()
+	me.root.add_child(hill_gear)
+	var gear := Person.new()
+	gear.root = hill_gear
+	_hill_look(gear, Color(0.93, 0.93, 0.95), Color(0.2, 0.35, 0.65), Color(0.3, 0.19, 0.1))
+	hill_gear.visible = false
 
 
 func _update_roamers(delta: float) -> void:
@@ -5817,8 +5936,9 @@ func _update_roamers(delta: float) -> void:
 			r.fly.y -= 22.0 * delta
 			n.position += r.fly * delta
 			n.rotation.x += r.spin * delta
-			if n.position.y <= 0.0 and r.fly.y < 0.0:
-				n.position.y = 0.0
+			var floor_y := _ground_y(n.position.x, n.position.z)
+			if n.position.y <= floor_y and r.fly.y < 0.0:
+				n.position.y = floor_y
 				if not r.bounced and r.fly.y < -5.0:
 					r.bounced = true
 					r.fly = Vector3(r.fly.x * 0.5, -r.fly.y * 0.4, r.fly.z * 0.5)
@@ -5828,14 +5948,14 @@ func _update_roamers(delta: float) -> void:
 					r.air = false
 					r.lying = 4.0
 					n.rotation = Vector3(0, n.rotation.y, PI * 0.5)
-					n.position.y = 0.3
+					n.position.y = floor_y + 0.3
 					_play("thump")
 			continue
 		if r.lying > 0.0:
 			r.lying -= delta
 			if r.lying <= 0.0:
 				n.rotation = Vector3(0, n.rotation.y, 0)
-				n.position.y = 0.0
+				n.position.y = _ground_y(n.position.x, n.position.z)
 				n.position.x = clampf(n.position.x, WEST + 2.0, EAST - 2.0)
 				_play(r.voice)
 			continue
@@ -5876,6 +5996,7 @@ func _update_roamers(delta: float) -> void:
 		if moving:
 			var dir := way.normalized()
 			n.position += dir * pace * delta
+			n.position.y = _ground_y(n.position.x, n.position.z)
 			n.rotation.y = lerp_angle(n.rotation.y, atan2(dir.x, dir.z), 5.0 * delta)
 			r.phase += delta * (4.0 + pace * 3.0)
 		if r.path.is_empty():
@@ -5924,3 +6045,286 @@ func _donkey_ride() -> void:
 		family_joy = minf(family_joy + 2.0, 100.0)
 		_play("bray")
 		_toast("רכבת על החמור סיבוב שלם. איזה כיף!"))
+
+
+# ------------------------------------------------------- fewer draw calls ----
+
+func _is_plain(mat: Material) -> bool:
+	var m := mat as StandardMaterial3D
+	return m != null and m.albedo_texture == null and not m.emission_enabled and m.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED \
+		and m.shading_mode == BaseMaterial3D.SHADING_MODE_PER_PIXEL and m != lamp_mat and m != window_mat
+
+
+func _paint() -> StandardMaterial3D:
+	if paint_mat == null:
+		paint_mat = StandardMaterial3D.new()
+		paint_mat.vertex_color_use_as_albedo = true
+		paint_mat.vertex_color_is_srgb = true
+		paint_mat.roughness = 0.85
+	return paint_mat
+
+
+## Add one mesh, moved by `xf`, to the arrays of a bigger mesh that is being put together.
+func _append_mesh(into: Array, mesh: Mesh, xf: Transform3D, color: Color) -> void:
+	var arrays := mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var index: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var base: int = into[0].size()
+	var turn := xf.basis.inverse().transposed()
+	for k in verts.size():
+		into[0].append(xf * verts[k])
+		into[1].append((turn * normals[k]).normalized())
+		into[2].append(color)
+	for k in index:
+		into[3].append(base + k)
+
+
+func _finish_mesh(parts: Array, mat: Material) -> MeshInstance3D:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = parts[0]
+	arrays[Mesh.ARRAY_NORMAL] = parts[1]
+	arrays[Mesh.ARRAY_COLOR] = parts[2]
+	arrays[Mesh.ARRAY_INDEX] = parts[3]
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	return mi
+
+
+func _new_parts() -> Array:
+	return [PackedVector3Array(), PackedVector3Array(), PackedColorArray(), PackedInt32Array()]
+
+
+## Melt the plain-coloured pieces directly under `node` into a single mesh.
+func _fuse(node: Node3D) -> void:
+	var parts := _new_parts()
+	var done: Array[Node] = []
+	for child in node.get_children():
+		var mi := child as MeshInstance3D
+		if mi == null or mi.get_child_count() > 0 or not mi.visible or not _is_plain(mi.material_override):
+			continue
+		_append_mesh(parts, mi.mesh, mi.transform, (mi.material_override as StandardMaterial3D).albedo_color)
+		done.append(mi)
+	if done.size() < 2:
+		return
+	for mi in done:
+		node.remove_child(mi)
+		mi.free()
+	node.add_child(_finish_mesh(parts, _paint()))
+
+
+## Once the town is built, join its thousands of fixed boxes into a few big meshes per stretch of street.
+func _merge_static() -> void:
+	var groups := {}
+	for child in get_children():
+		var mi := child as MeshInstance3D
+		if mi == null or not (mi.mesh is BoxMesh) or mi.get_child_count() > 0 or not mi.visible or mi.has_meta("keep"):
+			continue
+		if mi.position.z < -100.0 or mi.material_override == null or mi.visibility_range_end > 0.0:
+			continue                              # the far-away rooms keep their separate pieces
+		if not mi.transform.basis.is_equal_approx(Basis.IDENTITY):
+			continue
+		var size: Vector3 = (mi.mesh as BoxMesh).size
+		if maxf(size.x, size.z) > 60.0:
+			continue                              # the ground, the roads, the sea
+		var plain := _is_plain(mi.material_override)
+		var key := "%d|%d|%s" % [int(floor(mi.position.x / 45.0)), int(floor(mi.position.z / 45.0)), "plain" if plain else str(mi.material_override.get_instance_id())]
+		if not groups.has(key):
+			groups[key] = [_new_parts(), _paint() if plain else mi.material_override, []]
+		var color := (mi.material_override as StandardMaterial3D).albedo_color if plain else Color.WHITE
+		_append_mesh(groups[key][0], mi.mesh, mi.transform, color)
+		groups[key][2].append(mi)
+	for key: String in groups:
+		var group: Array = groups[key]
+		if group[2].size() < 2:
+			continue
+		for mi: MeshInstance3D in group[2]:
+			remove_child(mi)
+			mi.free()
+		add_child(_finish_mesh(group[0], group[1]))
+
+
+# ------------------------------------------------------------ the hill ----
+
+## Height of the ground. Flat everywhere except the hill: a flat top with steep sides and one road up from the west.
+func _ground_y(x: float, z: float) -> float:
+	if x < 76.0 or x > 157.0 or z < 5.0 or z > 46.5:
+		return 0.0
+	var dx := maxf(maxf(94.0 - x, x - 150.0), 0.0)
+	var dz := maxf(maxf(12.0 - z, z - 39.5), 0.0)
+	var t := clampf(1.0 - sqrt(dx * dx + dz * dz) / 5.0, 0.0, 1.0)
+	var h := HILL_H * t * t * (3.0 - 2.0 * t)
+	if x < 95.0 and z > 18.0 and z < 33.0:
+		var side := clampf(minf(z - 18.0, 33.0 - z) / 2.5, 0.0, 1.0)
+		h = maxf(h, HILL_H * clampf((x - 80.0) / 14.0, 0.0, 1.0) * side)
+	return h
+
+
+func _build_hill() -> void:
+	var grass := SurfaceTool.new()
+	var road := SurfaceTool.new()
+	grass.begin(Mesh.PRIMITIVE_TRIANGLES)
+	road.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var cell := 1.5
+	var x := 76.0
+	while x < 157.0:
+		var z := 5.0
+		while z < 46.5:
+			var corners: Array[Vector3] = []
+			var top := 0.0
+			for c: Vector2 in [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]:
+				var px := x + c.x * cell
+				var pz := z + c.y * cell
+				var h := _ground_y(px, pz)
+				top = maxf(top, h)
+				corners.append(Vector3(px, h if h > 0.01 else -0.06, pz))    # dips just under the flat ground, so the two never shimmer
+			if top > 0.01:
+				var on_road := x + cell * 0.5 < 97.0 and z > 20.5 and z < 30.5
+				var st := road if on_road else grass
+				for k: int in [0, 1, 2, 0, 2, 3]:
+					st.add_vertex(corners[k])
+			z += cell
+		x += cell
+	grass.generate_normals()
+	road.generate_normals()
+	var mesh := grass.commit()
+	mesh.surface_set_material(0, _tex("grass", Color(0.3, 0.5, 0.24), 0.11))
+	road.commit(mesh)
+	mesh.surface_set_material(1, _tex("sand", Color(0.52, 0.4, 0.26), 0.2))
+	var land := MeshInstance3D.new()
+	land.mesh = mesh
+	add_child(land)
+	var body := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	cs.shape = mesh.create_trimesh_shape()
+	body.add_child(cs)
+	add_child(body)
+	# Boulders on the slopes.
+	for k in 26:
+		var a := rng.randf() * TAU
+		var pos := Vector3(122.0 + cos(a) * 31.5, 0, 25.75 + sin(a) * 17.5)
+		if pos.x < 97.0 and pos.z > 17.0 and pos.z < 34.0:
+			continue                              # not on the road up
+		pos.y = _ground_y(pos.x, pos.z) - 0.2
+		var rock := _model("nature/" + ("rock_tallA" if k % 3 == 0 else "rock_largeA"))
+		if rock != null:
+			rock.position = pos
+			rock.rotation.y = rng.randf() * TAU
+			rock.scale = Vector3.ONE * rng.randf_range(3.0, 6.5)
+			_regreen(rock, Color(0.55, 0.53, 0.5))       # plain grey stone
+			_limit(rock, 190.0)
+	_sign("לחוות הגבעה", Vector3(79.0, 3.0, 25.5), 64)
+	_box(Vector3(0.18, 2.6, 0.18), Vector3(79.0, 1.3, 25.5), _mat(Color(0.45, 0.32, 0.2)))
+
+
+## People and animals near the hill stand on it, not inside it.
+func _follow_ground() -> void:
+	for list: Array in [npcs, thugs, cops, family]:
+		for n: Person in list:
+			if n.root == null or n.air or n.lying > 0.0:
+				continue
+			var at := n.root.position
+			if at.x > 76.0 and at.x < 157.0 and at.z > 5.0 and at.z < 46.5:
+				n.root.position.y = _ground_y(at.x, at.z)
+			elif at.y > 0.0 and at.y < HILL_H + 0.5 and at.z > -100.0:
+				n.root.position.y = 0.0
+	for a in animals:
+		var at := a.node.position
+		if at.x > 76.0 and at.x < 157.0 and at.z < 46.5:
+			a.node.position.y = _ground_y(at.x, at.z)
+
+
+func _join_hill() -> void:
+	_close_panel()
+	hill_me = true
+	hill_gear.visible = true
+	_play("level" if sfx.has("level") else "pay")
+	_toast("ברוך הבא לנערי הגבעה! קיבלת כיפה סרוגה גדולה, פאות וקפוצ'ון.")
+	_save()
+
+
+# ------------------------------------------------- phoning the police ----
+
+func _call_police() -> void:
+	if state != State.PLAY or inside or busy:
+		return
+	if patrol_car != null and patrol_car.visible:
+		_toast("הניידת כבר בדרך!")
+		return
+	var worst: Person
+	var best := 45.0
+	for t in thugs:
+		if t.down > 0.0 or not t.root.visible:
+			continue
+		var d := t.root.position.distance_to(player.position)
+		if d < best:
+			best = d
+			worst = t
+	_play("dial")
+	if worst == null:
+		_toast("התקשרת למשטרה, אבל אין כאן אנשים רעים עכשיו. מתקשרים רק כשצריך.")
+		return
+	if patrol_car == null:
+		patrol_car = _make_car(Color(0.95, 0.95, 0.97), "police")
+		var flash := _mat(Color(0.2, 0.4, 1.0))
+		flash.emission_enabled = true
+		flash.emission = Color(0.2, 0.4, 1.0)
+		flash.emission_energy_multiplier = 2.5
+		_box(Vector3(0.9, 0.18, 0.3), Vector3(0, 1.95, -0.2), flash, patrol_car)
+	var goal := worst.root.position
+	var from_x := goal.x - 60.0 if goal.x > 20.0 else goal.x + 60.0
+	patrol_car.position = Vector3(from_x, 0, 2.5)
+	patrol_car.visible = true
+	patrol_car.reset_physics_interpolation()
+	patrol_path.assign([Vector3(goal.x - signf(goal.x - from_x) * 8.0, 0, 2.5), goal])
+	patrol_back = false
+	rob_cool = maxf(rob_cool, 14.0)          # the thieves hear you phoning and back off
+	for t in thugs:
+		t.chasing = false
+	_toast("התקשרת למשטרה! הניידת בדרך אליך, עם סירנה.")
+
+
+func _update_patrol(delta: float) -> void:
+	if patrol_car == null or not patrol_car.visible:
+		return
+	siren_t -= delta
+	if siren_t <= 0.0:
+		siren_t = 0.5
+		_play("siren")
+	var goal := patrol_path[0]
+	var way := goal - patrol_car.position
+	way.y = 0.0
+	if way.length() > 2.5:
+		var dir := way.normalized()
+		patrol_car.position += dir * 19.0 * delta
+		patrol_car.position.y = _ground_y(patrol_car.position.x, patrol_car.position.z)
+		patrol_car.rotation.y = lerp_angle(patrol_car.rotation.y, atan2(dir.x, dir.z), 8.0 * delta)
+		return
+	patrol_path.pop_front()
+	if not patrol_path.is_empty():
+		return
+	if patrol_back:
+		patrol_car.visible = false
+		return
+	# Arrived: everyone bad within reach is taken away.
+	var caught := 0
+	for t in thugs:
+		if t.down <= 0.0 and t.root.visible and t.root.position.distance_to(patrol_car.position) < 16.0:
+			t.down = 60.0
+			t.chasing = false
+			t.root.rotation.z = PI * 0.5
+			caught += 1
+	if caught > 0:
+		money += caught * 30
+		_play("pay")
+		_toast("הניידת הגיעה! השוטרים עצרו %s, וקיבלת פרס של ₪%d." % ["איש רע אחד" if caught == 1 else "%d אנשים רעים" % caught, caught * 30])
+	else:
+		_toast("הניידת הגיעה, אבל האנשים הרעים כבר ברחו.")
+	_update_hud()
+	patrol_back = true
+	var away := patrol_car.position.x + (70.0 if patrol_car.position.x < 20.0 else -70.0)
+	patrol_path.assign([Vector3(patrol_car.position.x, 0, 2.5), Vector3(away, 0, 2.5)])
