@@ -117,6 +117,10 @@ class Person:
 	var bubble_t := 0.0
 	var hello_cool := 0.0
 	var down := 0.0                 # a robber who was shot stays away this long
+	var air := false                # knocked flying by a car
+	var fly := Vector3.ZERO
+	var spin := 0.0
+	var lying := 0.0                # seconds left on the ground after a knock
 
 
 class Animal:
@@ -244,6 +248,14 @@ var last_show_day := 0
 var guitar_mesh: Node3D
 var audience: Array[Person] = []
 var edge_cool := 0.0
+var car_vel := Vector3.ZERO        # the car's real velocity; it can differ from where the nose points
+var car_damage := 0.0              # 0 = perfect, 100 = wrecked
+var crash_cool := 0.0
+var shake := 0.0
+var props: Array[RigidBody3D] = [] # street furniture that can be knocked over
+var skid_fx: CPUParticles3D
+var smoke_fx: CPUParticles3D
+var engine_player: AudioStreamPlayer
 var rent_owed := 0                 # unpaid rent; the flat stays locked until it is renewed
 var has_can := false               # carrying a jerry can of petrol
 var can_mesh: MeshInstance3D
@@ -307,6 +319,7 @@ func _ready() -> void:
 	_build_player()
 	_build_hud()
 	_build_sounds()
+	_build_car_effects()
 	get_window().size_changed.connect(_layout)
 	_layout()
 	_apply_daylight()
@@ -392,6 +405,7 @@ func _tree(pos: Vector3) -> void:
 	t.material_override = _mat(Color(0.42, 0.28, 0.16))
 	t.position = pos + Vector3(0, 1.0, 0)
 	add_child(t)
+	_solid(Vector3(0.55, 2.4, 0.55), pos + Vector3(0, 1.2, 0))
 	var crown := SphereMesh.new()
 	var r := rng.randf_range(1.3, 1.9)
 	crown.radius = r
@@ -454,8 +468,7 @@ func _build_world() -> void:
 	# Street lamps.
 	var pole_mat := _mat(Color(0.2, 0.2, 0.22))
 	for x: float in [-144.0, -128.0, -112.0, -96.0, -80.0, -64.0, -48.0, -32.0, -16.0, 0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0, 128.0, 144.0, 160.0, 176.0]:
-		_box(Vector3(0.18, 4.2, 0.18), Vector3(x, 2.1, -1.9), pole_mat)
-		_box(Vector3(0.9, 0.25, 0.5), Vector3(x, 4.2, -1.6), lamp_mat)
+		_lamp_post(Vector3(x, 0, -1.9), 0.3)
 
 	# Park across the road.
 	var pond := CylinderMesh.new()
@@ -690,6 +703,10 @@ func _build_player() -> void:
 
 func _reset_position() -> void:
 	inside = false
+	_reset_props()
+	for n in npcs:
+		n.air = false
+		n.lying = 0.0
 	on_duty = false
 	if duty_cap != null:
 		duty_cap.visible = false
@@ -778,6 +795,7 @@ func _new_day() -> void:
 		_toast("הגיע הזמן לחדש שכר דירה: ₪%d. משלמים בדלת של הבית." % rent_owed)
 		_play("alarm")
 	_family_day()
+	_reset_props()
 	_save()
 
 
@@ -1002,6 +1020,8 @@ func _refresh_panel() -> void:
 				_add_action("קפה · ₪8", _cafe.bind(8, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
 			"gas":
 				var price := _fuel_price()
+				if car_damage >= 5.0:
+					_add_action("תיקון הרכב (נזק %d%%) · ₪%d" % [int(car_damage), _repair_price()], _repair)
 				if not driving:
 					if has_can:
 						panel_text.text = _h("יש לך מיכל דלק מלא. קח אותו לרכב ומלא שם.")
@@ -1089,6 +1109,8 @@ func _move_input() -> Vector2:
 
 func _physics_process(delta: float) -> void:
 	for n in npcs:
+		if _tumble(n, delta):
+			continue
 		n.pause = maxf(n.pause - delta, 0.0)
 		n.hello_cool = maxf(n.hello_cool - delta, 0.0)
 		if n.bubble_t > 0.0:
@@ -1132,7 +1154,11 @@ func _physics_process(delta: float) -> void:
 		if car_model != JEEP:
 			player.position.z = minf(player.position.z, FOREST_Z - 6.0)   # only the jeep goes among the trees
 		car.position = player.position
-		car.rotation.y = car_heading
+		# The body leans into corners and dips under braking.
+		var nose := Vector3(sin(car_heading), 0, cos(car_heading))
+		var side := car_vel.dot(Vector3(nose.z, 0, -nose.x))
+		car.rotation = Vector3(0, car_heading, clampf(-side * 0.035, -0.22, 0.22))
+		_car_hits()
 	if input.length_squared() > 0.01:
 		me.root.rotation.y = lerp_angle(me.root.rotation.y, atan2(input.x, input.y), 12.0 * delta)
 	_animate(me, input.length_squared() > 0.01, delta * (1.6 if running else 1.0))
@@ -1188,7 +1214,8 @@ func _process(delta: float) -> void:
 		var steep := clampf((-6.0 - player.position.z) / 6.0, 0.0, 1.0)
 		outdoor = outdoor.lerp(Vector3(0, 19.0, 8.5) if driving else Vector3(0, 14.5, 6.0), steep)
 	cam_offset = cam_offset.lerp(Vector3(0, 7.0, 6.5) if inside else outdoor, 1.0 - exp(-4.0 * delta)) if not inside else Vector3(0, 7.0, 6.5)
-	cam.position = cam_focus + cam_offset
+	shake = maxf(shake - delta * 2.2, 0.0)
+	cam.position = cam_focus + cam_offset + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * shake
 	cam.look_at(cam_focus)
 	pad.queue_redraw()
 
@@ -1267,6 +1294,7 @@ func _new_game() -> void:
 	has_rifle = false
 	ammo = 0
 	fuel = 60.0
+	car_damage = 0.0
 	has_can = false
 	_set_car_model(0)
 	_begin()
@@ -1314,6 +1342,7 @@ func _continue_game() -> void:
 	_begin()
 	_park_car(Vector3(float(cfg.get_value("life", "car_x", CAR_HOME.x)), 0, float(cfg.get_value("life", "car_z", CAR_HOME.z))),
 		float(cfg.get_value("life", "car_rot", PI * 0.5)))
+	car_damage = float(cfg.get_value("life", "car_damage", 0.0))
 	_toast("ברוך שובך! יום %d." % day)
 
 
@@ -1338,7 +1367,7 @@ func _save() -> void:
 			["energy", energy], ["health", health], ["fridge", fridge], ["shifts", shifts], ["wage", wage],
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
 			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["family", family_joy], ["candles", candles_day], ["kiddush", kiddush_day],
-			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading],
+			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading], ["car_damage", car_damage],
 			["can", has_can], ["car_model", car_model]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
@@ -1683,6 +1712,10 @@ func _build_sounds() -> void:
 		"bang": _tone(140, 40, 0.35, 0.6, 0.8),
 		"alarm": _tone(500, 900, 0.5, 0.3),
 		"engine": _tone(90, 180, 0.5, 0.35, 0.25),
+		"crash": _tone(140, 35, 0.55, 0.8, 0.9),
+		"thump": _tone(95, 45, 0.22, 0.7, 0.55),
+		"skid": _tone(950, 700, 0.35, 0.22, 0.9),
+		"honk": _tone(430, 430, 0.4, 0.35),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -2486,6 +2519,7 @@ func _build_cars() -> void:
 		t.set_meta("dir", 1.0 if east else -1.0)
 		t.set_meta("top", rng.randf_range(7.0, 11.0))
 		t.set_meta("speed", 8.0)
+		_traffic_body(t)
 		traffic.append(t)
 
 	# Petrol pump on the far pavement.
@@ -2508,7 +2542,10 @@ func _park_car(pos: Vector3, heading: float) -> void:
 	driving = false
 	near_car = false
 	car_speed = 0.0
+	car_vel = Vector3.ZERO
 	car_heading = heading
+	if engine_player != null:
+		engine_player.stop()
 	if car != null:
 		car.position = pos
 		car.rotation.y = heading
@@ -2554,12 +2591,16 @@ func _enter_car() -> void:
 	driving = true
 	near_car = false
 	car_speed = 0.0
+	car_vel = Vector3.ZERO
 	car_block.disabled = true
 	body_shape.radius = 0.9
 	player.position = car.position
 	me.root.visible = false
 	_play("engine")
-	if fuel <= 0.0:
+	engine_player.play()
+	if car_damage >= 100.0:
+		_toast("הרכב הרוס. צריך תיקון בתחנת הדלק.")
+	elif fuel <= 0.0:
 		_toast("אין דלק ברכב.")
 	else:
 		_toast("נוסעים! מכוונים עם החיצים או עם האצבע.")
@@ -2577,26 +2618,330 @@ func _exit_car() -> void:
 
 
 func _drive(input: Vector2, delta: float) -> void:
+	crash_cool = maxf(crash_cool - delta, 0.0)
 	var want := Vector3(input.x, 0, input.y)
 	if _is_shabbat():
 		want = Vector3.ZERO              # the car stays parked until Shabbat is over
-	if want.length() > 0.15 and fuel > 0.0:
-		var grip := clampf(absf(car_speed) / 4.0, 0.35, 1.0)
-		car_heading = rotate_toward(car_heading, atan2(want.x, want.z), 2.8 * grip * delta)
-		car_speed = move_toward(car_speed, float(CARS[car_model]["top"]) * minf(want.length(), 1.0), 9.0 * delta)
+	var top := float(CARS[car_model]["top"]) * (1.0 - minf(car_damage, 100.0) / 160.0)
+	var nose := Vector3(sin(car_heading), 0, cos(car_heading))
+	var pushing := want.length() > 0.15 and fuel > 0.0 and car_damage < 100.0
+	if pushing:
+		var steer := clampf(absf(car_speed) / 4.0, 0.35, 1.0)
+		car_heading = rotate_toward(car_heading, atan2(want.x, want.z), 2.8 * steer * delta)
+		car_speed = move_toward(car_speed, top * minf(want.length(), 1.0), 9.0 * delta)
 	else:
 		car_speed = move_toward(car_speed, 0.0, 14.0 * delta)
+	nose = Vector3(sin(car_heading), 0, cos(car_heading))
+	# Tyres only pull the car's real motion round so fast: at speed it slides before it follows the nose.
+	# The engine drives the car along its nose; any sideways motion is only scrubbed off as fast as the tyres grip.
+	var grip := lerpf(9.0, 2.6, clampf(car_vel.length() / 26.0, 0.0, 1.0))
+	var sideways := car_vel - nose * car_vel.dot(nose)
+	sideways *= maxf(0.0, 1.0 - grip * delta)
+	car_vel = nose * car_speed + sideways
+	var slide := sideways.length()
 	var before := player.position
-	player.velocity = Vector3(sin(car_heading), 0, cos(car_heading)) * car_speed + Vector3(0, -4.0, 0)
+	var incoming := car_vel
+	player.velocity = car_vel + Vector3(0, -4.0, 0)
 	player.move_and_slide()
+	# What did we run into, and how hard?
+	var worst := 0.0
+	var worst_normal := Vector3.ZERO
+	var worst_thing: Object
+	for k in player.get_slide_collision_count():
+		var hit := player.get_slide_collision(k)
+		var normal := hit.get_normal()
+		if absf(normal.y) > 0.6:
+			continue                         # the ground
+		var into := -incoming.dot(normal)
+		if into > worst:
+			worst = into
+			worst_normal = normal
+			worst_thing = hit.get_collider()
+	if worst > 0.5:
+		car_vel = (car_vel - worst_normal * car_vel.dot(worst_normal)) * 0.75
+	if worst > 4.0 and crash_cool <= 0.0:
+		_crash(worst, worst_normal, worst_thing)
+	if worst > 0.5:
+		car_speed = car_vel.dot(nose)
 	var moved := Vector3(player.position.x - before.x, 0, player.position.z - before.z).length()
-	if delta > 0.0 and moved < absf(car_speed) * delta * 0.5:
-		car_speed = moved / delta                # ran into something
 	var had_fuel := fuel > 0.0
 	fuel = maxf(fuel - moved / 32.0 * float(CARS[car_model]["use"]), 0.0)
 	if had_fuel and fuel <= 0.0:
 		_toast("נגמר הדלק! צא מהרכב, קנה מיכל דלק בתחנה והבא אותו לרכב.")
 		_play("no")
+	# Tyre smoke and squeal while sliding; engine note follows the speed; a hurt car smokes.
+	var sliding := slide > 3.0 and car_vel.length() > 6.0
+	skid_fx.emitting = sliding
+	skid_fx.global_position = player.position - nose * 1.6 + Vector3(0, 0.2, 0)
+	if sliding and not (sfx["skid"] as AudioStreamPlayer).playing:
+		_play("skid")
+	smoke_fx.emitting = car_damage > 45.0
+	smoke_fx.global_position = player.position + nose * 1.7 + Vector3(0, 1.0, 0)
+	engine_player.pitch_scale = 0.7 + absf(car_speed) / 22.0
+	engine_player.volume_db = -22.0 + minf(absf(car_speed), 12.0) * 0.6
+
+
+## The moment of impact: bounce, noise, shake, damage, and whatever we hit reacts too.
+func _crash(impact: float, normal: Vector3, thing: Object) -> void:
+	crash_cool = 0.35
+	var prop := thing as RigidBody3D
+	if prop != null and props.has(prop) and impact > 5.0:
+		_knock_prop(prop, -normal, impact)
+		car_vel *= 0.8
+		car_damage = minf(car_damage + impact * 0.35, 100.0)
+		shake = maxf(shake, 0.25)
+		_play("thump")
+		return
+	var other := thing as Node
+	if other != null and other.has_meta("traffic"):
+		var their: Node3D = other.get_meta("traffic")
+		their.set_meta("speed", 0.0)
+		their.set_meta("stun", 2.5)
+		_play("honk")
+	car_vel += normal * impact * 0.35                 # bounce back off it
+	shake = maxf(shake, clampf(impact / 22.0, 0.2, 1.1))
+	_play("crash" if impact > 8.0 else "thump")
+	_debris(player.position - normal * 1.6 + Vector3(0, 0.8, 0), impact)
+	if impact > 6.0:
+		car_damage = minf(car_damage + (impact - 4.0) * 2.4, 100.0)
+	if impact > 11.0:
+		health = maxf(health - (impact - 11.0) * 2.5, 0.0)
+		_toast("התרסקת! נזק לרכב: %d%%. גם אתה נפגעת." % int(car_damage))
+	elif impact > 6.0:
+		_toast("התנגשות! נזק לרכב: %d%%." % int(car_damage))
+	if car_damage >= 100.0:
+		_toast("הרכב הרוס לגמרי. גוררים אותו לתיקון בתחנת הדלק.")
+	_update_hud()
+
+
+func _debris(pos: Vector3, impact: float) -> void:
+	var p := CPUParticles3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.14, 0.14, 0.14)
+	var mat := _mat(Color(0.75, 0.75, 0.78))
+	mesh.material = mat
+	p.mesh = mesh
+	p.amount = int(clampf(impact * 2.0, 8.0, 40.0))
+	p.one_shot = true
+	p.explosiveness = 1.0
+	p.lifetime = 1.0
+	p.direction = Vector3.UP
+	p.spread = 75.0
+	p.initial_velocity_min = 3.0
+	p.initial_velocity_max = 3.0 + impact * 0.5
+	p.gravity = Vector3(0, -18, 0)
+	p.position = pos
+	add_child(p)
+	p.emitting = true
+	get_tree().create_timer(1.6).timeout.connect(p.queue_free)
+
+
+## Whatever the moving car touches gets knocked: people, robbers, animals.
+func _car_hits() -> void:
+	var speed := car_vel.length()
+	if speed < 3.5:
+		return
+	var nose := Vector3(sin(car_heading), 0, cos(car_heading))
+	var right := Vector3(nose.z, 0, -nose.x)
+	for n in npcs:
+		if n.air or n.lying > 0.0 or not n.root.visible:
+			continue
+		var rel := n.root.position - player.position
+		if absf(rel.dot(right)) < 1.25 and absf(rel.dot(nose)) < 2.5 and car_vel.dot(rel) > 0.0:
+			n.target = n.root.position
+			n.air = true
+			n.fly = car_vel * 0.85 + right * signf(rel.dot(right) + 0.01) * 2.0 + Vector3(0, 3.5 + speed * 0.28, 0)
+			n.spin = rng.randf_range(5.0, 9.0)
+			n.bubble.visible = false
+			var fine := mini(money, 250 if cops.has(n) else 100)
+			money -= fine
+			car_vel *= 0.7
+			car_damage = minf(car_damage + 2.0, 100.0)
+			shake = maxf(shake, 0.5)
+			_play("thump")
+			_toast("פגעת ב%s! האמבולנס בדרך, ושילמת קנס של ₪%d. סע בזהירות!" % [n.name, fine])
+	for t in thugs:
+		if t.down > 0.0 or not t.root.visible:
+			continue
+		var rel := t.root.position - player.position
+		if absf(rel.dot(right)) < 1.25 and absf(rel.dot(nose)) < 2.5 and car_vel.dot(rel) > 0.0:
+			t.down = 60.0
+			t.chasing = false
+			t.root.rotation.z = PI * 0.5
+			car_vel *= 0.7
+			shake = maxf(shake, 0.5)
+			_play("thump")
+			_toast("פגעת באיש רע עם הרכב. המשטרה לקחה אותו.")
+	for a in animals:
+		if a.dead or a.gone > 0.0:
+			continue
+		var rel := a.node.position - player.position
+		if absf(rel.dot(right)) < 1.3 and absf(rel.dot(nose)) < 2.6 and car_vel.dot(rel) > 0.0:
+			a.dead = true
+			a.scared = 0.0
+			a.node.rotation.z = PI * 0.5
+			car_vel *= 0.75
+			car_damage = minf(car_damage + (5.0 if a.big else 1.0), 100.0)
+			shake = maxf(shake, 0.4)
+			_play("thump")
+			_toast("פגעת בחיה עם הרכב.")
+
+
+## A knocked person flies, tumbles, lies still for a while, and then is back on their feet.
+func _tumble(n: Person, delta: float) -> bool:
+	if n.air:
+		n.fly.y -= 22.0 * delta
+		n.root.position += n.fly * delta
+		n.root.rotation.x += n.spin * delta
+		if n.root.position.y <= 0.25 and n.fly.y < 0.0:
+			n.air = false
+			n.lying = 7.0
+			n.root.position.y = 0.25
+			n.root.rotation = Vector3(PI * 0.5, n.root.rotation.y, 0)
+			_play("thump")
+		return true
+	if n.lying > 0.0:
+		n.lying -= delta
+		if n.lying <= 0.0:
+			n.root.position = n.target
+			n.root.rotation = Vector3.ZERO
+		return true
+	# On foot you cannot walk through people: you are nudged apart, and they pause.
+	if not driving and not inside and n.root.visible:
+		var gap := player.position - n.root.position
+		gap.y = 0.0
+		if gap.length() < 0.75 and gap.length() > 0.01:
+			player.position += gap.normalized() * (0.75 - gap.length())
+			n.pause = maxf(n.pause, 0.6)
+	return false
+
+
+# ---------------------------------------------------- knockable objects ----
+
+## A piece of street furniture: solid until a car hits it hard, then it tumbles.
+func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3D:
+	var body := RigidBody3D.new()
+	body.mass = mass
+	body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+	body.freeze = true
+	body.position = pos
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	cs.shape = shape
+	cs.position.y = size.y * 0.5
+	body.add_child(cs)
+	for part: Array in parts:
+		_box(part[0], part[1], part[2], body)
+	add_child(body)
+	body.set_meta("home", body.transform)
+	props.append(body)
+	return body
+
+
+func _lamp_post(pos: Vector3, reach: float) -> void:
+	_prop(pos, Vector3(0.3, 4.3, 0.3), 45.0, [[Vector3(0.18, 4.2, 0.18), Vector3(0, 2.1, 0), _mat(Color(0.2, 0.2, 0.22))],
+		[Vector3(0.9, 0.25, 0.5), Vector3(0, 4.2, reach), lamp_mat]])
+
+
+func _knock_prop(body: RigidBody3D, dir: Vector3, impact: float) -> void:
+	body.freeze = false
+	body.collision_layer = 2             # once down it no longer blocks you; you can still shove it about
+	body.collision_mask = 1
+	body.apply_central_impulse((dir * impact * 0.75 + Vector3(0, impact * 0.22, 0)) * body.mass)
+	body.apply_torque_impulse(Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * impact * body.mass * 0.3)
+	_debris(body.global_position + Vector3(0, 0.6, 0), impact * 0.6)
+
+
+## The council tidies up overnight.
+func _reset_props() -> void:
+	for body in props:
+		body.freeze = true
+		body.collision_layer = 1
+		body.collision_mask = 1
+		body.linear_velocity = Vector3.ZERO
+		body.angular_velocity = Vector3.ZERO
+		body.transform = body.get_meta("home")
+
+
+func _traffic_body(t: Node3D) -> void:
+	var body := AnimatableBody3D.new()
+	body.sync_to_physics = false
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.9, 1.6, 4.2)
+	cs.shape = shape
+	cs.position.y = 0.8
+	body.add_child(cs)
+	body.set_meta("traffic", t)
+	t.add_child(body)
+
+
+func _repair_price() -> int:
+	return int(ceilf(car_damage * 0.8))
+
+
+func _repair() -> void:
+	var price := _repair_price()
+	if money < price:
+		_toast("אין מספיק כסף לתיקון (₪%d)." % price)
+		_play("no")
+		return
+	money -= price
+	car_damage = 0.0
+	_play("pay")
+	_toast("הרכב תוקן, והוא כמו חדש.")
+	_refresh_panel()
+
+
+func _build_car_effects() -> void:
+	skid_fx = _smoke(Color(0.85, 0.85, 0.85, 0.5), 0.5, 30)
+	smoke_fx = _smoke(Color(0.2, 0.2, 0.22, 0.6), 1.4, 20)
+	# Engine: a short buzzy loop whose pitch follows the speed.
+	var rate := 22050
+	var count := rate / 10
+	var data := PackedByteArray()
+	data.resize(count * 2)
+	for i in count:
+		var phase := float(i) / count
+		var wave := fmod(phase * 8.0, 1.0) * 2.0 - 1.0 + sin(phase * TAU * 4.0) * 0.6
+		data.encode_s16(i * 2, int(wave * 0.3 * 32000.0))
+	var loop := AudioStreamWAV.new()
+	loop.format = AudioStreamWAV.FORMAT_16_BITS
+	loop.mix_rate = rate
+	loop.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	loop.loop_end = count
+	loop.data = data
+	engine_player = AudioStreamPlayer.new()
+	engine_player.stream = loop
+	engine_player.volume_db = -22.0
+	add_child(engine_player)
+
+
+func _smoke(color: Color, life: float, amount: int) -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = 0.35
+	mesh.height = 0.7
+	mesh.radial_segments = 6
+	mesh.rings = 3
+	var mat := _mat(color)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mesh.material = mat
+	p.mesh = mesh
+	p.amount = amount
+	p.lifetime = life
+	p.direction = Vector3.UP
+	p.spread = 35.0
+	p.initial_velocity_min = 0.6
+	p.initial_velocity_max = 1.8
+	p.gravity = Vector3(0, 1.2, 0)
+	p.scale_amount_min = 0.5
+	p.scale_amount_max = 1.5
+	p.emitting = false
+	add_child(p)
+	return p
 
 
 func _update_traffic(delta: float) -> void:
@@ -2609,6 +2954,10 @@ func _update_traffic(delta: float) -> void:
 	for t in traffic:
 		var dir: float = t.get_meta("dir")
 		var want: float = t.get_meta("top")
+		var stun: float = t.get_meta("stun", 0.0)
+		if stun > 0.0:
+			t.set_meta("stun", stun - delta)
+			want = 0.0
 		# Brake for the player (on foot or in the car), a parked car, or the car ahead.
 		var blockers: Array[Vector3] = [mine, car.position]
 		for other in traffic:
@@ -3152,10 +3501,16 @@ func _build_town_extras() -> void:
 	_box(Vector3(2.6, 0.12, 0.5), stop + Vector3(0, 0.55, 0.4), _mat(Color(0.5, 0.33, 0.2)))
 	_sign("תחנת אוטובוס", stop + Vector3(0, 3.3, 0), 56)
 	# Bins, post boxes and flower beds along the pavement.
-	for x: float in [-30.0, -2.0, 30.0, 62.0]:
-		_box(Vector3(0.6, 0.9, 0.6), Vector3(x, 0.45, -1.9), _mat(Color(0.15, 0.4, 0.25)))
+	for x: float in [-30.0, -2.0, 30.0, 62.0, 100.0, -70.0]:
+		_prop(Vector3(x, 0, -1.9), Vector3(0.6, 0.9, 0.6), 18.0, [[Vector3(0.6, 0.9, 0.6), Vector3(0, 0.45, 0), _mat(Color(0.15, 0.4, 0.25))]])
 	for x: float in [-14.0, 18.0, 46.0]:
-		_box(Vector3(0.5, 1.1, 0.5), Vector3(x, 0.55, -5.7), _mat(Color(0.8, 0.12, 0.1)))
+		_prop(Vector3(x, 0, -5.7), Vector3(0.5, 1.1, 0.5), 30.0, [[Vector3(0.5, 1.1, 0.5), Vector3(0, 0.55, 0), _mat(Color(0.8, 0.12, 0.1))]])
+	# Traffic cones and crates near the building site, and bollards by the crossings.
+	for k in 6:
+		_prop(Vector3(64.5 + k * 1.6, 0, -1.2), Vector3(0.45, 0.7, 0.45), 4.0, [[Vector3(0.45, 0.08, 0.45), Vector3(0, 0.04, 0), _mat(Color(0.95, 0.45, 0.1))],
+			[Vector3(0.22, 0.6, 0.22), Vector3(0, 0.38, 0), _mat(Color(0.95, 0.45, 0.1))], [Vector3(0.24, 0.12, 0.24), Vector3(0, 0.45, 0), _mat(Color(0.95, 0.95, 0.95))]])
+	for k in 4:
+		_prop(Vector3(80.5 + (k % 2) * 1.0, 0, -6.2 - (k / 2) * 1.0), Vector3(0.9, 0.9, 0.9), 14.0, [[Vector3(0.9, 0.9, 0.9), Vector3(0, 0.45, 0), _mat(Color(0.62, 0.45, 0.25))]])
 	for x: float in [-46.0, 0.0, 66.0]:
 		_box(Vector3(3.0, 0.3, 0.9), Vector3(x, 0.15, -5.4), _mat(Color(0.4, 0.3, 0.2)))
 		for k in 5:
@@ -4430,8 +4785,7 @@ func _build_north() -> void:
 	for k in range(int(WEST / 4.0), int(EAST / 4.0)):
 		_box(Vector3(1.8, 0.02, 0.2), Vector3(k * 4.0, 0.05, NORTH_Z), white)
 	for x in range(int(WEST) + 10, int(EAST), 20):
-		_box(Vector3(0.18, 4.2, 0.18), Vector3(x, 2.1, NORTH_Z + 3.3), _mat(Color(0.2, 0.2, 0.22)))
-		_box(Vector3(0.9, 0.25, 0.5), Vector3(x, 4.2, NORTH_Z + 3.0), lamp_mat)
+		_lamp_post(Vector3(x, 0, NORTH_Z + 3.3), -0.3)
 	# Side streets joining the two streets.
 	for cx in CROSSINGS:
 		_box(Vector3(4.6, 0.04, -NORTH_Z - 4.5), Vector3(cx, 0.025, (NORTH_Z + 3.0 - 1.5) * 0.5), asphalt)
@@ -4508,6 +4862,7 @@ func _build_north() -> void:
 		t.set_meta("dir", 1.0 if east else -1.0)
 		t.set_meta("top", rng.randf_range(7.0, 11.0))
 		t.set_meta("speed", 8.0)
+		_traffic_body(t)
 		traffic.append(t)
 	for k in 14:
 		var n := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.88), Color.from_hsv(rng.randf(), 0.3, 0.42))
