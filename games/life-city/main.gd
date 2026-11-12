@@ -284,6 +284,9 @@ var roamers: Array[Roamer] = []
 var atv_rider: Node3D
 var fov_kick := 0.0
 const ATV := 4
+const PARK := Vector3(-52, 0, 11)    # your own parking lot, next to the car lot
+var owned: Array[bool] = [true, false, false, false, false]
+var parked: Array[Node3D] = []
 const HILL_H := 5.0                  # how high the hill farm stands above the town
 var hill_me := false                 # you joined the hill boys: big kippah, sidelocks, hoodie
 var entered_from := Vector3.ZERO
@@ -299,8 +302,13 @@ var cam_room := 1.0                 # how far out the chase camera is allowed, 0
 var cam_yaw := PI                  # which way the camera looks (PI = north, as the overhead view does)
 var cam_button: Button
 var quality := 2                     # drops by itself on a slow device: 1 = no shadows, 0 = also lower resolution
+var slow_strikes := 0
 var fps_time := 0.0
 var fps_frames := 0
+var prints: Array[MeshInstance3D] = []   # your last footprints; the oldest is reused
+var print_next := 0
+var pine_groups := {}
+var fps_label: Label
 var paint_mat: StandardMaterial3D   # one shared material for everything that is merged; colours live in the mesh
 var tex_cache := {}
 var model_cache := {}
@@ -376,6 +384,8 @@ var rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
+	# Smoothing between physics ticks is costly per node, so only you and your own car get it.
+	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	rng.randomize()
 	bidi = TextServerManager.get_primary_interface().has_feature(TextServer.FEATURE_BIDI_LAYOUT)
 	font = load("res://font.ttf")
@@ -386,7 +396,17 @@ func _ready() -> void:
 	_build_car_effects()
 	_build_lights()
 	_build_hill_farm()
+	_build_parking()
 	_merge_static()
+	var gfx := ConfigFile.new()
+	if gfx.load("user://life-city-gfx.cfg") == OK:
+		quality = clampi(int(gfx.get_value("gfx", "quality", 2)), 0, 2)     # what this device managed last time
+	fps_label = Label.new()
+	fps_label.add_theme_font_size_override("font_size", 14)
+	fps_label.modulate = Color(1, 1, 1, 0.45)
+	fps_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 4)
+	fps_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(fps_label)
 	get_window().size_changed.connect(_layout)
 	_layout()
 	_apply_daylight()
@@ -756,6 +776,7 @@ func _animate(p: Person, moving: bool, dt: float) -> void:
 
 func _build_player() -> void:
 	player = CharacterBody3D.new()
+	player.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
 	var cs := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
 	body_shape = cap
@@ -1179,10 +1200,19 @@ func _refresh_panel() -> void:
 				_add_action("בדיקה וטיפול מלא · ₪60", _treat.bind(60, 100.0, 1.0))
 				_add_action("ויטמינים · ₪20", _treat.bind(20, 25.0, 0.25))
 			"dealer":
-				panel_text.text = _h("הרכב שלך: %s. רכב חדש מחליף אותו ומגיע עם מכל מלא." % CARS[car_model]["name"])
+				panel_text.text = _h("אתה נוהג עכשיו ב: %s. כל רכב שתקנה נשאר שלך, והשאר מחכים בחנייה שלך." % CARS[car_model]["name"])
 				for k in range(1, CARS.size()):
-					if k != car_model:
+					if not owned[k]:
 						_add_action("%s · %s · ₪%d" % [CARS[k]["name"], CARS[k]["note"], CARS[k]["price"]], _buy_car.bind(k))
+			"parking":
+				panel_text.text = _h("החנייה שלך. אתה נוהג עכשיו ב: %s." % CARS[car_model]["name"])
+				var more := false
+				for k in CARS.size():
+					if owned[k] and k != car_model:
+						more = true
+						_add_action("לקחת את: %s" % CARS[k]["name"], _take_car.bind(k))
+				if not more:
+					panel_text.text += "\n" + _h("עוד אין לך רכבים נוספים. קונים במגרש הרכבים ליד.")
 			"gun_counter":
 				panel_text.text = _h(("יש לך רובה ציד · כדורים: %d" % ammo) if has_rifle else "כדי לצוד ביער צריך רובה ציד וכדורים")
 				if not has_rifle:
@@ -1283,6 +1313,7 @@ func _physics_process(delta: float) -> void:
 			if step_t <= 0.0:
 				step_t = 0.36
 				_play("step")
+				_footprint()
 	_animate(me, input.length_squared() > 0.01, delta * (1.6 if running else 1.0))
 	reach = maxf(reach - delta, 0.0)
 	if reach > 0.0:
@@ -1324,19 +1355,24 @@ func _physics_process(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	# If the device cannot keep up, give up the costly extras rather than stutter.
-	if state == State.PLAY and quality > 0:
-		fps_time += delta
-		fps_frames += 1
-		if fps_time >= 4.0:
-			if fps_frames / fps_time < 27.0:
+	fps_time += delta
+	fps_frames += 1
+	if fps_time >= 2.5:
+		var fps := fps_frames / fps_time
+		fps_label.text = "%d · %d" % [int(fps), quality]
+		if state == State.PLAY and quality > 0 and fps < 40.0 and slow_strikes >= 0:
+			slow_strikes += 1
+			if slow_strikes >= 2:                # two slow spells in a row, not one hiccup
+				slow_strikes = 0
 				quality -= 1
-				if quality == 1:
-					sun.shadow_enabled = false
-					get_viewport().msaa_3d = Viewport.MSAA_DISABLED
-				else:
-					get_viewport().scaling_3d_scale = 0.7
-			fps_time = 0.0
-			fps_frames = 0
+				_apply_quality()
+				var keep := ConfigFile.new()
+				keep.set_value("gfx", "quality", quality)
+				keep.save("user://life-city-gfx.cfg")
+		else:
+			slow_strikes = 0
+		fps_time = 0.0
+		fps_frames = 0
 	var view := get_viewport().get_visible_rect().size
 	var portrait := view.y > view.x
 	shake = maxf(shake - delta * 2.2, 0.0)
@@ -1444,6 +1480,7 @@ func _unhandled_input(e: InputEvent) -> void:
 # ---------------------------------------------------------- game states ----
 
 func _new_game() -> void:
+	owned.assign([true, false, false, false, false])
 	hill_me = false
 	hill_gear.visible = false
 	day = 1
@@ -1507,6 +1544,11 @@ func _continue_game() -> void:
 	has_rifle = bool(cfg.get_value("life", "rifle", false))
 	has_can = bool(cfg.get_value("life", "can", false))
 	hill_me = bool(cfg.get_value("life", "hill_me", false))
+	var had: Array = cfg.get_value("life", "owned", [])
+	for k in owned.size():
+		owned[k] = k == 0 or (k < had.size() and bool(had[k]))
+	owned[car_model] = true
+	_show_parked()
 	hill_gear.visible = hill_me
 	_set_car_model(clampi(int(cfg.get_value("life", "car_model", 0)), 0, CARS.size() - 1))
 	ammo = int(cfg.get_value("life", "ammo", 0))
@@ -1554,7 +1596,7 @@ func _save() -> void:
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
 			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["family", family_joy], ["candles", candles_day], ["kiddush", kiddush_day],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading], ["car_damage", car_damage],
-			["can", has_can], ["car_model", car_model], ["hill_me", hill_me]]:
+			["can", has_can], ["car_model", car_model], ["hill_me", hill_me], ["owned", owned]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
 
@@ -1816,6 +1858,7 @@ func _layout() -> void:
 	var win := get_window()
 	var portrait := win.size.y > win.size.x
 	win.content_scale_size = Vector2i(720, 1280) if portrait else Vector2i(1280, 720)
+	_apply_quality()
 	var width := 660.0 if portrait else 760.0
 	panel.custom_minimum_size.x = width
 	overlay_text.custom_minimum_size.x = width if portrait else 1000.0
@@ -1932,7 +1975,7 @@ func _build_sounds() -> void:
 		"thump": _tone(95, 45, 0.22, 0.7, 0.55),
 		"skid": _tone(950, 700, 0.35, 0.22, 0.9),
 		"honk": _tone(430, 430, 0.4, 0.35),
-		"step": _tone(160, 90, 0.06, 0.13, 0.8),
+		"step": _tone(110, 70, 0.05, 0.035, 0.35),      # a soft pad, barely there
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -2101,7 +2144,7 @@ func _interact(p: Place) -> void:
 			_swim()
 		"beach":
 			_beach()
-		"farm", "hill":
+		"farm", "hill", "parking":
 			_open_panel(p)
 		"play_home":
 			_play_home()
@@ -2331,12 +2374,16 @@ func _pine(pos: Vector3) -> void:
 	var trunk_body := _solid(Vector3(0.6, 2.0, 0.6), pos + Vector3(0, 1.0, 0))
 	var ready := _model("nature/" + PINE_TREES[rng.randi() % PINE_TREES.size()])
 	if ready != null:
-		trunk_body.set_meta("tree", ready)
-		ready.position = pos
-		ready.rotation.y = rng.randf() * TAU
-		ready.scale = Vector3(1.25, 1.0, 1.25) * (h + 1.2) / 1.6
-		_regreen(ready, Color.from_hsv(rng.randf_range(0.3, 0.38), 0.65, rng.randf_range(0.28, 0.42)))
-		_limit(ready, 140.0)
+		# Baked into one big mesh per patch of forest: hundreds of separate trees were too much to draw.
+		remove_child(ready)
+		trunk_body.set_meta("tree_at", pos)
+		var place := Transform3D(Basis.from_euler(Vector3(0, rng.randf() * TAU, 0)).scaled(Vector3(1.25, 1.0, 1.25) * (h + 1.2) / 1.6), pos)
+		var green := Color.from_hsv(rng.randf_range(0.3, 0.38), 0.65, rng.randf_range(0.28, 0.42))
+		var key := "%d|%d" % [int(floor(pos.x / 45.0)), int(floor(pos.z / 45.0))]
+		if not pine_groups.has(key):
+			pine_groups[key] = _new_parts()
+		_bake(pine_groups[key], ready, place, green)
+		ready.free()
 		return
 	_box(Vector3(0.35, 1.4, 0.35), pos + Vector3(0, 0.7, 0), _mat(Color(0.33, 0.22, 0.13)))
 	var cone := CylinderMesh.new()
@@ -2722,6 +2769,7 @@ func _set_car_model(model: int) -> void:
 		car.queue_free()
 	car_model = model
 	car = _make_car(CARS[model]["color"], CARS[model]["model"])
+	car.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
 	atv_rider = null
 	if model == ATV:
 		# On the ATV you can see yourself riding.
@@ -2744,6 +2792,8 @@ func _set_car_model(model: int) -> void:
 	car.add_child(block)
 	car.position = pos
 	car.rotation.y = car_heading
+	owned[model] = true
+	_show_parked()
 
 
 func _build_cars() -> void:
@@ -2965,6 +3015,9 @@ func _crash(impact: float, normal: Vector3, thing: Object) -> void:
 		_car_parts(their.position + Vector3(0, 0.9, 0), -normal, impact)
 	if other != null and other.has_meta("tree"):
 		_shake_tree(other.get_meta("tree"), -normal, impact)
+	elif other != null and other.has_meta("tree_at"):
+		_play("crack")
+		_leaf_burst(other.get_meta("tree_at"), impact)
 	car_vel += normal * impact * 0.35                 # bounce back off it
 	if impact > 8.0:
 		_hit_stop(0.09 if impact < 13.0 else 0.16)
@@ -3696,10 +3749,11 @@ func _buy_car(model: int) -> void:
 		_play("no")
 		return
 	money -= price
+	owned[model] = true
 	_set_car_model(model)
 	fuel = 100.0
 	_play("pay")
-	_toast("קנית %s! היא מחכה לך במקום שבו חנה הרכב הקודם." % CARS[model]["name"])
+	_toast("קנית %s! הרכב הקודם שלך עבר לחנייה שלך, ליד מגרש הרכבים." % CARS[model]["name"])
 	_save()
 	_refresh_panel()
 
@@ -5558,28 +5612,7 @@ func _shake_tree(tree: Node3D, dir: Vector3, impact: float) -> void:
 	sway.tween_property(tree, "rotation", Vector3(-tilt.x * 0.6, yaw, -tilt.z * 0.6), 0.22)
 	sway.tween_property(tree, "rotation", Vector3(tilt.x * 0.3, yaw, tilt.z * 0.3), 0.22)
 	sway.tween_property(tree, "rotation", Vector3(0, yaw, 0), 0.3)
-	var leaves := CPUParticles3D.new()
-	var leaf := BoxMesh.new()
-	leaf.size = Vector3(0.16, 0.02, 0.1)
-	leaf.material = _mat(Color(0.3, 0.55, 0.2))
-	leaves.mesh = leaf
-	leaves.amount = int(clampf(impact * 5.0, 25.0, 90.0))
-	leaves.one_shot = true
-	leaves.explosiveness = 0.9
-	leaves.lifetime = 2.4
-	leaves.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
-	leaves.emission_sphere_radius = 1.6
-	leaves.direction = Vector3.UP
-	leaves.spread = 180.0
-	leaves.initial_velocity_min = 0.5
-	leaves.initial_velocity_max = 3.0
-	leaves.gravity = Vector3(0, -3.2, 0)
-	leaves.angular_velocity_min = -300.0
-	leaves.angular_velocity_max = 300.0
-	leaves.position = tree.position + Vector3(0, 3.6, 0)
-	add_child(leaves)
-	leaves.emitting = true
-	get_tree().create_timer(3.2).timeout.connect(leaves.queue_free)
+	_leaf_burst(tree.position, impact)
 
 
 ## Little yellow stars that circle the head of someone who has been knocked over.
@@ -6065,11 +6098,16 @@ func _paint() -> StandardMaterial3D:
 
 
 ## Add one mesh, moved by `xf`, to the arrays of a bigger mesh that is being put together.
-func _append_mesh(into: Array, mesh: Mesh, xf: Transform3D, color: Color) -> void:
-	var arrays := mesh.surface_get_arrays(0)
+func _append_mesh(into: Array, mesh: Mesh, xf: Transform3D, color: Color, surface: int = 0) -> void:
+	var arrays := mesh.surface_get_arrays(surface)
 	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
-	var index: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var index := PackedInt32Array()
+	if arrays[Mesh.ARRAY_INDEX] != null:
+		index = arrays[Mesh.ARRAY_INDEX]
+	else:
+		for k in verts.size():
+			index.append(k)
 	var base: int = into[0].size()
 	var turn := xf.basis.inverse().transposed()
 	for k in verts.size():
@@ -6146,6 +6184,11 @@ func _merge_static() -> void:
 			remove_child(mi)
 			mi.free()
 		add_child(_finish_mesh(group[0], group[1]))
+	for key: String in pine_groups:
+		var wood := _finish_mesh(pine_groups[key], _paint())
+		wood.visibility_range_end = 190.0
+		add_child(wood)
+	pine_groups.clear()
 
 
 # ------------------------------------------------------------ the hill ----
@@ -6328,3 +6371,136 @@ func _update_patrol(delta: float) -> void:
 	patrol_back = true
 	var away := patrol_car.position.x + (70.0 if patrol_car.position.x < 20.0 else -70.0)
 	patrol_path.assign([Vector3(patrol_car.position.x, 0, 2.5), Vector3(away, 0, 2.5)])
+
+
+func _leaf_burst(at: Vector3, impact: float) -> void:
+	var leaves := CPUParticles3D.new()
+	var leaf := BoxMesh.new()
+	leaf.size = Vector3(0.16, 0.02, 0.1)
+	leaf.material = _mat(Color(0.3, 0.55, 0.2))
+	leaves.mesh = leaf
+	leaves.amount = int(clampf(impact * 5.0, 25.0, 90.0))
+	leaves.one_shot = true
+	leaves.explosiveness = 0.9
+	leaves.lifetime = 2.4
+	leaves.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	leaves.emission_sphere_radius = 1.6
+	leaves.direction = Vector3.UP
+	leaves.spread = 180.0
+	leaves.initial_velocity_min = 0.5
+	leaves.initial_velocity_max = 3.0
+	leaves.gravity = Vector3(0, -3.2, 0)
+	leaves.angular_velocity_min = -300.0
+	leaves.angular_velocity_max = 300.0
+	leaves.position = at + Vector3(0, 3.6, 0)
+	add_child(leaves)
+	leaves.emitting = true
+	get_tree().create_timer(3.2).timeout.connect(leaves.queue_free)
+
+
+## Add every piece of a model to a mesh that is being put together; the kit's turquoise leaves become `green`.
+func _bake(into: Array, node: Node, xf: Transform3D, green: Color) -> void:
+	var here := xf
+	if node is Node3D:
+		here = xf * (node as Node3D).transform
+	var mi := node as MeshInstance3D
+	if mi != null and mi.mesh != null:
+		for k in mi.mesh.get_surface_count():
+			var was := mi.mesh.surface_get_material(k) as BaseMaterial3D
+			var color := Color(0.4, 0.28, 0.18)
+			if was != null:
+				color = green if was.albedo_color.b > was.albedo_color.r * 1.15 else was.albedo_color
+			_append_mesh(into, mi.mesh, here, color, k)
+	for child in node.get_children():
+		_bake(into, child, here, green)
+
+
+## quality 2: shadows. 1: no shadows. 0: also a shorter view and a softer picture.
+## On a sharp screen the 3D picture is drawn at no more than about 900 lines; the text stays crisp.
+func _apply_quality() -> void:
+	if sun == null:
+		return
+	var tall := float(mini(get_window().size.x, get_window().size.y))
+	var sharp := clampf(900.0 / maxf(tall, 1.0), 0.5, 1.0)
+	sun.shadow_enabled = quality >= 2
+	get_viewport().scaling_3d_scale = sharp * (1.0 if quality >= 1 else 0.75)
+	cam.far = 225.0 if quality >= 1 else 150.0
+	env.fog_depth_end = 200.0 if quality >= 1 else 135.0
+	env.fog_depth_begin = 80.0 if quality >= 1 else 50.0
+
+
+# ------------------------------------------------------------- parking ----
+
+func _build_parking() -> void:
+	_box(Vector3(15.5, 0.06, 7.0), PARK + Vector3(0, 0.03, 0), _tex("asphalt", Color(0.3, 0.31, 0.34), 0.22))
+	for k in CARS.size() + 1:
+		_box(Vector3(0.12, 0.02, 5.2), PARK + Vector3(-6.75 + k * 2.7, 0.07, 0.3), _mat(Color(0.95, 0.95, 0.95)))
+	_sign("החנייה שלי", PARK + Vector3(0, 4.0, 3.6), 80)
+	for sx: float in [-6.5, 6.5]:
+		_box(Vector3(0.2, 3.8, 0.2), PARK + Vector3(sx, 1.9, 3.6), _mat(Color(0.2, 0.2, 0.22)))
+	for k in CARS.size():
+		var spare := _make_car(CARS[k]["color"], CARS[k]["model"])
+		if k == JEEP:
+			spare.scale = Vector3(1.08, 1.25, 1.0)
+		spare.position = PARK + Vector3(-5.4 + k * 2.7, 0, 0.3)
+		spare.rotation.y = PI
+		var body := _solid(Vector3(1.9, 1.6, 4.2), Vector3(0, 0.8, 0))
+		body.reparent(spare, false)
+		spare.visible = false
+		parked.append(spare)
+	_box(Vector3(2.4, 0.05, 1.4), PARK + Vector3(0, 0.09, -3.9), _mat(Color(0.95, 0.75, 0.2)))
+	var lot := Place.new()
+	lot.key = "parking"
+	lot.title = "החנייה שלי"
+	lot.prompt = "להחליף רכב"
+	lot.door = PARK + Vector3(0, 0, -3.9)
+	places.append(lot)
+	_show_parked()
+
+
+## The cars you own but are not driving wait in their bays.
+func _show_parked() -> void:
+	for k in parked.size():
+		var here: bool = owned[k] and k != car_model
+		parked[k].visible = here
+		for child in parked[k].get_children():
+			if child is StaticBody3D:
+				(child.get_child(0) as CollisionShape3D).disabled = not here
+
+
+func _take_car(model: int) -> void:
+	_close_panel()
+	if _shabbat_block():
+		return
+	if driving:
+		_toast("קודם יוצאים מהרכב.")
+		return
+	_set_car_model(model)
+	_play("door")
+	_toast("לקחת את %s. הרכב הקודם חונה עכשיו בחנייה." % CARS[model]["name"])
+	_save()
+
+
+## You leave a trail of footprints outdoors: left, right, left... The oldest fade away as new ones appear.
+func _footprint() -> void:
+	if inside:
+		return
+	if prints.size() < 60:
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(0.13, 0.012, 0.3)
+		var mat := _mat(Color(0.12, 0.1, 0.08, 0.55))
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		var made := MeshInstance3D.new()
+		made.mesh = mesh
+		made.material_override = mat
+		made.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(made)
+		prints.append(made)
+	var mark := prints[print_next % prints.size()]
+	var side := 0.13 if print_next % 2 == 0 else -0.13
+	print_next += 1
+	var turn := me.root.rotation.y
+	var right := Vector3(cos(turn), 0, -sin(turn))
+	mark.position = player.position + right * side + Vector3(0, 0.1, 0)
+	mark.rotation.y = turn
