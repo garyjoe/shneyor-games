@@ -248,6 +248,18 @@ var last_show_day := 0
 var guitar_mesh: Node3D
 var audience: Array[Person] = []
 var edge_cool := 0.0
+var chase := true                  # camera behind the player outdoors; false = the old overhead view
+var cam_yaw := PI                  # which way the camera looks (PI = north, as the overhead view does)
+var cam_button: Button
+var tex_cache := {}
+var water_mat: ShaderMaterial
+var night_lights: Array[OmniLight3D] = []
+var headlight: SpotLight3D
+var light_tick := 0.0
+var step_t := 0.0
+const TEX_AVG := {"asphalt": Color(0.35, 0.35, 0.33), "brick": Color(0.42, 0.33, 0.3), "grass": Color(0.59, 0.52, 0.35),
+	"paving": Color(0.5, 0.42, 0.34), "plaster": Color(0.67, 0.64, 0.63), "roof": Color(0.35, 0.2, 0.11),
+	"sand": Color(0.51, 0.45, 0.36), "wood": Color(0.5, 0.38, 0.26)}
 var car_vel := Vector3.ZERO        # the car's real velocity; it can differ from where the nose points
 var car_damage := 0.0              # 0 = perfect, 100 = wrecked
 var crash_cool := 0.0
@@ -320,6 +332,7 @@ func _ready() -> void:
 	_build_hud()
 	_build_sounds()
 	_build_car_effects()
+	_build_lights()
 	get_window().size_changed.connect(_layout)
 	_layout()
 	_apply_daylight()
@@ -366,6 +379,7 @@ func _sign(text: String, pos: Vector3, size: int = 96) -> void:
 	l.outline_size = 24
 	l.modulate = Color.WHITE
 	l.outline_modulate = Color(0.1, 0.1, 0.2)
+	l.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y    # readable from every side, now that the camera turns
 	l.position = pos
 	add_child(l)
 
@@ -373,7 +387,7 @@ func _sign(text: String, pos: Vector3, size: int = 96) -> void:
 func _building(key: String, title: String, x: float, w: float, h: float, wall: Color, roof: Color,
 		open_from: float, open_to: float, z: float = -10.0) -> void:
 	var depth := 8.0
-	_box(Vector3(w, h, depth), Vector3(x, h * 0.5, z), _mat(wall))
+	_box(Vector3(w, h, depth), Vector3(x, h * 0.5, z), _tex("brick" if key in ["work", "school", "build", "hall"] else "plaster", wall, 0.28))
 	_box(Vector3(w + 0.6, 0.4, depth + 0.6), Vector3(x, h + 0.2, z), _mat(roof))
 	_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
 	var front := z + depth * 0.5
@@ -428,17 +442,25 @@ func _build_world() -> void:
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.glow_enabled = true
+	env.glow_intensity = 0.4
+	env.glow_bloom = 0.04
+	env.glow_hdr_threshold = 1.2
+	env.fog_enabled = true
+	env.fog_mode = Environment.FOG_MODE_DEPTH
+	env.fog_depth_begin = 80.0
+	env.fog_depth_end = 250.0
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
 	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 60.0
+	sun.directional_shadow_max_distance = 85.0
 	add_child(sun)
 
 	cam = Camera3D.new()
-	cam.far = 300.0
+	cam.far = 270.0
 	add_child(cam)
 	cam.make_current()
 
@@ -450,13 +472,13 @@ func _build_world() -> void:
 	lamp_mat.emission = Color(1.0, 0.9, 0.6)
 
 	# Ground, road, pavements.
-	_box(Vector3(500, 1, 260), Vector3(20, -0.5, 35), _mat(Color(0.34, 0.56, 0.3)))
+	_box(Vector3(500, 1, 260), Vector3(20, -0.5, 35), _tex("grass", Color(0.3, 0.5, 0.24), 0.11))
 	_solid(Vector3(500, 1, 260), Vector3(20, -0.5, 35))
-	_box(Vector3(460, 0.04, 6), Vector3(20, 0.02, 1.5), _mat(Color(0.25, 0.26, 0.29)))
+	_box(Vector3(460, 0.04, 6), Vector3(20, 0.02, 1.5), _tex("asphalt", Color(0.26, 0.27, 0.29), 0.22))
 	var dash := _mat(Color(0.9, 0.9, 0.85))
 	for k in range(-51, 61):
 		_box(Vector3(1.8, 0.02, 0.2), Vector3(k * 4.0, 0.05, 1.5), dash)
-	var paving := _mat(Color(0.58, 0.56, 0.53))
+	var paving := _tex("paving", Color(0.56, 0.55, 0.53), 0.3)
 	_box(Vector3(460, 0.04, 4.5), Vector3(20, 0.015, -3.75), paving)
 	_box(Vector3(460, 0.04, 2.0), Vector3(20, 0.015, 5.5), paving)
 
@@ -477,7 +499,7 @@ func _build_world() -> void:
 	pond.height = 0.06
 	var pond_mi := MeshInstance3D.new()
 	pond_mi.mesh = pond
-	pond_mi.material_override = _mat(Color(0.3, 0.6, 0.85))
+	pond_mi.material_override = _water()
 	pond_mi.position = Vector3(4, 0.03, 14)
 	add_child(pond_mi)
 	# The pond is real water: a stone bank around it, reeds, and no walking or driving in.
@@ -635,6 +657,7 @@ func _make_person(shirt: Color, pants: Color, into: Person = null, tone: int = -
 		p.limbs.append(shoulder)
 		elbows.append(elbow)
 	p.joints = knees + elbows
+	_limit(p.root, 85.0)
 	if into == null:
 		var tall := rng.randf_range(0.93, 1.07)
 		p.root.scale = Vector3(tall * rng.randf_range(0.95, 1.08), tall, tall)
@@ -738,6 +761,7 @@ func _apply_daylight() -> void:
 	if elevation > -0.2 and elevation < 0.35:
 		horizon = horizon.lerp(Color(1.0, 0.6, 0.35), 0.6 * (1.0 - absf(elevation - 0.08) / 0.28))
 	sky_mat.sky_horizon_color = horizon
+	env.fog_light_color = horizon
 	sky_mat.ground_horizon_color = horizon
 	sky_mat.ground_bottom_color = night_top.lerp(Color(0.4, 0.5, 0.6), light)
 	env.ambient_light_color = Color(0.22, 0.26, 0.42).lerp(Color(0.4, 0.43, 0.48), light)
@@ -1141,7 +1165,8 @@ func _physics_process(delta: float) -> void:
 	if driving:
 		_drive(input, delta)
 	else:
-		player.velocity = Vector3(input.x * speed, -4.0, input.y * speed)
+		var go := _stick_world(input)
+		player.velocity = Vector3(go.x * speed, -4.0, go.z * speed)
 		player.move_and_slide()
 	_update_traffic(delta)
 	if inside:
@@ -1160,7 +1185,14 @@ func _physics_process(delta: float) -> void:
 		car.rotation = Vector3(0, car_heading, clampf(-side * 0.035, -0.22, 0.22))
 		_car_hits()
 	if input.length_squared() > 0.01:
-		me.root.rotation.y = lerp_angle(me.root.rotation.y, atan2(input.x, input.y), 12.0 * delta)
+		var facing := _stick_world(input)
+		me.root.rotation.y = lerp_angle(me.root.rotation.y, atan2(facing.x, facing.z), 12.0 * delta)
+		# Footsteps.
+		if not driving:
+			step_t -= delta * (1.7 if running else 1.0)
+			if step_t <= 0.0:
+				step_t = 0.36
+				_play("step")
 	_animate(me, input.length_squared() > 0.01, delta * (1.6 if running else 1.0))
 	reach = maxf(reach - delta, 0.0)
 	if reach > 0.0:
@@ -1203,21 +1235,57 @@ func _physics_process(delta: float) -> void:
 func _process(delta: float) -> void:
 	var view := get_viewport().get_visible_rect().size
 	var portrait := view.y > view.x
-	cam.fov = 75.0 if portrait else 50.0
-	var want := player.position + Vector3(0, 1.0, -1.5)
-	if state == State.MENU:
-		want = Vector3(sin(Time.get_ticks_msec() * 0.0002) * 14.0, 1.0, -3.0)
-	cam_focus = cam_focus.lerp(want, 1.0 - exp(-5.0 * delta))
-	# North of the main street the camera looks down more steeply, so buildings do not hide you.
-	var outdoor := Vector3(0, 15.0, 16.0) if driving else Vector3(0, 11.5, 13.0)
-	if not inside and player.position.z < -6.0:
-		var steep := clampf((-6.0 - player.position.z) / 6.0, 0.0, 1.0)
-		outdoor = outdoor.lerp(Vector3(0, 19.0, 8.5) if driving else Vector3(0, 14.5, 6.0), steep)
-	cam_offset = cam_offset.lerp(Vector3(0, 7.0, 6.5) if inside else outdoor, 1.0 - exp(-4.0 * delta)) if not inside else Vector3(0, 7.0, 6.5)
 	shake = maxf(shake - delta * 2.2, 0.0)
-	cam.position = cam_focus + cam_offset + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * shake
-	cam.look_at(cam_focus)
+	var jitter := Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * shake
+	if inside or state == State.MENU or not chase:
+		# Overhead view: indoors, on the menu, or when chosen.
+		cam.fov = 75.0 if portrait else 50.0
+		cam_yaw = PI
+		var want := player.position + Vector3(0, 1.0, -1.5)
+		if state == State.MENU:
+			want = Vector3(sin(Time.get_ticks_msec() * 0.0002) * 14.0, 1.0, -3.0)
+		cam_focus = cam_focus.lerp(want, 1.0 - exp(-5.0 * delta))
+		var outdoor := Vector3(0, 15.0, 16.0) if driving else Vector3(0, 11.5, 13.0)
+		if not inside and player.position.z < -6.0:
+			var steep := clampf((-6.0 - player.position.z) / 6.0, 0.0, 1.0)
+			outdoor = outdoor.lerp(Vector3(0, 19.0, 8.5) if driving else Vector3(0, 14.5, 6.0), steep)
+		cam_offset = cam_offset.lerp(outdoor, 1.0 - exp(-4.0 * delta)) if not inside else Vector3(0, 7.0, 6.5)
+		cam.position = cam_focus + cam_offset + jitter
+		cam.look_at(cam_focus)
+	else:
+		# Chase view: the camera sits behind you and swings round to follow where you are heading.
+		cam.fov = 82.0 if portrait else 64.0
+		var heading := car_heading if driving else me.root.rotation.y
+		var moving := car_vel.length() > 1.0 if driving else Vector2(player.velocity.x, player.velocity.z).length() > 0.5
+		if moving and absf(angle_difference(cam_yaw, heading)) < 2.2:
+			cam_yaw = lerp_angle(cam_yaw, heading, 1.0 - exp(-(2.4 if driving else 1.5) * delta))
+		var ahead := Vector3(sin(cam_yaw), 0, cos(cam_yaw))
+		cam_focus = cam_focus.lerp(player.position + Vector3(0, 1.5, 0), 1.0 - exp(-12.0 * delta))
+		var spot := cam_focus - ahead * (10.0 if driving else 5.8) + Vector3(0, 3.6 if driving else 2.3, 0)
+		# If a wall is in the way, bring the camera in front of it.
+		var ray := PhysicsRayQueryParameters3D.create(cam_focus, spot, 1, [player.get_rid()])
+		var wall := get_world_3d().direct_space_state.intersect_ray(ray)
+		if not wall.is_empty():
+			var hit: Vector3 = wall["position"]
+			spot = hit + (cam_focus - spot).normalized() * 0.4
+			spot.y = maxf(spot.y, cam_focus.y + 0.5)
+		cam.position = spot + jitter
+		cam.look_at(cam_focus + ahead * 3.0)
 	pad.queue_redraw()
+
+
+## Turn a stick or arrow-key direction into a direction in the world, relative to where the camera looks.
+func _stick_world(input: Vector2) -> Vector3:
+	var yaw := cam_yaw if (chase and not inside) else PI
+	var ahead := Vector3(sin(yaw), 0, cos(yaw))
+	var right := Vector3(-ahead.z, 0, ahead.x)
+	return ahead * -input.y + right * input.x
+
+
+func _toggle_camera() -> void:
+	chase = not chase
+	cam_yaw = PI
+	cam_button.text = _h("מצלמה: מאחור" if chase else "מצלמה: מלמעלה")
 
 
 func _unhandled_input(e: InputEvent) -> void:
@@ -1255,6 +1323,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				_close_panel()
 			elif key >= KEY_1 and key <= KEY_9 and key - KEY_1 < actions.size():
 				actions[key - KEY_1].call()
+		elif key == KEY_C:
+			_toggle_camera()
 		elif key in [KEY_E, KEY_ENTER, KEY_SPACE]:
 			_use()
 
@@ -1399,6 +1469,7 @@ func _show_menu() -> void:
 		"נכנסים לכל בניין, ובפנים לוחצים על דברים כדי להשתמש בהם",
 		"ביער שמדרום: צדים עם רובה מחנות הנשק, ובורחים מהאנשים באדום",
 		"הרכב שלך חונה ליד הבית: נכנסים עם E ונוסעים עם החיצים",
+		"המצלמה הולכת מאחוריך. C או הכפתור משמאל למטה מחליפים למבט מלמעלה",
 	]), buttons)
 
 
@@ -1551,6 +1622,15 @@ func _build_hud() -> void:
 		run_button.text = _h("ריצה ✓" if on else "ריצה"))
 	hud.add_child(run_button)
 
+	cam_button = Button.new()
+	cam_button.focus_mode = Control.FOCUS_NONE
+	cam_button.text = _h("מצלמה: מאחור")
+	cam_button.add_theme_font_size_override("font_size", 26)
+	cam_button.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 30)
+	cam_button.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	cam_button.pressed.connect(_toggle_camera)
+	hud.add_child(cam_button)
+
 	var center := CenterContainer.new()
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1621,6 +1701,7 @@ func _layout() -> void:
 
 func _update_hud() -> void:
 	run_button.visible = state == State.PLAY and not driving and open_place == null and not busy
+	cam_button.visible = state == State.PLAY and not inside and open_place == null and not busy
 	var playing := state == State.PLAY
 	info_label.visible = playing
 	stats_box.visible = playing
@@ -1716,6 +1797,7 @@ func _build_sounds() -> void:
 		"thump": _tone(95, 45, 0.22, 0.7, 0.55),
 		"skid": _tone(950, 700, 0.35, 0.22, 0.9),
 		"honk": _tone(430, 430, 0.4, 0.35),
+		"step": _tone(160, 90, 0.06, 0.13, 0.8),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -2619,7 +2701,7 @@ func _exit_car() -> void:
 
 func _drive(input: Vector2, delta: float) -> void:
 	crash_cool = maxf(crash_cool - delta, 0.0)
-	var want := Vector3(input.x, 0, input.y)
+	var want := _stick_world(input)
 	if _is_shabbat():
 		want = Vector3.ZERO              # the car stays parked until Shabbat is over
 	var top := float(CARS[car_model]["top"]) * (1.0 - minf(car_damage, 100.0) / 160.0)
@@ -2840,8 +2922,9 @@ func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3
 
 
 func _lamp_post(pos: Vector3, reach: float) -> void:
-	_prop(pos, Vector3(0.3, 4.3, 0.3), 45.0, [[Vector3(0.18, 4.2, 0.18), Vector3(0, 2.1, 0), _mat(Color(0.2, 0.2, 0.22))],
+	var post := _prop(pos, Vector3(0.3, 4.3, 0.3), 45.0, [[Vector3(0.18, 4.2, 0.18), Vector3(0, 2.1, 0), _mat(Color(0.2, 0.2, 0.22))],
 		[Vector3(0.9, 0.25, 0.5), Vector3(0, 4.2, reach), lamp_mat]])
+	post.set_meta("lamp", true)
 
 
 func _knock_prop(body: RigidBody3D, dir: Vector3, impact: float) -> void:
@@ -3003,7 +3086,7 @@ func _room(key: String, floor_color: Color, wall_color: Color) -> Vector3:
 	var half: Vector2 = ROOMS[key]["half"]
 	var w := half.x * 2.0 + 2.0
 	var d := half.y * 2.0 + 2.0
-	_box(Vector3(w, 1, d), o + Vector3(0, -0.5, 0), _mat(floor_color))
+	_box(Vector3(w, 1, d), o + Vector3(0, -0.5, 0), _tex("wood", floor_color, 0.3))
 	_solid(Vector3(w, 1, d), o + Vector3(0, -0.5, 0))
 	var wall := _mat(wall_color)
 	_box(Vector3(w, 4.5, 0.5), o + Vector3(0, 2.25, -half.y - 0.75), wall)
@@ -3453,7 +3536,7 @@ func _thug_point(t: Person) -> Vector3:
 
 ## An apartment block with rows of windows. Only scenery.
 func _block(pos: Vector3, size: Vector3, color: Color) -> void:
-	_box(size, pos + Vector3(0, size.y * 0.5, 0), _mat(color))
+	_box(size, pos + Vector3(0, size.y * 0.5, 0), _tex("plaster" if int(pos.x) % 3 != 0 else "brick", color, 0.22))
 	_solid(size, pos + Vector3(0, size.y * 0.5, 0))
 	_box(Vector3(size.x + 0.4, 0.3, size.z + 0.4), pos + Vector3(0, size.y + 0.15, 0), _mat(color.darkened(0.3)))
 	var floors := int(size.y / 3.0)
@@ -3915,6 +3998,7 @@ func _watch_week() -> void:
 		_toast("היום יום שישי. שבת נכנסת ב-18:00: קנו חלה ומיץ ענבים, והדליקו נרות בבית.")
 	_watch_school()
 	_watch_duty()
+	_update_lights(get_process_delta_time())
 	if bladder >= 85.0 and not bladder_warned:
 		bladder_warned = true
 		_toast("צריך ללכת לשירותים! יש בבית, ויש שירותים ציבוריים בפארק.")
@@ -4262,7 +4346,7 @@ func _is_school_day() -> bool:
 
 func _build_school() -> void:
 	var at := Vector3(126, 0, -10)
-	_box(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0), _mat(Color(0.93, 0.85, 0.6)))
+	_box(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0), _tex("brick", Color(0.8, 0.62, 0.45), 0.28))
 	_box(Vector3(15.6, 0.4, 8.6), at + Vector3(0, 6.6, 0), _mat(Color(0.25, 0.4, 0.65)))
 	_solid(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0))
 	_box(Vector3(2.2, 2.6, 0.12), at + Vector3(0, 1.3, 4.05), _mat(Color(0.25, 0.4, 0.65)))
@@ -4438,7 +4522,7 @@ func _play_outside(doing: String, done: String) -> void:
 
 func _build_playground() -> void:
 	var at := PLAYGROUND
-	_box(Vector3(14, 0.04, 10), at + Vector3(0, 0.02, 0), _mat(Color(0.86, 0.76, 0.52)))          # sand
+	_box(Vector3(14, 0.04, 10), at + Vector3(0, 0.02, 0), _tex("sand", Color(0.62, 0.54, 0.38), 0.2))          # sand
 	_sign("גינת משחקים", at + Vector3(0, 3.4, -5.4), 80)
 	for sx: float in [-3.0, 3.0]:
 		_box(Vector3(0.15, 3.0, 0.15), at + Vector3(sx, 1.5, -5.4), _mat(Color(0.2, 0.2, 0.22)))
@@ -4561,7 +4645,7 @@ func _build_outskirts() -> void:
 	water.height = 0.06
 	var lake := MeshInstance3D.new()
 	lake.mesh = water
-	lake.material_override = _mat(Color(0.25, 0.55, 0.85))
+	lake.material_override = _water()
 	lake.position = LAKE + Vector3(0, 0.04, 6)
 	add_child(lake)
 	var shore := StaticBody3D.new()
@@ -4573,7 +4657,7 @@ func _build_outskirts() -> void:
 	shore.add_child(shore_shape)
 	shore.position = LAKE + Vector3(0, 1.5, 6)
 	add_child(shore)
-	_box(Vector3(26, 0.04, 9), LAKE + Vector3(0, 0.02, -8.5), _mat(Color(0.93, 0.85, 0.6)))        # sand
+	_box(Vector3(26, 0.04, 9), LAKE + Vector3(0, 0.02, -8.5), _tex("sand", Color(0.64, 0.57, 0.42), 0.14))        # sand
 	_box(Vector3(1.6, 0.25, 9.0), LAKE + Vector3(6, 0.35, -1.0), _mat(Color(0.5, 0.35, 0.2)))      # pier
 	for k in 4:
 		_box(Vector3(0.2, 0.9, 0.2), LAKE + Vector3(6 + (0.7 if k % 2 == 0 else -0.7), 0.3, -4.5 + (k / 2) * 6.5), _mat(Color(0.4, 0.28, 0.16)))
@@ -4773,8 +4857,8 @@ func _officer() -> Person:
 
 
 func _build_north() -> void:
-	var asphalt := _mat(Color(0.25, 0.26, 0.29))
-	var paving := _mat(Color(0.58, 0.56, 0.53))
+	var asphalt := _tex("asphalt", Color(0.26, 0.27, 0.29), 0.22)
+	var paving := _tex("paving", Color(0.56, 0.55, 0.53), 0.3)
 	var white := _mat(Color(0.9, 0.9, 0.85))
 	var span := EAST - WEST + 6.0
 	var mid := (EAST + WEST) * 0.5
@@ -4821,8 +4905,8 @@ func _build_north() -> void:
 		count += 1
 
 	# The sea: a long sandy beach, and water to the horizon.
-	_box(Vector3(span, 0.04, 11.0), Vector3(mid, 0.02, SEA_Z - 5.0), _mat(Color(0.78, 0.7, 0.48)))
-	_box(Vector3(span + 200.0, 0.06, 120.0), Vector3(mid, 0.03, SEA_Z - 70.0), _mat(Color(0.15, 0.45, 0.8)))
+	_box(Vector3(span, 0.04, 11.0), Vector3(mid, 0.02, SEA_Z - 5.0), _tex("sand", Color(0.62, 0.55, 0.4), 0.14))
+	_box(Vector3(span + 200.0, 0.06, 120.0), Vector3(mid, 0.03, SEA_Z - 70.0), _water())
 	_box(Vector3(span, 0.07, 1.2), Vector3(mid, 0.035, SEA_Z - 10.4), _mat(Color(0.85, 0.95, 1.0)))       # surf
 	for k in 14:
 		var px := Vector3(WEST + 14.0 + k * 24.0, 0, SEA_Z - 4.0 - (k % 2) * 2.0)
@@ -4994,3 +5078,127 @@ func _arrest(t: Person) -> void:
 	_play("pay")
 	_toast("עצרת איש רע! הניידת לקחה אותו, והרווחת ₪90.")
 	_update_hud()
+
+
+# ------------------------------------------------ materials and lighting ----
+
+## A photographed surface (colour and normal map), tinted to the colour you ask for.
+## It is mapped in world space, so it tiles across any box without stretching. Static things only.
+func _tex(kind: String, want: Color, tile: float) -> StandardMaterial3D:
+	var key := "%s|%s|%s" % [kind, want.to_html(false), tile]
+	if tex_cache.has(key):
+		return tex_cache[key]
+	var m := StandardMaterial3D.new()
+	var avg: Color = TEX_AVG[kind]
+	m.albedo_color = Color(minf(want.r / avg.r, 2.6), minf(want.g / avg.g, 2.6), minf(want.b / avg.b, 2.6))
+	m.albedo_texture = load("res://tex/%s_d.jpg" % kind)
+	m.normal_enabled = true
+	m.normal_texture = load("res://tex/%s_n.jpg" % kind)
+	m.normal_scale = 0.9
+	m.roughness = 0.9
+	m.uv1_triplanar = true
+	m.uv1_world_triplanar = true
+	m.uv1_scale = Vector3(tile, tile, tile)
+	tex_cache[key] = m
+	return m
+
+
+## Moving water: two layers of ripples sliding over each other, brighter where you look across it.
+func _water() -> ShaderMaterial:
+	if water_mat != null:
+		return water_mat
+	var noise := FastNoiseLite.new()
+	noise.frequency = 0.02
+	var ripples := NoiseTexture2D.new()
+	ripples.width = 256
+	ripples.height = 256
+	ripples.seamless = true
+	ripples.as_normal_map = true
+	ripples.bump_strength = 6.0
+	ripples.noise = noise
+	var shader := Shader.new()
+	shader.code = """
+shader_type spatial;
+uniform sampler2D ripples : hint_normal, repeat_enable, filter_linear_mipmap;
+uniform vec3 deep : source_color = vec3(0.04, 0.22, 0.42);
+uniform vec3 shallow : source_color = vec3(0.12, 0.42, 0.58);
+varying vec3 world_pos;
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+void fragment() {
+	vec2 uv = world_pos.xz * 0.07;
+	vec3 a = texture(ripples, uv + TIME * vec2(0.021, 0.013)).rgb;
+	vec3 b = texture(ripples, uv * 1.9 - TIME * vec2(0.017, 0.024)).rgb;
+	NORMAL_MAP = mix(a, b, 0.5);
+	NORMAL_MAP_DEPTH = 1.4;
+	float glance = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), 4.0);
+	ALBEDO = mix(deep, shallow, clamp(glance + (a.r - 0.5) * 0.6, 0.0, 1.0));
+	ROUGHNESS = 0.18;
+	SPECULAR = 0.4;
+}
+"""
+	water_mat = ShaderMaterial.new()
+	water_mat.shader = shader
+	water_mat.set_shader_parameter("ripples", ripples)
+	return water_mat
+
+
+## Do not draw small things that are far away.
+func _limit(node: Node, far: float) -> void:
+	var g := node as GeometryInstance3D
+	if g != null:
+		g.visibility_range_end = far
+		g.visibility_range_end_margin = 6.0
+	for child in node.get_children():
+		_limit(child, far)
+
+
+func _build_lights() -> void:
+	for k in 6:
+		var lamp := OmniLight3D.new()
+		lamp.omni_range = 16.0
+		lamp.light_color = Color(1.0, 0.86, 0.6)
+		lamp.light_energy = 0.0
+		lamp.visible = false
+		add_child(lamp)
+		night_lights.append(lamp)
+	headlight = SpotLight3D.new()
+	headlight.spot_range = 34.0
+	headlight.spot_angle = 40.0
+	headlight.light_energy = 9.0
+	headlight.light_color = Color(1.0, 0.96, 0.85)
+	headlight.visible = false
+	add_child(headlight)
+
+
+## At night the street lamps nearest to you really light the ground, and the car has headlights.
+func _update_lights(delta: float) -> void:
+	var dark := clampf(1.0 - clampf(sin((clock - 6.0) / 12.0 * PI) * 2.5 + 0.25, 0.0, 1.0), 0.0, 1.0)
+	if inside:
+		dark = 0.0
+	headlight.visible = driving and dark > 0.3
+	if headlight.visible:
+		var nose := Vector3(sin(car_heading), 0, cos(car_heading))
+		headlight.position = player.position + nose * 2.0 + Vector3(0, 1.1, 0)
+		headlight.look_at(headlight.position + nose * 10.0 + Vector3(0, -2.2, 0))
+	light_tick -= delta
+	if light_tick > 0.0:
+		return
+	light_tick = 0.5
+	if dark <= 0.25:
+		for lamp in night_lights:
+			lamp.visible = false
+		return
+	var near_lamps: Array = []
+	for body in props:
+		if body.freeze and body.has_meta("lamp"):
+			near_lamps.append([body.global_position.distance_to(player.position), body.global_position])
+	near_lamps.sort()
+	for k in night_lights.size():
+		var lamp := night_lights[k]
+		lamp.visible = k < near_lamps.size()
+		if lamp.visible:
+			var at: Vector3 = near_lamps[k][1]
+			lamp.position = at + Vector3(0, 3.9, 0)
+			lamp.light_energy = dark * 2.4
