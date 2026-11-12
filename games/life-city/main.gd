@@ -50,6 +50,7 @@ const ROOMS := {
 	"music": {"origin": Vector3(1400, 0, -200), "half": Vector2(6, 5)},
 	"hall": {"origin": Vector3(1600, 0, -200), "half": Vector2(11, 8)},
 	"shul": {"origin": Vector3(1800, 0, -200), "half": Vector2(9, 7)},
+	"police": {"origin": Vector3(2000, 0, -200), "half": Vector2(9, 6.5)},
 }
 const ROOM_HINTS := {
 	"home": "בבית: מיטה, מקרר, ספה, שולחן אוכל, שירותים ומקלחת — לוחצים כדי להשתמש.",
@@ -63,6 +64,7 @@ const ROOM_HINTS := {
 	"music": "לחצו על הגיטרה כדי לקנות אותה, או דברו עם המוכר על שיעור.",
 	"hall": "עולים לבמה ומופיעים עם הגיטרה. חברים שלך יבואו לראות.",
 	"shul": "בית הכנסת: עומדים ליד הבימה כדי להתפלל.",
+	"police": "תחנת המשטרה: מדווחים לשוטר בדלפק אם שדדו אותך.",
 }
 ## Hand jobs: carry something from one spot to another. Pay scales with your wage.
 const JOBS := {
@@ -215,6 +217,13 @@ const PICNIC := Vector3(0, 0, FOREST_Z + 9.0)
 var run_on := false                 # the touch "run" toggle
 var running := false
 var run_button: Button
+const NORTH_Z := -44.0             # the second street, parallel to the first
+const SEA_Z := -64.0               # where the sand of the sea beach begins
+const NORTH_LIMIT := -73.0
+const CROSSINGS: Array[float] = [-47.75, 15.25, 82.0]   # side streets joining the two
+var cops: Array[Person] = []
+var cam_offset := Vector3(0, 11.5, 13.0)
+var stolen_last := 0               # money taken in the last robbery, not yet reported
 const KIDS: Array[int] = [1, 2, 3, 4]      # places of the children in `family`
 const KID_ROOMS: Array[float] = [13.6, 17.6, -13.6, -17.6]   # x of each child's bedroom
 const SCHOOL_DOOR := Vector3(126, 0, -4.7)
@@ -341,9 +350,8 @@ func _sign(text: String, pos: Vector3, size: int = 96) -> void:
 
 
 func _building(key: String, title: String, x: float, w: float, h: float, wall: Color, roof: Color,
-		open_from: float, open_to: float) -> void:
+		open_from: float, open_to: float, z: float = -10.0) -> void:
 	var depth := 8.0
-	var z := -10.0
 	_box(Vector3(w, h, depth), Vector3(x, h * 0.5, z), _mat(wall))
 	_box(Vector3(w + 0.6, 0.4, depth + 0.6), Vector3(x, h + 0.2, z), _mat(roof))
 	_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
@@ -493,7 +501,13 @@ func _build_world() -> void:
 			continue
 		_tree(pos)
 	for k in 16:
-		_tree(Vector3(rng.randf_range(-48, 48), 0, rng.randf_range(-26, -17)))
+		var back_tree := Vector3(rng.randf_range(-48, 48), 0, rng.randf_range(-21, -16))
+		var on_road := false
+		for cx in CROSSINGS:
+			if absf(back_tree.x - cx) < 5.0:
+				on_road = true
+		if not on_road:
+			_tree(back_tree)
 	_building("shul", "בית כנסת", -91, 11, 6.5, Color(0.9, 0.87, 0.78), Color(0.2, 0.3, 0.55), 6, 21)
 	_building("music", "חנות מוזיקה", -74, 9, 4.2, Color(0.55, 0.4, 0.6), Color(0.3, 0.18, 0.4), 9, 20)
 	_building("hall", "אולם הופעות", -58, 15, 8.5, Color(0.75, 0.3, 0.3), Color(0.35, 0.1, 0.12), 17, 24)
@@ -507,6 +521,7 @@ func _build_world() -> void:
 	_build_school()
 	_build_playground()
 	_build_outskirts()
+	_build_north()
 	_building("guns", "חנות נשק", 40, 9, 4.2, Color(0.5, 0.52, 0.45), Color(0.25, 0.3, 0.2), 9, 19)
 
 	# Passers-by on the pavements, each with a name.
@@ -987,6 +1002,12 @@ func _refresh_panel() -> void:
 					_add_action("גיטרה · ₪%d" % GUITAR_PRICE, _buy_guitar)
 				elif skill < 15:
 					_add_action("שיעור נגינה (שעה) · ₪%d" % LESSON_PRICE, _lesson)
+			"police_desk":
+				if stolen_last > 0:
+					panel_text.text = _h("שדדו ממך ₪%d. אפשר להגיש תלונה, והמשטרה תנסה להחזיר את הכסף." % stolen_last)
+					_add_action("להגיש תלונה על השוד", _report_robbery)
+				else:
+					panel_text.text = _h("שלום! כאן שומרים על העיר. אם ישדדו אותך, בוא לדווח. בלילה כדאי ללכת ליד שוטרים.")
 			"farm":
 				panel_text.text = _h("ישר מהחווה, טרי וזול יותר מהסופר.")
 				_add_action("ביצים טריות · ₪5", _farm_buy.bind(5, 5))
@@ -1081,7 +1102,7 @@ func _physics_process(delta: float) -> void:
 		player.position.z = clampf(player.position.z, room_origin.z - room_half.y, room_origin.z + room_half.y)
 	else:
 		player.position.x = clampf(player.position.x, WEST, EAST)
-		player.position.z = clampf(player.position.z, -5.6, FOREST_END)
+		player.position.z = clampf(player.position.z, NORTH_LIMIT, FOREST_END)
 	if driving:
 		if car_model != JEEP:
 			player.position.z = minf(player.position.z, FOREST_Z - 6.0)   # only the jeep goes among the trees
@@ -1120,9 +1141,9 @@ func _physics_process(delta: float) -> void:
 				_say(n, "שבת שלום!" if _is_shabbat() else ("שלום %s!" % ("חבר" if n.level >= 3 else "")), 2.0)
 				n.hello_cool = 40.0
 		edge_cool = maxf(edge_cool - delta, 0.0)
-		if edge_cool <= 0.0 and (player.position.x <= WEST + 0.05 or player.position.x >= EAST - 0.05 or player.position.z >= FOREST_END - 0.05):
+		if edge_cool <= 0.0 and (player.position.x <= WEST + 0.05 or player.position.x >= EAST - 0.05 or player.position.z >= FOREST_END - 0.05 or player.position.z <= NORTH_LIMIT + 0.05):
 			edge_cool = 12.0
-			_toast("כאן נגמרת העיר. הגדר סוגרת את הדרך.")
+			_toast("המים כאן כבר עמוקים. שוחים רק ליד המציל." if player.position.z <= NORTH_LIMIT + 0.05 else "כאן נגמרת העיר. הגדר סוגרת את הדרך.")
 	_update_focus()
 	_update_forest(delta)
 	_update_hud()
@@ -1136,7 +1157,13 @@ func _process(delta: float) -> void:
 	if state == State.MENU:
 		want = Vector3(sin(Time.get_ticks_msec() * 0.0002) * 14.0, 1.0, -3.0)
 	cam_focus = cam_focus.lerp(want, 1.0 - exp(-5.0 * delta))
-	cam.position = cam_focus + (Vector3(0, 7.0, 6.5) if inside else (Vector3(0, 15.0, 16.0) if driving else Vector3(0, 11.5, 13.0)))
+	# North of the main street the camera looks down more steeply, so buildings do not hide you.
+	var outdoor := Vector3(0, 15.0, 16.0) if driving else Vector3(0, 11.5, 13.0)
+	if not inside and player.position.z < -6.0:
+		var steep := clampf((-6.0 - player.position.z) / 6.0, 0.0, 1.0)
+		outdoor = outdoor.lerp(Vector3(0, 19.0, 8.5) if driving else Vector3(0, 14.5, 6.0), steep)
+	cam_offset = cam_offset.lerp(Vector3(0, 7.0, 6.5) if inside else outdoor, 1.0 - exp(-4.0 * delta)) if not inside else Vector3(0, 7.0, 6.5)
+	cam.position = cam_focus + cam_offset
 	cam.look_at(cam_focus)
 	pad.queue_redraw()
 
@@ -1788,12 +1815,14 @@ func _interact(p: Place) -> void:
 	if busy or state != State.PLAY:
 		return
 	match p.key:
-		"home", "market", "cafe", "work", "guns", "clinic", "diner", "build", "music", "hall", "shul":
+		"home", "market", "cafe", "work", "guns", "clinic", "diner", "build", "music", "hall", "shul", "police":
 			_enter_room(p)
 		"store_exit", "exit":
 			_leave_room()
 		"school":
 			_school_door()
+		"sea":
+			_swim()
 		"beach":
 			_beach()
 		"farm":
@@ -2158,6 +2187,12 @@ func _update_forest(delta: float) -> void:
 			in_reach = not inside and not driving and here.z < FOREST_Z - 2.0
 		if t.chasing and (not in_reach or dist > 24.0 or rob_cool > 0.0):
 			t.chasing = false
+		var watched := false                 # robbers keep away when a police officer is close
+		for cop in cops:
+			if cop.root.position.distance_to(t.root.position) < 14.0 or cop.root.position.distance_to(here) < 10.0:
+				watched = true
+		if watched:
+			t.chasing = false
 		elif not t.chasing and in_reach and dist < (9.0 if t.town else 13.0) and rob_cool <= 0.0:
 			t.chasing = true
 			_toast("אדם רע באדום רודף אחריך! היכנס לבניין או לרכב!" if t.town else "אדם רע באדום רודף אחריך! ברח מהיער!")
@@ -2188,6 +2223,7 @@ func _update_forest(delta: float) -> void:
 
 func _robbed() -> void:
 	var stolen := mini(money, maxi(50, int(money * 0.3)))
+	stolen_last += stolen
 	money -= stolen
 	health = maxf(health - 12.0, 1.0)
 	rob_cool = 18.0
@@ -2693,6 +2729,7 @@ func _build_interiors() -> void:
 	_build_music_shop()
 	_build_hall()
 	_build_shul()
+	_build_police_room()
 
 
 func _build_home() -> void:
@@ -3039,6 +3076,7 @@ func _thug_point(t: Person) -> Vector3:
 ## An apartment block with rows of windows. Only scenery.
 func _block(pos: Vector3, size: Vector3, color: Color) -> void:
 	_box(size, pos + Vector3(0, size.y * 0.5, 0), _mat(color))
+	_solid(size, pos + Vector3(0, size.y * 0.5, 0))
 	_box(Vector3(size.x + 0.4, 0.3, size.z + 0.4), pos + Vector3(0, size.y + 0.15, 0), _mat(color.darkened(0.3)))
 	var floors := int(size.y / 3.0)
 	var columns := int(size.x / 2.6)
@@ -3053,7 +3091,13 @@ func _build_town_extras() -> void:
 	var palette: Array[Color] = [Color(0.78, 0.74, 0.66), Color(0.66, 0.7, 0.76), Color(0.8, 0.68, 0.6), Color(0.7, 0.75, 0.68)]
 	for k in 26:
 		var h := rng.randf_range(9.0, 19.0)
-		_block(Vector3(-168 + k * 15.0 + rng.randf_range(-1.5, 1.5), 0, -27), Vector3(rng.randf_range(9, 12), h, 9), palette[k % 4])
+		var bx := -168 + k * 15.0 + rng.randf_range(-1.5, 1.5)
+		var blocked := false
+		for cx in CROSSINGS:
+			if absf(bx - cx) < 9.5:
+				blocked = true                   # leave the side streets open
+		if not blocked:
+			_block(Vector3(bx, 0, -27), Vector3(rng.randf_range(9, 11), h, 9), palette[k % 4])
 	# Houses south of the road, east of the park.
 	for k in 4:
 		var hp := Vector3(52 + k * 9.5, 0, 14)
@@ -3405,7 +3449,7 @@ func _fence(from: Vector3, to: Vector3) -> void:
 ## The edge of town: a fence all round, and a gate with a raised boom where the road leaves.
 func _build_edges() -> void:
 	for x: float in [WEST - 1.6, EAST + 1.6]:
-		_fence(Vector3(x, 0, -6.5), Vector3(x, 0, -2.2))
+		_fence(Vector3(x, 0, NORTH_LIMIT - 1.0), Vector3(x, 0, -2.2))
 		_fence(Vector3(x, 0, 5.2), Vector3(x, 0, FOREST_END + 1.6))
 		var steel := _mat(Color(0.3, 0.32, 0.36))
 		for z: float in [-1.9, 4.9]:
@@ -4287,3 +4331,182 @@ func _shoot_thug(t: Person) -> void:
 	else:
 		_toast("פספסת! הוא עדיין רודף אחריך.")
 	_update_hud()
+
+
+# ------------------------------------------- the north side and the sea ----
+
+func _report_robbery() -> void:
+	if _shabbat_block():
+		return
+	var back := int(stolen_last * 0.6)
+	money += back
+	stolen_last = 0
+	_play("pay")
+	_toast("השוטרים תפסו את השודד והחזירו לך ₪%d." % back)
+	_refresh_panel()
+
+
+func _build_police_room() -> void:
+	var o := _room("police", Color(0.45, 0.47, 0.5), Color(0.75, 0.8, 0.86))
+	var navy := Color(0.12, 0.2, 0.45)
+	_box(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.0), _mat(navy))
+	_box(Vector3(5.1, 0.08, 1.1), o + Vector3(0, 1.14, -3.0), _mat(Color(0.85, 0.85, 0.88)))
+	_solid(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.0))
+	var desk_cop := _officer()
+	desk_cop.root.position = o + Vector3(0, 0, -4.2)
+	add_child(desk_cop.root)
+	_tag("יומנאי", desk_cop.root.position + Vector3(0, 2.7, 0))
+	var spot := _spot("police", "police_desk", "תחנת משטרה", "לדבר עם השוטר", o + Vector3(0, 0, -1.6))
+	_handle(desk_cop.root, "police", _interact.bind(spot))
+	# Two holding cells with bars along the back wall.
+	for side: float in [-1.0, 1.0]:
+		var cell := o + Vector3(side * 6.2, 0, -5.2)
+		_box(Vector3(3.6, 0.03, 2.6), cell + Vector3(0, 0.02, 0), _mat(Color(0.3, 0.3, 0.33)))
+		for k in 8:
+			_box(Vector3(0.08, 2.6, 0.08), cell + Vector3(-1.6 + k * 0.46, 1.3, 1.3), _mat(Color(0.2, 0.2, 0.22)))
+		_box(Vector3(3.6, 0.1, 0.1), cell + Vector3(0, 2.6, 1.3), _mat(Color(0.2, 0.2, 0.22)))
+		_box(Vector3(1.8, 0.4, 0.8), cell + Vector3(0, 0.2, -0.7), _mat(Color(0.5, 0.5, 0.52)))
+		_solid(Vector3(3.6, 2.6, 0.2), cell + Vector3(0, 1.3, 1.3))
+	# Notice board, filing cabinets and waiting chairs.
+	_box(Vector3(2.4, 1.4, 0.08), o + Vector3(0, 2.4, -6.45), _mat(Color(0.55, 0.4, 0.25)))
+	for k in 6:
+		_box(Vector3(0.5, 0.4, 0.03), o + Vector3(-0.8 + (k % 3) * 0.8, 2.1 + (k / 3) * 0.6, -6.4), _mat(Color(0.95, 0.95, 0.9)))
+	for k in 3:
+		_box(Vector3(0.8, 1.6, 0.6), o + Vector3(6.5 + k * 0.85, 0.8, 2.5), _mat(Color(0.5, 0.52, 0.55)))
+	for x: float in [-6.5, -5.3]:
+		_chair(o + Vector3(x, 0, 2.5), 1.0, navy)
+
+
+## A police officer: navy uniform, cap with a badge.
+func _officer() -> Person:
+	var cop := _make_person(Color(0.12, 0.2, 0.45), Color(0.1, 0.12, 0.25))
+	_ball(0.21, Vector3(0, 1.88, -0.02), _mat(Color(0.1, 0.14, 0.32)), cop.root, Vector3(1.05, 0.45, 1.05))
+	_box(Vector3(0.3, 0.03, 0.16), Vector3(0, 1.86, 0.2), _mat(Color(0.08, 0.1, 0.2)), cop.root)
+	_box(Vector3(0.07, 0.07, 0.02), Vector3(0, 1.92, 0.2), _mat(Color(0.95, 0.8, 0.2)), cop.root)
+	_box(Vector3(0.08, 0.09, 0.02), Vector3(0.1, 1.38, 0.19), _mat(Color(0.95, 0.8, 0.2)), cop.root)
+	return cop
+
+
+func _build_north() -> void:
+	var asphalt := _mat(Color(0.25, 0.26, 0.29))
+	var paving := _mat(Color(0.58, 0.56, 0.53))
+	var white := _mat(Color(0.9, 0.9, 0.85))
+	var span := EAST - WEST + 6.0
+	var mid := (EAST + WEST) * 0.5
+	# The second street.
+	_box(Vector3(span, 0.04, 6), Vector3(mid, 0.02, NORTH_Z), asphalt)
+	_box(Vector3(span, 0.04, 2.4), Vector3(mid, 0.015, NORTH_Z + 4.2), paving)
+	_box(Vector3(span, 0.04, 2.4), Vector3(mid, 0.015, NORTH_Z - 4.2), paving)
+	for k in range(int(WEST / 4.0), int(EAST / 4.0)):
+		_box(Vector3(1.8, 0.02, 0.2), Vector3(k * 4.0, 0.05, NORTH_Z), white)
+	for x in range(int(WEST) + 10, int(EAST), 20):
+		_box(Vector3(0.18, 4.2, 0.18), Vector3(x, 2.1, NORTH_Z + 3.3), _mat(Color(0.2, 0.2, 0.22)))
+		_box(Vector3(0.9, 0.25, 0.5), Vector3(x, 4.2, NORTH_Z + 3.0), lamp_mat)
+	# Side streets joining the two streets.
+	for cx in CROSSINGS:
+		_box(Vector3(4.6, 0.04, -NORTH_Z - 4.5), Vector3(cx, 0.025, (NORTH_Z + 3.0 - 1.5) * 0.5), asphalt)
+		for k in 9:
+			_box(Vector3(0.2, 0.02, 1.6), Vector3(cx, 0.055, -5.0 - k * 4.0), white)
+
+	# Police station, with a patrol car outside.
+	_building("police", "תחנת משטרה", 0, 13, 6.0, Color(0.82, 0.86, 0.92), Color(0.12, 0.2, 0.45), 0, 24, NORTH_Z - 10.0)
+	var patrol := _make_car(Color(0.95, 0.95, 0.97))
+	patrol.position = Vector3(9, 0, NORTH_Z - 4.6)
+	patrol.rotation.y = PI * 0.5
+	_box(Vector3(1.92, 0.3, 1.2), Vector3(0, 0.75, 0.9), _mat(Color(0.12, 0.2, 0.45)), patrol)
+	_box(Vector3(0.9, 0.16, 0.3), Vector3(0, 1.75, -0.25), _mat(Color(0.2, 0.35, 0.95)), patrol)
+	_solid(Vector3(4.2, 1.6, 1.9), patrol.position + Vector3(0, 0.8, 0))
+
+	# Houses along the north side of the second street.
+	var palette: Array[Color] = [Color(0.82, 0.74, 0.6), Color(0.68, 0.76, 0.8), Color(0.8, 0.66, 0.62), Color(0.72, 0.78, 0.66), Color(0.9, 0.85, 0.7)]
+	var count := 0
+	for x in range(int(WEST) + 12, int(EAST) - 6, 17):
+		if absf(x) < 16.0:
+			continue                         # the police station stands here
+		var hp := Vector3(x, 0, NORTH_Z - 10.5)
+		var tall := 3.8 + (count % 3) * 1.6
+		_box(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0), _mat(palette[count % 5]))
+		_box(Vector3(9.6, 0.4, 7.6), hp + Vector3(0, tall + 0.2, 0), _mat(Color(0.55, 0.22, 0.18) if count % 2 == 0 else Color(0.3, 0.32, 0.38)))
+		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+		for f in int(tall / 3.0):
+			for sx: float in [-2.8, 2.8]:
+				_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1 + f * 3.0, 3.53), window_mat)
+		_solid(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0))
+		if count % 2 == 0:
+			_tree(hp + Vector3(6.3, 0, 1.5))
+		count += 1
+
+	# The sea: a long sandy beach, and water to the horizon.
+	_box(Vector3(span, 0.04, 11.0), Vector3(mid, 0.02, SEA_Z - 5.0), _mat(Color(0.78, 0.7, 0.48)))
+	_box(Vector3(span + 200.0, 0.06, 120.0), Vector3(mid, 0.03, SEA_Z - 70.0), _mat(Color(0.15, 0.45, 0.8)))
+	_box(Vector3(span, 0.07, 1.2), Vector3(mid, 0.035, SEA_Z - 10.4), _mat(Color(0.85, 0.95, 1.0)))       # surf
+	for k in 14:
+		var px := Vector3(WEST + 14.0 + k * 24.0, 0, SEA_Z - 4.0 - (k % 2) * 2.0)
+		_box(Vector3(0.1, 2.2, 0.1), px + Vector3(0, 1.1, 0), _mat(Color(0.9, 0.9, 0.9)))
+		_ball(1.3, px + Vector3(0, 2.3, 0), _mat(Color.from_hsv(k * 0.17, 0.7, 0.95)), self, Vector3(1.0, 0.3, 1.0))
+		_box(Vector3(0.8, 0.12, 1.8), px + Vector3(1.3, 0.25, 0), _mat(Color(0.95, 0.95, 0.9)))
+	for k in 4:
+		var boat := Vector3(WEST + 50.0 + k * 85.0, 0.2, SEA_Z - 24.0 - (k % 2) * 14.0)
+		_box(Vector3(3.6, 0.6, 1.4), boat, _mat(Color(0.9, 0.9, 0.92)))
+		_box(Vector3(0.08, 3.0, 0.08), boat + Vector3(0, 1.6, 0), _mat(Color(0.4, 0.3, 0.2)))
+		_box(Vector3(0.04, 2.2, 1.6), boat + Vector3(0, 1.8, 0.4), _mat(Color.from_hsv(k * 0.25, 0.6, 0.95)))
+	# Lifeguard tower and the swimming spot.
+	var tower := Vector3(12, 0, SEA_Z - 3.0)
+	for sx: float in [-0.9, 0.9]:
+		for sz: float in [-0.9, 0.9]:
+			_box(Vector3(0.14, 2.6, 0.14), tower + Vector3(sx, 1.3, sz), _mat(Color(0.5, 0.35, 0.2)))
+	_box(Vector3(2.4, 0.15, 2.4), tower + Vector3(0, 2.6, 0), _mat(Color(0.5, 0.35, 0.2)))
+	_box(Vector3(2.2, 1.4, 2.0), tower + Vector3(0, 3.4, -0.1), _mat(Color(0.95, 0.9, 0.2)))
+	_box(Vector3(2.6, 0.15, 2.6), tower + Vector3(0, 4.2, 0), _mat(Color(0.85, 0.15, 0.12)))
+	_solid(Vector3(2.4, 2.6, 2.4), tower + Vector3(0, 1.3, 0))
+	_sign("חוף הים", Vector3(0, 3.4, SEA_Z + 1.6), 96)
+	_box(Vector3(0.18, 3.0, 0.18), Vector3(0, 1.5, SEA_Z + 1.6), _mat(Color(0.2, 0.2, 0.22)))
+	_box(Vector3(2.6, 0.05, 1.6), Vector3(0, 0.05, SEA_Z - 7.5), _mat(Color(0.95, 0.75, 0.2)))
+	var swim := Place.new()
+	swim.key = "sea"
+	swim.title = "חוף הים"
+	swim.prompt = "לשחות בים"
+	swim.door = Vector3(0, 0, SEA_Z - 7.5)
+	places.append(swim)
+
+	# Traffic and people on the second street, and police officers on patrol.
+	for k in 6:
+		var t := _make_car(Color.from_hsv(rng.randf(), rng.randf_range(0.2, 0.75), rng.randf_range(0.5, 0.95)))
+		var east := k % 2 == 0
+		t.position = Vector3(rng.randf_range(WEST, EAST), 0, NORTH_Z + (1.5 if east else -1.5))
+		t.rotation.y = PI * 0.5 if east else -PI * 0.5
+		t.set_meta("dir", 1.0 if east else -1.0)
+		t.set_meta("top", rng.randf_range(7.0, 11.0))
+		t.set_meta("speed", 8.0)
+		traffic.append(t)
+	for k in 14:
+		var n := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.88), Color.from_hsv(rng.randf(), 0.3, 0.42))
+		n.dir = 1.0 if k % 2 == 0 else -1.0
+		n.speed = rng.randf_range(1.6, 2.6)
+		n.root.position = Vector3(rng.randf_range(WEST + 4.0, EAST - 4.0), 0, NORTH_Z + (4.2 if k % 2 == 0 else -4.2))
+		_add_townsperson(n)
+	var beats: Array[Vector3] = [Vector3(-30, 0, -2.4), Vector3(60, 0, 5.6), Vector3(-90, 0, NORTH_Z + 4.4), Vector3(40, 0, NORTH_Z - 4.4), Vector3(10, 0, -2.6)]
+	for k in beats.size():
+		var cop := _officer()
+		cop.dir = 1.0 if k % 2 == 0 else -1.0
+		cop.speed = 1.9
+		cop.root.position = beats[k]
+		_add_townsperson(cop)
+		cop.name = "השוטר " + ["אבנר", "גלית", "שמעון", "נועם", "אורית"][k]
+		cops.append(cop)
+
+
+func _swim() -> void:
+	if energy < 12.0:
+		_toast("אתה עייף מדי לשחות עכשיו.")
+		return
+	var with_kids := kids == 4
+	_time_skip("שוחים בים...", func() -> void:
+		_skip(1.0, "awake")
+		energy = maxf(energy - 5.0, 0.0)
+		health = minf(health + 6.0, 100.0)
+		if with_kids:
+			family_joy = minf(family_joy + 12.0, 100.0)
+			for k: int in KIDS:
+				_say(family[k], "המים נעימים!", 5.0)
+		_toast("שחית בים עם הילדים. איזה יום!" if with_kids else "שחית בים. מרענן ובריא."))
