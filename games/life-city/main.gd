@@ -91,6 +91,7 @@ const CARS: Array[Dictionary] = [
 	{"name": "משפחתית חדשה", "price": 200, "model": "suv-luxury", "color": Color(0.8, 0.12, 0.12), "top": 21.0, "use": 0.75, "note": "חסכונית בדלק"},
 	{"name": "ג'יפ", "price": 250, "model": "suv", "color": Color(0.2, 0.38, 0.2), "top": 19.0, "use": 1.15, "note": "נוסע גם ביער"},
 	{"name": "מכונית ספורט", "price": 300, "model": "sedan-sports", "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
+	{"name": "טרקטורון", "price": 150, "model": "atv", "color": Color(0.85, 0.32, 0.1), "top": 15.0, "use": 0.6, "note": "נוסע גם ביער ובשדות"},
 ]
 const TRAFFIC_MODELS: Array[String] = ["sedan", "suv", "taxi", "van", "hatchback-sports", "truck", "delivery", "suv-luxury", "sedan"]
 const LEAF_TREES: Array[String] = ["tree_default", "tree_oak", "tree_detailed", "tree_fat"]
@@ -124,6 +125,32 @@ class Person:
 	var fly := Vector3.ZERO
 	var spin := 0.0
 	var lying := 0.0                # seconds left on the ground after a knock
+	var bounced := false
+	var stars: Node3D               # dizzy stars round the head while lying
+
+
+## Farm animals, riders and the ATV out at the hill farm. A car sends them tumbling; they get up again.
+class Roamer:
+	var node: Node3D
+	var kind := ""
+	var label := ""
+	var home := Vector3.ZERO
+	var reach := 7.0
+	var path: Array[Vector3] = []   # riders follow a loop; the flock just wanders near home
+	var step := 0
+	var speed := 1.0
+	var target := Vector3.ZERO
+	var wait := 0.0
+	var legs: Array[Node3D] = []
+	var phase := 0.0
+	var air := false
+	var bounced := false
+	var fly := Vector3.ZERO
+	var spin := 0.0
+	var lying := 0.0
+	var rider: Person
+	var voice := ""
+	var voice_cool := 0.0
 
 
 class Animal:
@@ -252,6 +279,13 @@ var guitar_mesh: Node3D
 var audience: Array[Person] = []
 var edge_cool := 0.0
 var chase := true                  # camera behind the player outdoors; false = the old overhead view
+var roamers: Array[Roamer] = []
+var atv_rider: Node3D
+var fov_kick := 0.0
+const ATV := 4
+const HILL := Vector3(120, 0, 21)    # the hill farm, between the street and the forest
+var last_tick_pos := Vector3.ZERO
+var cam_room := 1.0                 # how far out the chase camera is allowed, 0..1
 var cam_yaw := PI                  # which way the camera looks (PI = north, as the overhead view does)
 var cam_button: Button
 var tex_cache := {}
@@ -337,6 +371,7 @@ func _ready() -> void:
 	_build_sounds()
 	_build_car_effects()
 	_build_lights()
+	_build_hill_farm()
 	get_window().size_changed.connect(_layout)
 	_layout()
 	_apply_daylight()
@@ -363,7 +398,7 @@ func _box(size: Vector3, pos: Vector3, mat: Material, parent: Node = self) -> Me
 	return mi
 
 
-func _solid(size: Vector3, pos: Vector3) -> void:
+func _solid(size: Vector3, pos: Vector3) -> StaticBody3D:
 	var body := StaticBody3D.new()
 	var cs := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
@@ -371,7 +406,10 @@ func _solid(size: Vector3, pos: Vector3) -> void:
 	cs.shape = shape
 	body.add_child(cs)
 	body.position = pos
+	if size.x > 2.5 and size.z > 2.5:
+		body.set_meta("big", true)           # big enough to block the camera's view
 	add_child(body)
+	return body
 
 
 func _sign(text: String, pos: Vector3, size: int = 96) -> void:
@@ -414,10 +452,11 @@ func _building(key: String, title: String, x: float, w: float, h: float, wall: C
 
 
 func _tree(pos: Vector3) -> void:
-	_solid(Vector3(0.55, 2.4, 0.55), pos + Vector3(0, 1.2, 0))
+	var trunk_body := _solid(Vector3(0.55, 2.4, 0.55), pos + Vector3(0, 1.2, 0))
 	var r := rng.randf_range(1.3, 1.9)
 	var ready := _model("nature/" + LEAF_TREES[rng.randi() % LEAF_TREES.size()])
 	if ready != null:
+		trunk_body.set_meta("tree", ready)
 		ready.position = pos
 		ready.rotation.y = rng.randf() * TAU
 		ready.scale = Vector3.ONE * (2.6 + r)
@@ -473,6 +512,8 @@ func _build_world() -> void:
 
 	cam = Camera3D.new()
 	cam.far = 270.0
+	cam.near = 0.3                          # a tight depth range stops far road markings shimmering
+	cam.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	add_child(cam)
 	cam.make_current()
 
@@ -763,7 +804,9 @@ func _apply_daylight() -> void:
 	var hour := 12.0 if inside else clock                      # the shop is lit all day
 	var elevation := sin((hour - 6.0) / 12.0 * PI)          # 1 at noon, <0 at night
 	var light := clampf(elevation * 2.5 + 0.25, 0.0, 1.0)
-	sun.rotation_degrees = Vector3(-clampf(elevation, 0.12, 1.0) * 65.0, (hour - 12.0) * 9.0 - 25.0, 0)
+	var sun_hour := snappedf(hour, 0.05)                    # the sun moves in small steps: shadows that creep every frame shimmer
+	var sun_up := sin((sun_hour - 6.0) / 12.0 * PI)
+	sun.rotation_degrees = Vector3(-clampf(sun_up, 0.12, 1.0) * 65.0, (sun_hour - 12.0) * 9.0 - 25.0, 0)
 	sun.light_energy = 0.04 + light * 0.8
 	sun.light_color = Color(1.0, 0.72, 0.5).lerp(Color(1, 0.98, 0.93), clampf(elevation * 2.0, 0.0, 1.0))
 	var night_top := Color(0.03, 0.04, 0.12)
@@ -778,6 +821,7 @@ func _apply_daylight() -> void:
 	sky_mat.ground_bottom_color = night_top.lerp(Color(0.4, 0.5, 0.6), light)
 	env.ambient_light_color = Color(0.22, 0.26, 0.42).lerp(Color(0.4, 0.43, 0.48), light)
 	var glow := 1.0 - light
+	env.glow_enabled = glow > 0.6                         # bloom only for lamps at night; by day it made bright surfaces sparkle
 	lamp_mat.emission_energy_multiplier = glow * 3.0
 	window_mat.emission_energy_multiplier = glow * 1.4
 
@@ -1096,6 +1140,11 @@ func _refresh_panel() -> void:
 				_add_action("עגבניות מהשדה · ₪1", _farm_buy.bind(13, 1))
 				if kids == 4:
 					_add_action("להאכיל את הפרות עם הילדים", _feed_cows)
+			"hill":
+				panel_text.text = _h("חוות הגבעה: כבשים, חמורים, כרם וזיתים. תמיד שמחים לעזרה!")
+				_add_action("לעזור לרעות את הכבשים (שעה) · ₪18", _herd_sheep)
+				_add_action("לבצור ענבים בכרם (שעה) · ₪15", _pick_grapes)
+				_add_action("לרכוב על החמור סיבוב", _donkey_ride)
 			"kids_out":
 				if kids != 0:
 					panel_text.text = _h("הילדים כבר לא בבית.")
@@ -1144,6 +1193,12 @@ func _move_input() -> Vector2:
 
 
 func _physics_process(delta: float) -> void:
+	if atv_rider != null and is_instance_valid(atv_rider):
+		atv_rider.visible = driving
+	_update_roamers(delta)
+	if player.position.distance_to(last_tick_pos) > 2.5:
+		player.reset_physics_interpolation()      # a teleport (door, wake-up): do not glide there
+	last_tick_pos = player.position
 	for n in npcs:
 		if _tumble(n, delta):
 			continue
@@ -1188,7 +1243,7 @@ func _physics_process(delta: float) -> void:
 		player.position.x = clampf(player.position.x, WEST, EAST)
 		player.position.z = clampf(player.position.z, NORTH_LIMIT, FOREST_END)
 	if driving:
-		if car_model != JEEP:
+		if car_model != JEEP and car_model != ATV:
 			player.position.z = minf(player.position.z, FOREST_Z - 6.0)   # only the jeep goes among the trees
 		car.position = player.position
 		# The body leans into corners and dips under braking.
@@ -1248,39 +1303,45 @@ func _process(delta: float) -> void:
 	var view := get_viewport().get_visible_rect().size
 	var portrait := view.y > view.x
 	shake = maxf(shake - delta * 2.2, 0.0)
+	var at := player.get_global_transform_interpolated().origin   # where the player is drawn this frame
 	var jitter := Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * shake
 	if inside or state == State.MENU or not chase:
 		# Overhead view: indoors, on the menu, or when chosen.
 		cam.fov = 75.0 if portrait else 50.0
 		cam_yaw = PI
-		var want := player.position + Vector3(0, 1.0, -1.5)
+		var want := at + Vector3(0, 1.0, -1.5)
 		if state == State.MENU:
 			want = Vector3(sin(Time.get_ticks_msec() * 0.0002) * 14.0, 1.0, -3.0)
 		cam_focus = cam_focus.lerp(want, 1.0 - exp(-5.0 * delta))
 		var outdoor := Vector3(0, 15.0, 16.0) if driving else Vector3(0, 11.5, 13.0)
-		if not inside and player.position.z < -6.0:
-			var steep := clampf((-6.0 - player.position.z) / 6.0, 0.0, 1.0)
+		if not inside and at.z < -6.0:
+			var steep := clampf((-6.0 - at.z) / 6.0, 0.0, 1.0)
 			outdoor = outdoor.lerp(Vector3(0, 19.0, 8.5) if driving else Vector3(0, 14.5, 6.0), steep)
 		cam_offset = cam_offset.lerp(outdoor, 1.0 - exp(-4.0 * delta)) if not inside else Vector3(0, 7.0, 6.5)
 		cam.position = cam_focus + cam_offset + jitter
 		cam.look_at(cam_focus)
 	else:
 		# Chase view: the camera sits behind you and swings round to follow where you are heading.
-		cam.fov = 82.0 if portrait else 64.0
+		fov_kick = maxf(fov_kick - delta * 2.5, 0.0)
+		cam.fov = (82.0 if portrait else 64.0) + fov_kick * 9.0
 		var heading := car_heading if driving else me.root.rotation.y
 		var moving := car_vel.length() > 1.0 if driving else Vector2(player.velocity.x, player.velocity.z).length() > 0.5
 		if moving and absf(angle_difference(cam_yaw, heading)) < 2.2:
 			cam_yaw = lerp_angle(cam_yaw, heading, 1.0 - exp(-(2.4 if driving else 1.5) * delta))
 		var ahead := Vector3(sin(cam_yaw), 0, cos(cam_yaw))
-		cam_focus = cam_focus.lerp(player.position + Vector3(0, 1.5, 0), 1.0 - exp(-12.0 * delta))
+		cam_focus = cam_focus.lerp(at + Vector3(0, 1.5, 0), 1.0 - exp(-12.0 * delta))
 		var spot := cam_focus - ahead * (10.0 if driving else 5.8) + Vector3(0, 3.6 if driving else 2.3, 0)
-		# If a wall is in the way, bring the camera in front of it.
+		# If a building is in the way, bring the camera in front of it. Thin or moving things
+		# (posts, trees, cars, people) are ignored, and the distance changes smoothly, so the view never jumps.
+		var room := 1.0
 		var ray := PhysicsRayQueryParameters3D.create(cam_focus, spot, 1, [player.get_rid()])
 		var wall := get_world_3d().direct_space_state.intersect_ray(ray)
-		if not wall.is_empty():
+		if not wall.is_empty() and wall["collider"] is StaticBody3D and (wall["collider"] as Node).has_meta("big"):
 			var hit: Vector3 = wall["position"]
-			spot = hit + (cam_focus - spot).normalized() * 0.4
-			spot.y = maxf(spot.y, cam_focus.y + 0.5)
+			room = clampf((cam_focus.distance_to(hit) - 0.4) / cam_focus.distance_to(spot), 0.12, 1.0)
+		cam_room = minf(room, lerpf(cam_room, room, 1.0 - exp(-(10.0 if room < cam_room else 2.5) * delta)))
+		spot = cam_focus + (spot - cam_focus) * cam_room
+		spot.y = maxf(spot.y, cam_focus.y + 0.5)
 		cam.position = spot + jitter
 		cam.look_at(cam_focus + ahead * 3.0)
 	pad.queue_redraw()
@@ -1806,6 +1867,14 @@ func _build_sounds() -> void:
 		"alarm": _tone(500, 900, 0.5, 0.3),
 		"engine": _tone(90, 180, 0.5, 0.35, 0.25),
 		"crash": _tone(140, 35, 0.55, 0.8, 0.9),
+		"ouch": _tone(880, 330, 0.38, 0.3),
+		"boing": _tone(220, 520, 0.16, 0.3),
+		"crack": _tone(320, 70, 0.3, 0.5, 0.85),
+		"glass": _tone(2600, 1700, 0.3, 0.22, 0.7),
+		"baa": _tone(540, 430, 0.42, 0.3, 0.3),
+		"moo": _tone(190, 130, 0.75, 0.38, 0.1),
+		"bray": _tone(700, 240, 0.55, 0.3, 0.25),
+		"woof": _tone(420, 260, 0.14, 0.3, 0.4),
 		"thump": _tone(95, 45, 0.22, 0.7, 0.55),
 		"skid": _tone(950, 700, 0.35, 0.22, 0.9),
 		"honk": _tone(430, 430, 0.4, 0.35),
@@ -1978,7 +2047,7 @@ func _interact(p: Place) -> void:
 			_swim()
 		"beach":
 			_beach()
-		"farm":
+		"farm", "hill":
 			_open_panel(p)
 		"play_home":
 			_play_home()
@@ -2202,9 +2271,10 @@ func _forest_point() -> Vector3:
 
 func _pine(pos: Vector3) -> void:
 	var h := rng.randf_range(4.0, 7.0)
-	_solid(Vector3(0.6, 2.0, 0.6), pos + Vector3(0, 1.0, 0))
+	var trunk_body := _solid(Vector3(0.6, 2.0, 0.6), pos + Vector3(0, 1.0, 0))
 	var ready := _model("nature/" + PINE_TREES[rng.randi() % PINE_TREES.size()])
 	if ready != null:
+		trunk_body.set_meta("tree", ready)
 		ready.position = pos
 		ready.rotation.y = rng.randf() * TAU
 		ready.scale = Vector3(1.25, 1.0, 1.25) * (h + 1.2) / 1.6
@@ -2544,6 +2614,10 @@ func _sell_meat() -> void:
 
 func _make_car(color: Color, kind: String = "") -> Node3D:
 	var n := Node3D.new()
+	if kind == "atv":
+		_atv_body(n, color)
+		add_child(n)
+		return n
 	if kind == "":
 		kind = TRAFFIC_MODELS[rng.randi() % TRAFFIC_MODELS.size()]
 	var ready := _model("cars/" + kind, n)
@@ -2581,6 +2655,16 @@ func _set_car_model(model: int) -> void:
 		car.queue_free()
 	car_model = model
 	car = _make_car(CARS[model]["color"], CARS[model]["model"])
+	atv_rider = null
+	if model == ATV:
+		# On the ATV you can see yourself riding.
+		var dummy := _make_person(Color(0.95, 0.95, 0.95), Color(0.15, 0.17, 0.25), Person.new())
+		_kippah(dummy.root, Color(0.1, 0.12, 0.35))
+		_sit_astride(dummy)
+		dummy.root.position = Vector3(0, 0.05, -0.25)
+		car.add_child(dummy.root)
+		atv_rider = dummy.root
+		atv_rider.visible = driving
 	if model == JEEP:
 		car.scale = Vector3(1.08, 1.25, 1.0)
 	var block := StaticBody3D.new()
@@ -2614,7 +2698,7 @@ func _build_cars() -> void:
 		var show := _make_car(CARS[k]["color"], CARS[k]["model"])
 		if k == JEEP:
 			show.scale = Vector3(1.08, 1.25, 1.0)
-		show.position = CAR_LOT + Vector3(-8.5 + k * 4.25, 0, 1.0)
+		show.position = CAR_LOT + Vector3(-7.8 + k * 3.25, 0, 1.0)
 		show.rotation.y = PI
 		_solid(Vector3(1.9, 1.6, 4.2), show.position + Vector3(0, 0.8, 0))
 		_tag("%s ₪%d" % [CARS[k]["name"], CARS[k]["price"]], show.position + Vector3(0, 2.6, 0), 44)
@@ -2803,11 +2887,22 @@ func _crash(impact: float, normal: Vector3, thing: Object) -> void:
 		return
 	var other := thing as Node
 	if other != null and other.has_meta("traffic"):
+		# The other car is shoved aside and spun round; a moment later it straightens up and drives on.
 		var their: Node3D = other.get_meta("traffic")
 		their.set_meta("speed", 0.0)
-		their.set_meta("stun", 2.5)
+		their.set_meta("stun", 3.0)
+		their.set_meta("shove", -normal * minf(impact, 16.0) * 0.55)
+		their.set_meta("twirl", rng.randf_range(2.0, 4.0) * (1.0 if rng.randf() < 0.5 else -1.0) * minf(impact / 10.0, 1.5))
 		_play("honk")
+		_play("glass")
+		_car_parts(their.position + Vector3(0, 0.9, 0), -normal, impact)
+	if other != null and other.has_meta("tree"):
+		_shake_tree(other.get_meta("tree"), -normal, impact)
 	car_vel += normal * impact * 0.35                 # bounce back off it
+	if impact > 8.0:
+		_hit_stop(0.09 if impact < 13.0 else 0.16)
+		_car_parts(player.position - normal * 1.8 + Vector3(0, 0.9, 0), normal, impact)
+		fov_kick = minf(impact / 14.0, 1.2)
 	shake = maxf(shake, clampf(impact / 22.0, 0.2, 1.1))
 	_play("crash" if impact > 8.0 else "thump")
 	_debris(player.position - normal * 1.6 + Vector3(0, 0.8, 0), impact)
@@ -2860,8 +2955,12 @@ func _car_hits() -> void:
 			n.target = n.root.position
 			n.air = true
 			n.fly = car_vel * 0.85 + right * signf(rel.dot(right) + 0.01) * 2.0 + Vector3(0, 3.5 + speed * 0.28, 0)
-			n.spin = rng.randf_range(5.0, 9.0)
-			n.bubble.visible = false
+			n.spin = rng.randf_range(6.0, 11.0)
+			n.bounced = false
+			_say(n, ["איייי!", "אוי ואבוי!", "הצילו!", "וואו!"][rng.randi() % 4], 1.6)
+			_play("ouch")
+			_hit_stop(0.08)
+			fov_kick = maxf(fov_kick, 0.5)
 			var fine := mini(money, 250 if cops.has(n) else 100)
 			money -= fine
 			car_vel *= 0.7
@@ -2877,6 +2976,8 @@ func _car_hits() -> void:
 			t.down = 60.0
 			t.chasing = false
 			t.root.rotation.z = PI * 0.5
+			_play("ouch")
+			_hit_stop(0.08)
 			car_vel *= 0.7
 			shake = maxf(shake, 0.5)
 			_play("thump")
@@ -2889,11 +2990,39 @@ func _car_hits() -> void:
 			a.dead = true
 			a.scared = 0.0
 			a.node.rotation.z = PI * 0.5
+			_hit_stop(0.06)
 			car_vel *= 0.75
 			car_damage = minf(car_damage + (5.0 if a.big else 1.0), 100.0)
 			shake = maxf(shake, 0.4)
 			_play("thump")
 			_toast("פגעת בחיה עם הרכב.")
+	for r in roamers:
+		if r.air or r.lying > 0.0:
+			continue
+		var rel := r.node.position - player.position
+		if absf(rel.dot(right)) < 1.4 and absf(rel.dot(nose)) < 2.7 and car_vel.dot(rel) > 0.0:
+			var heavy := r.kind in ["cow", "donkey", "mule", "atv"]
+			r.air = true
+			r.bounced = false
+			r.fly = car_vel * (0.6 if heavy else 0.9) + right * signf(rel.dot(right) + 0.01) * 2.5 + Vector3(0, 4.0 + speed * 0.3, 0)
+			r.spin = rng.randf_range(4.0, 8.0)
+			car_vel *= 0.55 if heavy else 0.8
+			car_damage = minf(car_damage + (7.0 if heavy else 1.5), 100.0)
+			shake = maxf(shake, 0.7 if heavy else 0.4)
+			fov_kick = maxf(fov_kick, 0.5)
+			_hit_stop(0.1 if heavy else 0.06)
+			_play("crash" if heavy else "thump")
+			_play(r.voice)
+			if heavy:
+				_car_parts(player.position + nose * 1.8 + Vector3(0, 0.9, 0), -nose, 10.0)
+			if r.rider != null:
+				var fine := mini(money, 100)
+				money -= fine
+				_play("ouch")
+				_toast("אוי! פגעת ב%s. הוא קם מיד, אבל שילמת קנס של ₪%d. סע בזהירות!" % [r.label, fine])
+			else:
+				_toast("אופס! פגעת ב%s. היא תקום בעוד רגע. סע בזהירות ליד החיות!" % r.label)
+			_update_hud()
 
 
 ## A knocked person flies, tumbles, lies still for a while, and then is back on their feet.
@@ -2903,17 +3032,31 @@ func _tumble(n: Person, delta: float) -> bool:
 		n.root.position += n.fly * delta
 		n.root.rotation.x += n.spin * delta
 		if n.root.position.y <= 0.25 and n.fly.y < 0.0:
+			n.root.position.y = 0.25
+			if not n.bounced and n.fly.y < -5.0:
+				# One bounce and a roll before coming to rest.
+				n.bounced = true
+				n.fly = Vector3(n.fly.x * 0.55, -n.fly.y * 0.42, n.fly.z * 0.55)
+				n.spin *= 0.6
+				_play("boing")
+				return true
 			n.air = false
 			n.lying = 7.0
-			n.root.position.y = 0.25
 			n.root.rotation = Vector3(PI * 0.5, n.root.rotation.y, 0)
+			n.stars = _dizzy_stars(n.root, 2.15)
 			_play("thump")
 		return true
 	if n.lying > 0.0:
 		n.lying -= delta
+		if n.stars != null:
+			n.stars.rotation.y += delta * 5.0
 		if n.lying <= 0.0:
+			if n.stars != null:
+				n.stars.queue_free()
+				n.stars = null
 			n.root.position = n.target
 			n.root.rotation = Vector3.ZERO
+			n.root.reset_physics_interpolation()
 		return true
 	# On foot you cannot walk through people: you are nudged apart, and they pause.
 	if not driving and not inside and n.root.visible:
@@ -3065,9 +3208,22 @@ func _update_traffic(delta: float) -> void:
 		var dir: float = t.get_meta("dir")
 		var want: float = t.get_meta("top")
 		var stun: float = t.get_meta("stun", 0.0)
+		if not t.has_meta("lane"):
+			t.set_meta("lane", t.position.z)
+			t.set_meta("face", t.rotation.y)
 		if stun > 0.0:
 			t.set_meta("stun", stun - delta)
 			want = 0.0
+			var shove: Vector3 = t.get_meta("shove", Vector3.ZERO)
+			var twirl: float = t.get_meta("twirl", 0.0)
+			t.position += Vector3(shove.x, 0, shove.z) * delta
+			t.position.z = clampf(t.position.z, float(t.get_meta("lane")) - 3.5, float(t.get_meta("lane")) + 3.5)
+			t.rotation.y += twirl * delta
+			t.set_meta("shove", shove * maxf(0.0, 1.0 - 3.0 * delta))
+			t.set_meta("twirl", twirl * maxf(0.0, 1.0 - 2.2 * delta))
+		else:
+			t.position.z = move_toward(t.position.z, float(t.get_meta("lane")), 2.0 * delta)
+			t.rotation.y = lerp_angle(t.rotation.y, float(t.get_meta("face")), 3.0 * delta)
 		# Brake for the player (on foot or in the car), a parked car, or the car ahead.
 		var blockers: Array[Vector3] = [mine, car.position]
 		for other in traffic:
@@ -3082,8 +3238,10 @@ func _update_traffic(delta: float) -> void:
 		t.position.x += dir * now * delta
 		if dir > 0.0 and t.position.x > 240.0:
 			t.position.x = -200.0
+			t.reset_physics_interpolation()
 		elif dir < 0.0 and t.position.x < -200.0:
 			t.position.x = 240.0
+			t.reset_physics_interpolation()
 
 
 func _fuel_price() -> int:
@@ -5123,7 +5281,8 @@ func _tex(kind: String, want: Color, tile: float) -> StandardMaterial3D:
 	m.normal_enabled = true
 	m.normal_texture = load("res://tex/%s_n.jpg" % kind)
 	m.normal_scale = 0.9
-	m.roughness = 0.9
+	m.roughness = 1.0
+	m.metallic_specular = 0.15                # no glints: tiny highlights on bumpy surfaces flicker as you move
 	m.uv1_triplanar = true
 	m.uv1_world_triplanar = true
 	m.uv1_scale = Vector3(tile, tile, tile)
@@ -5223,13 +5382,25 @@ func _update_lights(delta: float) -> void:
 		if body.freeze and body.has_meta("lamp"):
 			near_lamps.append([body.global_position.distance_to(player.position), body.global_position])
 	near_lamps.sort()
-	for k in night_lights.size():
-		var lamp := night_lights[k]
-		lamp.visible = k < near_lamps.size()
-		if lamp.visible:
+	near_lamps = near_lamps.slice(0, night_lights.size())
+	# A light stays on its lamp while that lamp is still one of the nearest, so lights do not hop about.
+	var free_lights: Array[OmniLight3D] = []
+	for lamp in night_lights:
+		var keep := false
+		for k in near_lamps.size():
 			var at: Vector3 = near_lamps[k][1]
+			if lamp.visible and lamp.position.distance_to(at + Vector3(0, 3.9, 0)) < 0.1:
+				near_lamps.remove_at(k)
+				keep = true
+				break
+		if not keep:
+			free_lights.append(lamp)
+		lamp.light_energy = dark * 2.4
+	for lamp in free_lights:
+		lamp.visible = not near_lamps.is_empty()
+		if lamp.visible:
+			var at: Vector3 = near_lamps.pop_front()[1]
 			lamp.position = at + Vector3(0, 3.9, 0)
-			lamp.light_energy = dark * 2.4
 
 
 ## A ready-made model from the models folder, added to the scene (or to "into").
@@ -5259,3 +5430,497 @@ func _regreen(node: Node, green: Color) -> void:
 				mi.set_surface_override_material(k, _mat(green))
 	for child in node.get_children():
 		_regreen(child, green)
+
+
+# ------------------------------------------------------- crash effects ----
+
+## A split second of slow motion, so a big hit really lands.
+func _hit_stop(seconds: float) -> void:
+	if Engine.time_scale < 1.0:
+		return
+	Engine.time_scale = 0.15
+	get_tree().create_timer(seconds, true, false, true).timeout.connect(func() -> void: Engine.time_scale = 1.0)
+
+
+## Bits of car (bumper, door, wheel, panel) fly off, bounce about on the road and are swept up after a while.
+func _car_parts(pos: Vector3, dir: Vector3, impact: float) -> void:
+	var kinds: Array[String] = ["debris-bumper", "debris-tire", "debris-plate-a", "debris-door"]
+	for k in clampi(int(impact / 5.0), 1, 4):
+		var part := RigidBody3D.new()
+		part.mass = 6.0
+		part.collision_layer = 2
+		part.collision_mask = 1
+		var cs := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(0.7, 0.3, 0.5)
+		cs.shape = shape
+		part.add_child(cs)
+		var look := _model("cars/" + kinds[(k + rng.randi()) % kinds.size()], part)
+		if look != null:
+			look.scale = Vector3.ONE * 1.4
+		else:
+			_box(Vector3(0.6, 0.2, 0.4), Vector3.ZERO, _mat(Color(0.7, 0.7, 0.74)), part)
+		part.position = pos + Vector3(rng.randf_range(-0.6, 0.6), rng.randf_range(0.0, 0.5), rng.randf_range(-0.6, 0.6))
+		add_child(part)
+		var out := (dir + Vector3(rng.randf_range(-0.8, 0.8), 0, rng.randf_range(-0.8, 0.8))).normalized()
+		part.apply_central_impulse((out * rng.randf_range(3.0, 6.0) + Vector3(0, rng.randf_range(4.0, 7.5), 0)) * part.mass)
+		part.apply_torque_impulse(Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * 14.0)
+		get_tree().create_timer(7.0).timeout.connect(part.queue_free)
+
+
+## A tree that is hit creaks, whips back and forth, and drops a shower of leaves.
+func _shake_tree(tree: Node3D, dir: Vector3, impact: float) -> void:
+	if not is_instance_valid(tree):
+		return
+	_play("crack")
+	var lean := clampf(impact / 40.0, 0.08, 0.38)
+	var tilt := Vector3(dir.z, 0, -dir.x) * lean           # tips away from the car
+	var yaw := tree.rotation.y
+	var sway := create_tween()
+	sway.tween_property(tree, "rotation", Vector3(tilt.x, yaw, tilt.z), 0.08)
+	sway.tween_property(tree, "rotation", Vector3(-tilt.x * 0.6, yaw, -tilt.z * 0.6), 0.22)
+	sway.tween_property(tree, "rotation", Vector3(tilt.x * 0.3, yaw, tilt.z * 0.3), 0.22)
+	sway.tween_property(tree, "rotation", Vector3(0, yaw, 0), 0.3)
+	var leaves := CPUParticles3D.new()
+	var leaf := BoxMesh.new()
+	leaf.size = Vector3(0.16, 0.02, 0.1)
+	leaf.material = _mat(Color(0.3, 0.55, 0.2))
+	leaves.mesh = leaf
+	leaves.amount = int(clampf(impact * 5.0, 25.0, 90.0))
+	leaves.one_shot = true
+	leaves.explosiveness = 0.9
+	leaves.lifetime = 2.4
+	leaves.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	leaves.emission_sphere_radius = 1.6
+	leaves.direction = Vector3.UP
+	leaves.spread = 180.0
+	leaves.initial_velocity_min = 0.5
+	leaves.initial_velocity_max = 3.0
+	leaves.gravity = Vector3(0, -3.2, 0)
+	leaves.angular_velocity_min = -300.0
+	leaves.angular_velocity_max = 300.0
+	leaves.position = tree.position + Vector3(0, 3.6, 0)
+	add_child(leaves)
+	leaves.emitting = true
+	get_tree().create_timer(3.2).timeout.connect(leaves.queue_free)
+
+
+## Little yellow stars that circle the head of someone who has been knocked over.
+func _dizzy_stars(parent: Node3D, height: float) -> Node3D:
+	var ring := Node3D.new()
+	ring.position = Vector3(0, height, 0)
+	var gold := _mat(Color(1.0, 0.85, 0.15))
+	gold.emission_enabled = true
+	gold.emission = Color(1.0, 0.8, 0.1)
+	gold.emission_energy_multiplier = 0.8
+	for k in 4:
+		var a := k * TAU / 4.0
+		_box(Vector3(0.1, 0.1, 0.1), Vector3(cos(a) * 0.38, 0, sin(a) * 0.38), gold, ring).rotation = Vector3(0.6, a, 0.6)
+	parent.add_child(ring)
+	return ring
+
+
+# ----------------------------------------------------------- hill farm ----
+
+## The look of the hill-farm boys: a big knitted kippah, long sidelocks, a hoodie and tzitzit.
+func _hill_look(p: Person, hoodie: Color, kippah: Color, hair: Color) -> void:
+	var cloth := _mat(hoodie)
+	_ball(0.17, Vector3(0, 1.56, -0.14), cloth, p.root, Vector3(1.15, 0.9, 0.8))           # the hood, down on the back
+	_box(Vector3(0.3, 0.13, 0.03), Vector3(0, 1.08, 0.172), _mat(hoodie.darkened(0.2)), p.root)   # front pocket
+	for sx: float in [-0.04, 0.04]:
+		_box(Vector3(0.012, 0.17, 0.012), Vector3(sx, 1.4, 0.19), _mat(Color(0.95, 0.95, 0.95)), p.root)   # hood strings
+	_ball(0.165, Vector3(0, 1.915, -0.03), _mat(kippah), p.root, Vector3(1.0, 0.36, 1.0))    # big knitted kippah
+	_ball(0.168, Vector3(0, 1.9, -0.03), _mat(Color(0.95, 0.95, 0.9)), p.root, Vector3(1.0, 0.16, 1.0))   # its white rim
+	var lock := _mat(hair)
+	for sx: float in [-0.185, 0.185]:                                                   # sidelocks
+		_cap(0.024, 0.24, Vector3(sx, 1.64, 0.07), lock, p.root)
+		_ball(0.03, Vector3(sx, 1.53, 0.075), lock, p.root)
+		for sz: float in [-0.12, 0.12]:                                                 # tzitzit
+			_box(Vector3(0.02, 0.3, 0.02), Vector3(sx * 1.08, 0.86, sz), _mat(Color(1, 1, 1)), p.root)
+
+
+func _hill_boy(hoodie: Color, kippah: Color, hair_pick: int, size: float) -> Person:
+	var hairs: Array[Color] = [Color(0.12, 0.09, 0.07), Color(0.3, 0.19, 0.1), Color(0.55, 0.38, 0.18), Color(0.85, 0.7, 0.4)]
+	var p := _make_person(hoodie, Color(0.28, 0.33, 0.45), Person.new(), 0, hair_pick)
+	_hill_look(p, hoodie, kippah, hairs[hair_pick])
+	p.root.scale = Vector3.ONE * size
+	return p
+
+
+## Legs either side and hands forward, for sitting on a donkey or an ATV.
+func _sit_astride(p: Person) -> void:
+	p.limbs[0].rotation = Vector3(-1.0, 0, -0.5)
+	p.limbs[1].rotation = Vector3(-1.0, 0, 0.5)
+	p.limbs[2].rotation.x = -1.0
+	p.limbs[3].rotation.x = -1.0
+	p.joints[0].rotation.x = 1.1
+	p.joints[1].rotation.x = 1.1
+
+
+func _leg(parent: Node3D, pos: Vector3, length: float, thick: float, mat: Material, legs: Array[Node3D]) -> void:
+	var hip := Node3D.new()
+	hip.position = pos
+	parent.add_child(hip)
+	_box(Vector3(thick, length, thick), Vector3(0, -length * 0.5, 0), mat, hip)
+	legs.append(hip)
+
+
+func _make_beast(kind: String) -> Roamer:
+	var r := Roamer.new()
+	r.kind = kind
+	r.node = Node3D.new()
+	var n := r.node
+	match kind:
+		"sheep":
+			var wool := _mat(Color(0.93, 0.91, 0.84))
+			var face := _mat(Color(0.2, 0.17, 0.15))
+			_ball(0.4, Vector3(0, 0.68, 0), wool, n, Vector3(1.0, 0.9, 1.4))
+			_ball(0.22, Vector3(0, 0.95, 0.38), wool, n)
+			_ball(0.15, Vector3(0, 0.88, 0.62), face, n, Vector3(0.85, 0.95, 1.3))
+			for sx: float in [-0.15, 0.15]:
+				_ball(0.06, Vector3(sx, 0.93, 0.55), face, n, Vector3(1.4, 0.5, 0.8))
+				for sz: float in [-0.32, 0.32]:
+					_leg(n, Vector3(sx, 0.42, sz), 0.42, 0.08, face, r.legs)
+			r.label = "כבשה"
+			r.voice = "baa"
+			r.speed = 0.7
+		"cow":
+			var hide := _mat(Color(0.96, 0.96, 0.94))
+			var patch := _mat(Color(0.14, 0.11, 0.1) if rng.randf() < 0.6 else Color(0.5, 0.3, 0.16))
+			_cap(0.5, 1.9, Vector3(0, 1.1, 0), hide, n).rotation.x = PI * 0.5
+			_ball(0.3, Vector3(0.2, 1.3, 0.2), patch, n, Vector3(1.2, 0.8, 1.4))
+			_ball(0.25, Vector3(-0.25, 1.25, -0.4), patch, n, Vector3(1.0, 0.8, 1.2))
+			_ball(0.3, Vector3(0, 1.35, 1.15), hide, n, Vector3(0.9, 0.9, 1.3))
+			_ball(0.14, Vector3(0, 1.25, 1.5), _mat(Color(0.95, 0.7, 0.7)), n, Vector3(1.3, 0.9, 0.8))
+			for sx: float in [-0.3, 0.3]:
+				for sz: float in [-0.6, 0.6]:
+					_leg(n, Vector3(sx, 0.7, sz), 0.7, 0.16, hide, r.legs)
+			r.label = "פרה"
+			r.voice = "moo"
+			r.speed = 0.5
+		"dog":
+			var coat := _mat(Color(0.75, 0.6, 0.4))
+			_cap(0.17, 0.75, Vector3(0, 0.45, 0), coat, n).rotation.x = PI * 0.5
+			_ball(0.16, Vector3(0, 0.62, 0.42), coat, n, Vector3(0.9, 0.9, 1.2))
+			_ball(0.07, Vector3(0, 0.58, 0.6), _mat(Color(0.15, 0.12, 0.1)), n)
+			_cap(0.04, 0.35, Vector3(0, 0.62, -0.42), coat, n).rotation.x = -0.8
+			for sx: float in [-0.1, 0.1]:
+				_ball(0.06, Vector3(sx, 0.75, 0.38), coat, n, Vector3(0.6, 1.2, 0.6))
+				for sz: float in [-0.25, 0.25]:
+					_leg(n, Vector3(sx, 0.32, sz), 0.32, 0.06, coat, r.legs)
+			r.label = "כלב הרועים"
+			r.voice = "woof"
+			r.speed = 1.6
+		"atv":
+			_atv_body(n, Color(0.2, 0.45, 0.2))
+			r.label = "נהג הטרקטורון"
+			r.voice = "honk"
+			r.speed = 6.0
+		_:  # donkey or mule
+			var mule := kind == "mule"
+			var coat := _mat(Color(0.42, 0.3, 0.22) if mule else Color(0.6, 0.57, 0.53))
+			var pale := _mat(Color(0.88, 0.85, 0.8))
+			_cap(0.3, 1.35, Vector3(0, 1.0, 0), coat, n).rotation.x = PI * 0.5
+			_cap(0.16, 0.6, Vector3(0, 1.28, 0.62), coat, n).rotation.x = 0.8          # neck
+			_ball(0.19, Vector3(0, 1.5, 0.88), coat, n, Vector3(0.85, 0.9, 1.5))            # head
+			_ball(0.12, Vector3(0, 1.44, 1.1), pale, n, Vector3(0.9, 0.85, 1.0))            # pale muzzle
+			_ball(0.3, Vector3(0, 0.84, 0), pale, n, Vector3(0.75, 0.3, 1.6))               # pale belly
+			for sx: float in [-0.1, 0.1]:
+				_cap(0.045, 0.36, Vector3(sx, 1.78, 0.8), coat, n).rotation.z = -sx * 2.0   # long ears
+				_ball(0.03, Vector3(sx * 1.4, 1.55, 1.0), _mat(Color(0.08, 0.07, 0.07)), n)
+				for sz: float in [-0.48, 0.48]:
+					_leg(n, Vector3(sx * 1.9, 0.78, sz), 0.78, 0.11, coat, r.legs)
+			_cap(0.04, 0.5, Vector3(0, 0.85, -0.72), _mat(Color(0.2, 0.17, 0.15)), n)       # tail
+			# A woven saddle blanket.
+			_box(Vector3(0.66, 0.05, 0.7), Vector3(0, 1.31, -0.05), _mat(Color(0.7, 0.2, 0.18)), n)
+			_box(Vector3(0.67, 0.052, 0.14), Vector3(0, 1.311, -0.05), _mat(Color(0.95, 0.85, 0.5)), n)
+			if mule:
+				n.scale = Vector3.ONE * 1.12
+			r.label = "פרד" if mule else "חמור"
+			r.voice = "bray"
+			r.speed = 1.5
+	_limit(n, 110.0)
+	add_child(n)
+	roamers.append(r)
+	return r
+
+
+func _atv_body(n: Node3D, color: Color) -> void:
+	var paint := _mat(color)
+	var black := _mat(Color(0.09, 0.09, 0.1))
+	var grey := _mat(Color(0.35, 0.36, 0.4))
+	_box(Vector3(0.75, 0.3, 1.7), Vector3(0, 0.62, 0), grey, n)                    # frame
+	_box(Vector3(0.6, 0.16, 0.8), Vector3(0, 0.88, -0.25), black, n)               # seat
+	_box(Vector3(0.7, 0.26, 0.6), Vector3(0, 0.9, 0.5), paint, n)                  # tank and nose
+	for sx: float in [-0.52, 0.52]:
+		_box(Vector3(0.42, 0.07, 0.75), Vector3(sx, 0.8, 0.72), paint, n)          # mudguards
+		_box(Vector3(0.42, 0.07, 0.75), Vector3(sx, 0.8, -0.72), paint, n)
+		for sz: float in [-0.72, 0.72]:
+			_cap(0.32, 0.66, Vector3(sx * 1.05, 0.34, sz), black, n).rotation.z = PI * 0.5   # fat tyres
+	_box(Vector3(0.9, 0.05, 0.05), Vector3(0, 1.22, 0.42), black, n)               # handlebars
+	_box(Vector3(0.06, 0.34, 0.06), Vector3(0, 1.06, 0.45), grey, n)
+	_box(Vector3(0.26, 0.14, 0.06), Vector3(0, 0.98, 0.84), lamp_mat, n)           # headlamp
+	_box(Vector3(0.7, 0.04, 0.5), Vector3(0, 0.82, -0.95), grey, n)                # rear rack
+
+
+func _put_rider(r: Roamer, boy: Person, seat: Vector3) -> void:
+	_sit_astride(boy)
+	boy.root.position = seat
+	r.node.add_child(boy.root)
+	r.rider = boy
+	_limit(boy.root, 110.0)
+
+
+func _build_hill_farm() -> void:
+	var earth := _tex("sand", Color(0.52, 0.4, 0.26), 0.2)
+	var stone := _tex("plaster", Color(0.72, 0.68, 0.58), 0.5)
+	var wood := _mat(Color(0.45, 0.32, 0.2))
+	# Dirt tracks: one loop round the pasture, one round the farmyard.
+	var loops: Array = [[96.0, 118.0], [122.0, 146.0]]
+	for loop: Array in loops:
+		var x0: float = loop[0]
+		var x1: float = loop[1]
+		for z: float in [11.0, 32.0]:
+			_box(Vector3(x1 - x0 + 2.4, 0.06, 2.4), Vector3((x0 + x1) * 0.5, 0.03, z), earth)
+		for x: float in [x0, x1]:
+			_box(Vector3(2.4, 0.06, 18.6), Vector3(x, 0.03, 21.5), earth)
+	# Low dry-stone terraces along the south edge, with olive trees behind them.
+	for k in 6:
+		var wx := 99.0 + k * 9.0
+		_box(Vector3(7.0, 0.6, 0.7), Vector3(wx, 0.3, 34.2), stone)
+		_solid(Vector3(7.0, 0.6, 0.7), Vector3(wx, 0.3, 34.2))
+		var olive := _model("nature/tree_oak")
+		if olive != null:
+			olive.position = Vector3(wx, 0, 35.6)
+			olive.rotation.y = rng.randf() * TAU
+			olive.scale = Vector3(4.2, 2.9, 4.2)
+			_regreen(olive, Color(0.42, 0.5, 0.36))
+			_limit(olive, 190.0)
+	# The pasture: a flock, a watering trough, a shepherd boy and his dog.
+	for k in 7:
+		var ewe := _make_beast("sheep")
+		ewe.home = Vector3(107, 0, 21.5)
+		ewe.reach = 6.5
+		ewe.node.position = ewe.home + Vector3(rng.randf_range(-5, 5), 0, rng.randf_range(-5, 5))
+		ewe.node.rotation.y = rng.randf() * TAU
+		if k >= 5:
+			ewe.node.scale = Vector3.ONE * 0.6          # lambs
+			ewe.label = "טלה"
+	for k in 2:
+		var cow := _make_beast("cow")
+		cow.home = Vector3(103 + k * 8, 0, 26.0)
+		cow.reach = 3.0
+		cow.node.position = cow.home
+		cow.node.rotation.y = 1.0 + k * 2.0
+	var dog := _make_beast("dog")
+	dog.home = Vector3(107, 0, 21.5)
+	dog.reach = 8.0
+	dog.node.position = Vector3(110, 0, 17)
+	_box(Vector3(2.2, 0.45, 0.7), Vector3(100.5, 0.23, 15.0), wood)
+	_box(Vector3(2.0, 0.06, 0.5), Vector3(100.5, 0.44, 15.0), _mat(Color(0.3, 0.55, 0.8)))
+	_solid(Vector3(2.2, 0.6, 0.7), Vector3(100.5, 0.3, 15.0))
+	var shepherd := _hill_boy(Color(0.55, 0.6, 0.35), Color(0.2, 0.35, 0.6), 2, 0.86)
+	shepherd.speed = 0.0
+	shepherd.root.position = Vector3(113.5, 0, 15.5)
+	shepherd.root.rotation.y = -2.2
+	_cap(0.03, 1.7, Vector3(0.36, 0.85, 0.12), wood, shepherd.root)           # his staff
+	_add_townsperson(shepherd)
+	shepherd.name = "הרועה אליה"
+	# The farmyard: two caravans with a pergola, a water tank, hay, a vineyard.
+	for k in 2:
+		var at := Vector3(129.5 + k * 9.5, 0, 27.5)
+		for sx: float in [-2.6, 2.6]:
+			_box(Vector3(0.5, 0.4, 2.2), at + Vector3(sx, 0.2, 0), _mat(Color(0.5, 0.5, 0.52)))    # blocks it stands on
+		_box(Vector3(7.0, 2.5, 2.8), at + Vector3(0, 1.65, 0), _mat(Color(0.93, 0.92, 0.88)))
+		_box(Vector3(7.2, 0.14, 3.0), at + Vector3(0, 2.97, 0), _mat(Color(0.6, 0.62, 0.65)))
+		_box(Vector3(0.9, 1.9, 0.08), at + Vector3(-1.6, 1.4, -1.42), _mat(Color(0.4, 0.28, 0.18)))
+		for sx: float in [0.4, 2.2]:
+			_box(Vector3(1.1, 0.8, 0.08), at + Vector3(sx, 1.9, -1.42), window_mat)
+		_box(Vector3(1.4, 0.2, 0.9), at + Vector3(-1.6, 0.3, -1.9), wood)                          # step
+		_solid(Vector3(7.0, 3.0, 2.8), at + Vector3(0, 1.5, 0))
+	# Pergola with a table between the caravans' doors.
+	for sx: float in [-1.6, 1.6]:
+		for sz: float in [-1.2, 1.2]:
+			_box(Vector3(0.12, 2.3, 0.12), Vector3(134.3 + sx, 1.15, 23.2 + sz), wood)
+	for k in 6:
+		_box(Vector3(3.6, 0.06, 0.2), Vector3(134.3, 2.33, 22.1 + k * 0.44), wood)
+	_box(Vector3(1.8, 0.08, 0.9), Vector3(134.3, 0.75, 23.2), wood)
+	for sx: float in [-0.75, 0.75]:
+		_box(Vector3(0.1, 0.72, 0.8), Vector3(134.3 + sx, 0.36, 23.2), wood)
+	_solid(Vector3(1.8, 0.8, 0.9), Vector3(134.3, 0.4, 23.2))
+	# Water tank on a stand.
+	for sx: float in [-0.7, 0.7]:
+		for sz: float in [-0.7, 0.7]:
+			_box(Vector3(0.14, 2.4, 0.14), Vector3(143.5 + sx, 1.2, 23.5 + sz), _mat(Color(0.35, 0.36, 0.4)))
+	_cap(1.0, 2.2, Vector3(143.5, 3.4, 23.5), _mat(Color(0.12, 0.12, 0.13)), self)
+	_solid(Vector3(1.8, 4.5, 1.8), Vector3(143.5, 2.25, 23.5))
+	# Hay bales.
+	for k in 5:
+		_cap(0.6, 1.5, Vector3(125.2 + (k % 3) * 1.4, 0.6 + (k / 3) * 1.1, 28.6), _mat(Color(0.9, 0.78, 0.35)), self).rotation.z = PI * 0.5
+	_solid(Vector3(4.2, 1.6, 1.4), Vector3(126.6, 0.8, 28.6))
+	# The vineyard: rows of posts and wires heavy with grapes.
+	var vine := _mat(Color(0.25, 0.48, 0.2))
+	var grape := _mat(Color(0.38, 0.15, 0.45))
+	for row in 3:
+		var z := 14.2 + row * 2.3
+		_box(Vector3(17.0, 0.03, 0.03), Vector3(134.5, 1.25, z), _mat(Color(0.6, 0.6, 0.6)))
+		for k in 8:
+			var x := 126.5 + k * 2.3
+			_box(Vector3(0.1, 1.4, 0.1), Vector3(x, 0.7, z), wood)
+			_ball(0.45, Vector3(x + 1.1, 1.05, z), vine, self, Vector3(1.9, 0.8, 0.6))
+			_ball(0.11, Vector3(x + 0.9, 0.78, z + 0.12), grape, self, Vector3(1.0, 1.5, 1.0))
+			_ball(0.11, Vector3(x + 1.4, 0.8, z - 0.12), grape, self, Vector3(1.0, 1.5, 1.0))
+	# Riders: two boys on donkeys and one on a mule plod round the pasture; a youth rides the ATV round the yard.
+	var ride: Array[Vector3] = [Vector3(96, 0, 11), Vector3(118, 0, 11), Vector3(118, 0, 32), Vector3(96, 0, 32)]
+	var looks: Array = [[Color(0.3, 0.42, 0.62), Color(0.85, 0.85, 0.8), 1, 0.74], [Color(0.62, 0.25, 0.22), Color(0.25, 0.45, 0.3), 3, 0.7], [Color(0.4, 0.4, 0.44), Color(0.55, 0.3, 0.55), 0, 0.8]]
+	for k in 3:
+		var mount := _make_beast("mule" if k == 2 else "donkey")
+		mount.path = ride
+		mount.step = (k + 1) % 4
+		mount.node.position = ride[k].lerp(ride[(k + 1) % 4], 0.3)
+		var look: Array = looks[k]
+		var boy := _hill_boy(look[0], look[1], look[2], look[3])
+		_put_rider(mount, boy, Vector3(0, 1.36 - 0.92 * float(look[3]), -0.05))
+		mount.label = "ילד שרוכב על " + mount.label
+	var quad := _make_beast("atv")
+	quad.path = [Vector3(146, 0, 11), Vector3(122, 0, 11), Vector3(122, 0, 32), Vector3(146, 0, 32)]
+	quad.node.position = Vector3(140, 0, 11)
+	var youth := _hill_boy(Color(0.2, 0.22, 0.26), Color(0.9, 0.9, 0.85), 1, 0.95)
+	_put_rider(quad, youth, Vector3(0, 0.05, -0.25))
+	# Two more hill boys walk in town like everyone else.
+	for k in 2:
+		var boy := _hill_boy([Color(0.25, 0.5, 0.45), Color(0.6, 0.45, 0.2)][k], [Color(0.5, 0.2, 0.2), Color(0.2, 0.3, 0.55)][k], k + 1, 0.82)
+		boy.root.position = Vector3(60.0 + k * 40.0, 0, 6.2)
+		boy.dir = 1.0 if k == 0 else -1.0
+		_add_townsperson(boy)
+		boy.name = ["נתנאל", "אביתר"][k]
+	# Sign and the spot where you can lend a hand.
+	_sign("חוות הגבעה", Vector3(120, 4.3, 9.4), 96)
+	for sx: float in [-3.2, 3.2]:
+		_box(Vector3(0.2, 4.0, 0.2), Vector3(120 + sx, 2.0, 9.4), wood)
+	_box(Vector3(6.6, 0.25, 0.2), Vector3(120, 3.6, 9.4), wood)
+	_box(Vector3(2.4, 0.05, 1.6), Vector3(120, 0.075, 13.4), _mat(Color(0.95, 0.75, 0.2)))
+	var hill := Place.new()
+	hill.key = "hill"
+	hill.title = "חוות הגבעה"
+	hill.prompt = "לעזור בחוות הגבעה"
+	hill.door = Vector3(120, 0, 13.4)
+	places.append(hill)
+
+
+func _update_roamers(delta: float) -> void:
+	var resting := _is_shabbat()
+	var mine := player.position if not inside else Vector3(0, 0, 9999)
+	for r in roamers:
+		var n := r.node
+		if r.air:
+			r.fly.y -= 22.0 * delta
+			n.position += r.fly * delta
+			n.rotation.x += r.spin * delta
+			if n.position.y <= 0.0 and r.fly.y < 0.0:
+				n.position.y = 0.0
+				if not r.bounced and r.fly.y < -5.0:
+					r.bounced = true
+					r.fly = Vector3(r.fly.x * 0.5, -r.fly.y * 0.4, r.fly.z * 0.5)
+					r.spin *= 0.6
+					_play("boing")
+				else:
+					r.air = false
+					r.lying = 4.0
+					n.rotation = Vector3(0, n.rotation.y, PI * 0.5)
+					n.position.y = 0.3
+					_play("thump")
+			continue
+		if r.lying > 0.0:
+			r.lying -= delta
+			if r.lying <= 0.0:
+				n.rotation = Vector3(0, n.rotation.y, 0)
+				n.position.y = 0.0
+				n.position.x = clampf(n.position.x, WEST + 2.0, EAST - 2.0)
+				_play(r.voice)
+			continue
+		r.voice_cool -= delta
+		var gap := mine - n.position
+		gap.y = 0.0
+		var d := gap.length()
+		var goal := n.position
+		var pace := r.speed
+		if not r.path.is_empty():
+			if resting:
+				continue                      # no riding on Shabbat
+			goal = r.path[r.step]
+			if n.position.distance_to(goal) < 1.3:
+				r.step = (r.step + 1) % r.path.size()
+			if d < 4.5 and gap.dot(goal - n.position) > 0.0:
+				pace = 0.0                    # wait for you to get out of the way
+				if r.kind == "atv" and r.voice_cool <= 0.0:
+					r.voice_cool = 4.0
+					_play("honk")
+		else:
+			var scare := 9.0 if driving and car_vel.length() > 3.0 else 3.0
+			if d < scare and r.kind != "dog":
+				goal = n.position - gap.normalized() * 4.0          # scatter away from you
+				pace = r.speed * (4.0 if driving else 2.2)
+				if r.voice_cool <= 0.0:
+					r.voice_cool = rng.randf_range(2.5, 5.0)
+					_play(r.voice)
+			else:
+				r.wait -= delta
+				if r.wait <= 0.0:
+					r.wait = rng.randf_range(2.0, 7.0)
+					r.target = r.home + Vector3(rng.randf_range(-r.reach, r.reach), 0, rng.randf_range(-r.reach, r.reach))
+				goal = r.target
+		var way := goal - n.position
+		way.y = 0.0
+		var moving := way.length() > 0.25 and pace > 0.0
+		if moving:
+			var dir := way.normalized()
+			n.position += dir * pace * delta
+			n.rotation.y = lerp_angle(n.rotation.y, atan2(dir.x, dir.z), 5.0 * delta)
+			r.phase += delta * (4.0 + pace * 3.0)
+		if r.path.is_empty():
+			n.position.x = clampf(n.position.x, r.home.x - r.reach - 5.0, r.home.x + r.reach + 5.0)
+			n.position.z = clampf(n.position.z, r.home.z - r.reach - 5.0, r.home.z + r.reach + 5.0)
+		for k in r.legs.size():
+			var swing := sin(r.phase + (0.0 if k % 3 == 0 else PI)) * 0.5 if moving else 0.0
+			r.legs[k].rotation.x = lerp_angle(r.legs[k].rotation.x, swing, 10.0 * delta)
+		# On foot you bump into them rather than walk through.
+		if not driving and d < 0.9 and d > 0.01:
+			player.position += gap.normalized() * (0.9 - d)
+
+
+func _hill_job(doing: String, done: String, pay: int, thanks: String) -> void:
+	_close_panel()
+	if _shabbat_block():
+		return
+	if energy < 12.0:
+		_toast("אתה עייף מדי בשביל זה עכשיו.")
+		_play("no")
+		return
+	_time_skip(doing, func() -> void:
+		_skip(1.0, "work")
+		money += pay
+		_play("pay")
+		_toast(done % pay)
+		for n in npcs:
+			if n.name == "הרועה אליה":
+				_say(n, thanks, 5.0))
+
+
+func _herd_sheep() -> void:
+	_hill_job("רועים את הכבשים בגבעה...", "רעית את הצאן והחזרת את כולן לדיר. הרווחת ₪%d.", 18, "תודה רבה! הכבשים אוהבות אותך.")
+
+
+func _pick_grapes() -> void:
+	_hill_job("בוצרים ענבים בכרם...", "בצרת ארגזים של ענבים מתוקים. הרווחת ₪%d.", 15, "יישר כוח! יהיה יין טוב לקידוש.")
+
+
+func _donkey_ride() -> void:
+	_close_panel()
+	if _shabbat_block():
+		return
+	_time_skip("רוכבים על החמור סביב הגבעה...", func() -> void:
+		_skip(0.5, "awake")
+		family_joy = minf(family_joy + 2.0, 100.0)
+		_play("bray")
+		_toast("רכבת על החמור סיבוב שלם. איזה כיף!"))
