@@ -1,0 +1,3 @@
+Textures in this folder are from Poly Haven (https://polyhaven.com), licensed CC0 1.0 (public domain),
+downscaled to 512 px: asphalt_02, red_brick_03, leafy_grass, rectangular_paving, painted_plaster_wall,
+clay_roof_tiles, coast_sand_01, wood_floor. "_d" is the colour map and "_n" the normal map.
