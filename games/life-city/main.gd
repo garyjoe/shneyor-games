@@ -293,6 +293,7 @@ var herding := false
 var herd_stage := 0                      # 0 = on the way out, 1 = grazing, 2 = on the way home
 var graze_t := 0.0
 var beacon: MeshInstance3D
+var beacon_sign: Label3D
 const PARK := Vector3(-52, 0, 11)    # your own parking lot, next to the car lot
 var owned: Array[bool] = [true, false, false, false, false]
 var parked: Array[Node3D] = []
@@ -6115,6 +6116,7 @@ func _herd_sheep() -> void:
 	herd_stage = 0
 	beacon.visible = true
 	beacon.position = MEADOW + Vector3(0, 6.0, 0)
+	beacon_sign.text = _h("לכאן עם הכבשים")
 	_play("baa")
 	_toast("יוצאים למרעה! הכבשים הולכות אחריך. רדו מההר והובל אותן לעמוד הירוק ביער, מדרום להר.")
 
@@ -6562,6 +6564,16 @@ func _build_donkey() -> void:
 	glow.emission_enabled = true
 	glow.emission = Color(0.3, 0.95, 0.4)
 	glow.emission_energy_multiplier = 1.5
+	# A sign on top, so it is clear the green pole is a marker and not a glitch.
+	beacon_sign = Label3D.new()
+	beacon_sign.font = font
+	beacon_sign.font_size = 72
+	beacon_sign.pixel_size = 0.02
+	beacon_sign.outline_size = 20
+	beacon_sign.outline_modulate = Color(0.05, 0.2, 0.08)
+	beacon_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	beacon_sign.position = Vector3(0, 7.2, 0)
+	beacon.add_child(beacon_sign)
 	beacon.visible = false
 
 
@@ -6624,6 +6636,7 @@ func _update_herd(delta: float) -> void:
 			if graze_t <= 0.0:
 				herd_stage = 2
 				beacon.position = PEN + Vector3(0, 6.0, 0)
+				beacon_sign.text = _h("חזרה לדיר")
 				_play("baa")
 				_toast("הכבשים שבעות! עכשיו החזר אותן לדיר בחווה, אל העמוד הירוק שעל ההר.")
 		2:
