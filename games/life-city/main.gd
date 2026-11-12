@@ -2,7 +2,7 @@ extends Node3D
 ## Life in the City: a small everyday-life sim. Walk around town, work shifts
 ## for money, buy food, eat, sleep and pay the rent. The scene is built in code.
 
-const HOUR_SECONDS := 100.0         # real seconds per game hour while walking
+const HOUR_SECONDS := 180.0         # real seconds per game hour while walking
 const WALK_SPEED := 7.0
 const RENT := 300
 const RENT_DAYS := 3
@@ -88,9 +88,9 @@ const JEEP := 2
 const CAR_LOT := Vector3(-37, 0, 10.5)
 const CARS: Array[Dictionary] = [
 	{"name": "הרכב הישן", "price": 0, "color": Color(0.15, 0.4, 0.85), "top": 17.0, "use": 1.0, "note": ""},
-	{"name": "משפחתית חדשה", "price": 1200, "color": Color(0.8, 0.12, 0.12), "top": 21.0, "use": 0.75, "note": "חסכונית בדלק"},
-	{"name": "ג'יפ", "price": 2000, "color": Color(0.2, 0.38, 0.2), "top": 19.0, "use": 1.15, "note": "נוסע גם ביער"},
-	{"name": "מכונית ספורט", "price": 3500, "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
+	{"name": "משפחתית חדשה", "price": 200, "color": Color(0.8, 0.12, 0.12), "top": 21.0, "use": 0.75, "note": "חסכונית בדלק"},
+	{"name": "ג'יפ", "price": 250, "color": Color(0.2, 0.38, 0.2), "top": 19.0, "use": 1.15, "note": "נוסע גם ביער"},
+	{"name": "מכונית ספורט", "price": 300, "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
 ]
 const GAS_PUMP := Vector3(15, 0, 5.6)
 const SAVE_PATH := "user://life-city.cfg"
@@ -224,6 +224,14 @@ const CROSSINGS: Array[float] = [-47.75, 15.25, 82.0]   # side streets joining t
 var cops: Array[Person] = []
 var cam_offset := Vector3(0, 11.5, 13.0)
 var stolen_last := 0               # money taken in the last robbery, not yet reported
+var on_duty := false                # working a police shift
+var beat := 0                       # which patrol point is next
+var duty_done := 0                  # patrol points and arrests this shift
+var beat_marker: Node3D
+var duty_cap: Node3D
+const BEATS: Array[Vector3] = [Vector3(-24, 0, -3.3), Vector3(56, 0, -3.3), Vector3(20, 0, 19), Vector3(126, 0, -3.5),
+	Vector3(15.25, 0, -24), Vector3(-60, 0, -40), Vector3(60, 0, -40), Vector3(0, 0, -67), Vector3(-90, 0, -3.3),
+	Vector3(-128, 0, 8), Vector3(160, 0, 12), Vector3(0, 0, 33), Vector3(-37, 0, 7.5), Vector3(82, 0, -22)]
 const KIDS: Array[int] = [1, 2, 3, 4]      # places of the children in `family`
 const KID_ROOMS: Array[float] = [13.6, 17.6, -13.6, -17.6]   # x of each child's bedroom
 const SCHOOL_DOOR := Vector3(126, 0, -4.7)
@@ -667,6 +675,13 @@ func _build_player() -> void:
 	guitar_mesh.visible = false
 	rifle_mesh = _box(Vector3(0.1, 0.1, 1.3), Vector3(0, -0.6, 0.35), _mat(Color(0.25, 0.17, 0.1)), me.limbs[3])
 	rifle_mesh.visible = false
+	duty_cap = Node3D.new()
+	me.root.add_child(duty_cap)
+	_ball(0.215, Vector3(0, 1.9, -0.02), _mat(Color(0.1, 0.14, 0.32)), duty_cap, Vector3(1.06, 0.48, 1.06))
+	_box(Vector3(0.3, 0.03, 0.16), Vector3(0, 1.87, 0.2), _mat(Color(0.08, 0.1, 0.2)), duty_cap)
+	_box(Vector3(0.07, 0.07, 0.02), Vector3(0, 1.94, 0.2), _mat(Color(0.95, 0.8, 0.2)), duty_cap)
+	_box(Vector3(0.09, 0.1, 0.02), Vector3(0.1, 1.38, 0.2), _mat(Color(0.95, 0.8, 0.2)), duty_cap)
+	duty_cap.visible = false
 	parcel_mesh = _box(Vector3(0.6, 0.5, 0.6), Vector3(0, 1.15, 0.5), _mat(Color(0.72, 0.55, 0.32)), me.root)
 	parcel_mesh.visible = false
 	add_child(player)
@@ -675,6 +690,11 @@ func _build_player() -> void:
 
 func _reset_position() -> void:
 	inside = false
+	on_duty = false
+	if duty_cap != null:
+		duty_cap.visible = false
+	if beat_marker != null:
+		beat_marker.visible = false
 	room = ""
 	carrying = false
 	_park_car(CAR_HOME, PI * 0.5)
@@ -1007,7 +1027,12 @@ func _refresh_panel() -> void:
 					panel_text.text = _h("שדדו ממך ₪%d. אפשר להגיש תלונה, והמשטרה תנסה להחזיר את הכסף." % stolen_last)
 					_add_action("להגיש תלונה על השוד", _report_robbery)
 				else:
-					panel_text.text = _h("שלום! כאן שומרים על העיר. אם ישדדו אותך, בוא לדווח. בלילה כדאי ללכת ליד שוטרים.")
+					panel_text.text = _h(("אתה במשמרת. עד עכשיו: %d משימות." % duty_done) if on_duty
+						else "שלום! אפשר לדווח כאן על שוד, או להתנדב למשמרת סיור כשוטר.")
+				if on_duty:
+					_add_action("לסיים את המשמרת", _end_duty)
+				else:
+					_add_action("להתחיל משמרת כשוטר", _start_duty)
 			"farm":
 				panel_text.text = _h("ישר מהחווה, טרי וזול יותר מהסופר.")
 				_add_action("ביצים טריות · ₪5", _farm_buy.bind(5, 5))
@@ -1580,6 +1605,7 @@ func _update_hud() -> void:
 		_h("בסל: %d מוצרים · ₪%d" % [basket.size(), _basket_total()]) if room == "market" else "",
 		_h("כדורים: %d" % ammo) if has_rifle and not inside else "",
 		_h("דלק: %d%%" % int(fuel)) if driving else "",
+		_h("משמרת שוטר · נקודת הסיור במרחק %d מ'" % int(player.position.distance_to(BEATS[beat]))) if on_duty and not inside else "",
 	])
 	rifle_mesh.visible = has_rifle and _in_forest()
 	basket_mesh.visible = not basket.is_empty()
@@ -2201,7 +2227,10 @@ func _update_forest(delta: float) -> void:
 		if t.chasing:
 			step = to_me.normalized() * 5.6
 			if dist < 1.3:
-				_robbed()
+				if on_duty:
+					_arrest(t)
+				else:
+					_robbed()
 		else:
 			var to_target := t.target - t.root.position
 			if to_target.length() < 1.0:
@@ -3530,6 +3559,7 @@ func _watch_week() -> void:
 		friday_note_day = day
 		_toast("היום יום שישי. שבת נכנסת ב-18:00: קנו חלה ומיץ ענבים, והדליקו נרות בבית.")
 	_watch_school()
+	_watch_duty()
 	if bladder >= 85.0 and not bladder_warned:
 		bladder_warned = true
 		_toast("צריך ללכת לשירותים! יש בבית, ויש שירותים ציבוריים בפארק.")
@@ -4510,3 +4540,102 @@ func _swim() -> void:
 			for k: int in KIDS:
 				_say(family[k], "המים נעימים!", 5.0)
 		_toast("שחית בים עם הילדים. איזה יום!" if with_kids else "שחית בים. מרענן ובריא."))
+
+
+# ------------------------------------------------- working as a police officer ----
+
+func _start_duty() -> void:
+	if _shabbat_block():
+		return
+	if energy < 20.0:
+		_toast("אתה עייף מדי למשמרת. לך לישון קודם.")
+		_play("no")
+		return
+	if kids != 0:
+		_toast("קודם מחזירים את הילדים הביתה.")
+		return
+	on_duty = true
+	duty_done = 0
+	beat = rng.randi_range(0, BEATS.size() - 1)
+	duty_cap.visible = true
+	_close_panel()
+	_play("pay")
+	_toast("התחלת משמרת! לך אל העמוד הכחול המהבהב, ועצור אנשים רעים באדום: פשוט תיגע בהם.")
+	_place_marker()
+
+
+func _end_duty() -> void:
+	on_duty = false
+	duty_cap.visible = false
+	if beat_marker != null:
+		beat_marker.visible = false
+	_close_panel()
+	_toast("סיימת את המשמרת. ביצעת %d משימות. כל הכבוד!" % duty_done)
+	_update_hud()
+
+
+func _place_marker() -> void:
+	if beat_marker == null:
+		beat_marker = Node3D.new()
+		add_child(beat_marker)
+		var beam := _emit_mat(Color(0.2, 0.5, 1.0))
+		var pillar := CylinderMesh.new()
+		pillar.top_radius = 0.5
+		pillar.bottom_radius = 0.5
+		pillar.height = 9.0
+		var mi := MeshInstance3D.new()
+		mi.mesh = pillar
+		mi.material_override = beam
+		mi.position.y = 4.5
+		beat_marker.add_child(mi)
+		_box(Vector3(2.4, 0.05, 2.4), Vector3(0, 0.04, 0), beam, beat_marker)
+	beat_marker.position = BEATS[beat]
+	beat_marker.visible = true
+
+
+func _emit_mat(color: Color) -> StandardMaterial3D:
+	var m := _mat(color)
+	m.emission_enabled = true
+	m.emission = color
+	m.emission_energy_multiplier = 1.5
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color.a = 0.55
+	return m
+
+
+func _watch_duty() -> void:
+	if not on_duty:
+		return
+	if _is_shabbat() or energy < 5.0 or clock >= 23.0:
+		_end_duty()
+		return
+	beat_marker.visible = int(Time.get_ticks_msec() / 400.0) % 4 != 0
+	var flat := Vector3(player.position.x, 0, player.position.z)
+	if not inside and flat.distance_to(BEATS[beat]) < (4.5 if driving else 2.6):
+		var pay := int(24 * wage / 40.0)
+		money += pay
+		duty_done += 1
+		parcels += 1
+		_play("pay")
+		if parcels % 40 == 0:
+			wage += 8
+			_toast("נקודת סיור הושלמה: ₪%d. וגם קיבלת העלאה בכל העבודות!" % pay)
+		else:
+			_toast("נקודת סיור הושלמה: הרווחת ₪%d. לנקודה הבאה!" % pay)
+		var next := beat
+		while next == beat:
+			next = rng.randi_range(0, BEATS.size() - 1)
+		beat = next
+		_place_marker()
+		_update_hud()
+
+
+func _arrest(t: Person) -> void:
+	t.down = 60.0
+	t.chasing = false
+	t.root.rotation.z = PI * 0.5
+	duty_done += 1
+	money += 90
+	_play("pay")
+	_toast("עצרת איש רע! הניידת לקחה אותו, והרווחת ₪90.")
+	_update_hud()
