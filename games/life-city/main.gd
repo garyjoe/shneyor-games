@@ -2466,6 +2466,7 @@ func _build_forest() -> void:
 		_make_animal(k < 9)
 	for k in 6:
 		var t := _make_person(Color(0.85, 0.08, 0.08), Color(0.6, 0.05, 0.05))
+		_balaclava(t.root)
 		t.town = k >= 3
 		add_child(t.root)
 		thugs.append(t)
@@ -5981,6 +5982,7 @@ func _build_hill_farm() -> void:
 	# Sheep thieves in red lurk round the hill. Shoot at them, run, or phone the police.
 	for k in 5:
 		var t := _make_person(Color(0.85, 0.08, 0.08), Color(0.6, 0.05, 0.05))
+		_balaclava(t.root)
 		t.hill = true
 		t.name = "גנב כבשים"
 		add_child(t.root)
@@ -6665,3 +6667,14 @@ func _stop_herd(done: bool) -> void:
 	else:
 		_toast("המרעה הופסק. הכבשים חזרו לדיר.")
 	_update_hud()
+
+
+## A robber's black stocking cap: it covers the whole head and leaves only a slit for the eyes.
+func _balaclava(root: Node3D) -> void:
+	var wool := _mat(Color(0.07, 0.07, 0.08))
+	_ball(0.212, Vector3(0, 1.75, -0.005), wool, root, Vector3(0.98, 1.14, 1.03))
+	_cap(0.075, 0.16, Vector3(0, 1.57, 0), wool, root)                                   # down over the neck
+	_box(Vector3(0.21, 0.05, 0.03), Vector3(0, 1.765, 0.2), _mat(Color(0.9, 0.72, 0.56)), root)   # the eye slit
+	for sx: float in [-0.055, 0.055]:
+		_ball(0.014, Vector3(sx, 1.765, 0.216), _mat(Color(0.1, 0.08, 0.07)), root, Vector3(1.0, 1.0, 0.4))
+	_limit(root, 70.0)
