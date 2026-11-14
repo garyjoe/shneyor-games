@@ -93,10 +93,31 @@ const CARS: Array[Dictionary] = [
 	{"name": "מכונית ספורט", "price": 300, "model": "sedan-sports", "color": Color(0.98, 0.78, 0.1), "top": 28.0, "use": 1.4, "note": "הכי מהירה"},
 	{"name": "טרקטורון", "price": 150, "model": "atv", "color": Color(0.85, 0.32, 0.1), "top": 15.0, "use": 0.6, "note": "נוסע גם ביער ובשדות"},
 ]
-const TRAFFIC_MODELS: Array[String] = ["sedan", "suv", "taxi", "van", "hatchback-sports", "truck", "delivery", "suv-luxury", "sedan"]
-const LEAF_TREES: Array[String] = ["tree_default", "tree_oak", "tree_detailed", "tree_fat"]
-const PINE_TREES: Array[String] = ["tree_pineTallA", "tree_pineTallB", "tree_pineDefaultA", "tree_pineRoundC"]
+const TRAFFIC_MODELS: Array[String] = ["sedan", "suv", "taxi", "van", "hatchback-sports", "truck", "delivery", "suv-luxury", "sedan",
+	"sedan-sports", "garbage-truck", "delivery-flat", "truck-flat", "ambulance", "suv", "van"]
+const LEAF_TREES: Array[String] = ["tree_default", "tree_oak", "tree_detailed", "tree_fat", "tree_simple", "tree_thin", "tree_tall", "tree_plateau"]
+const PINE_TREES: Array[String] = ["tree_pineTallA", "tree_pineTallB", "tree_pineDefaultA", "tree_pineRoundC", "tree_pineRoundA", "tree_pineTallC",
+	"tree_pineDefaultB", "tree_pineRoundE", "tree_cone"]
 const GAS_PUMP := Vector3(15, 0, 5.6)
+## The kit building that stands in for each place: model, which way to turn it so that its door
+## faces the street, and how high on the front its name board hangs.
+const LOOKS := {
+	"home": ["commercial/building-b", PI, 5.2], "market": ["commercial/building-k", PI, 4.6], "cafe": ["commercial/building-h", PI, 5.0],
+	"work": ["commercial/building-l", PI, 5.0], "guns": ["commercial/building-g", PI, 5.0], "shul": ["commercial/building-e", PI, 5.0],
+	"music": ["commercial/building-c", PI, 5.0], "hall": ["commercial/building-j", PI, 5.0], "clinic": ["commercial/building-n", PI, 5.0],
+	"diner": ["commercial/building-i", PI, 5.0], "build": ["industrial/building-a", PI, 5.0], "police": ["commercial/building-d", PI, 5.0],
+}
+const HOUSES: Array[String] = ["suburban/building-type-a", "suburban/building-type-c", "suburban/building-type-e", "suburban/building-type-g",
+	"suburban/building-type-i", "suburban/building-type-j", "suburban/building-type-o", "suburban/building-type-s", "suburban/building-type-u",
+	"suburban/building-type-h", "suburban/building-type-m", "suburban/building-type-f"]
+const ROOFS: Array[Color] = [Color(0.74, 0.32, 0.22), Color(0.62, 0.27, 0.2), Color(0.82, 0.45, 0.26), Color(0.4, 0.45, 0.56), Color(0.56, 0.3, 0.24)]
+const BLOCKS: Array[String] = ["commercial/building-f", "commercial/building-l", "commercial/building-g", "commercial/building-m", "commercial/building-a",
+	"commercial/building-i", "commercial/building-d", "commercial/building-skyscraper-e", "commercial/building-j"]
+## The food kit's model for each product, and how tall it stands on the shelf.
+const FOODS := {0: ["food/loaf", 0.34], 1: ["food/cheese", 0.2], 2: ["food/carton", 0.5], 3: ["food/apple", 0.34], 4: ["food/bag", 0.5],
+	6: ["food/turkey", 0.3], 7: ["food/chocolate", 0.06], 8: ["food/meat-raw", 0.16], 9: ["food/loaf-round", 0.24], 10: ["food/wine-red", 0.6],
+	11: ["food/bag-flat", 0.18], 12: ["food/banana", 0.2], 13: ["food/tomato", 0.28], 14: ["food/can-small", 0.2], 15: ["food/fish", 0.26],
+	16: ["food/cake", 0.24]}
 const SAVE_PATH := "user://life-city.cfg"
 
 enum State { MENU, PLAY, OVER }
@@ -318,6 +339,14 @@ var fps_frames := 0
 var prints: Array[MeshInstance3D] = []   # your last footprints; the oldest is reused
 var print_next := 0
 var pine_groups := {}
+var kit_cache := {}                  # kit models already read, ready to be stamped
+var kit_meshes := {}
+var kit_groups := {}                 # stretch of town -> the scenery mesh being put together there
+var palettes := {}
+var room_lights := {}                # room -> its ceiling lamps; only the room you are in is lit
+var shade_mat: StandardMaterial3D    # lampshades that always glow
+var pane_mat: StandardMaterial3D     # daylight in an indoor window
+var glass_mat: StandardMaterial3D    # window panes of the kit buildings; they light up at night
 var fps_label: Label
 var paint_mat: StandardMaterial3D   # one shared material for everything that is merged; colours live in the mesh
 var tex_cache := {}
@@ -409,6 +438,7 @@ func _ready() -> void:
 	_build_parking()
 	_build_donkey()
 	_merge_static()
+	_finish_scenery()
 	var gfx := ConfigFile.new()
 	if gfx.load("user://life-city-gfx.cfg") == OK:
 		quality = clampi(int(gfx.get_value("gfx", "quality", 2)), 0, 2)     # what this device managed last time
@@ -475,16 +505,25 @@ func _sign(text: String, pos: Vector3, size: int = 96) -> void:
 func _building(key: String, title: String, x: float, w: float, h: float, wall: Color, roof: Color,
 		open_from: float, open_to: float, z: float = -10.0) -> void:
 	var depth := 8.0
-	_box(Vector3(w, h, depth), Vector3(x, h * 0.5, z), _tex("brick" if key in ["work", "school", "build", "hall"] else "plaster", wall, 0.28))
-	_box(Vector3(w + 0.6, 0.4, depth + 0.6), Vector3(x, h + 0.2, z), _mat(roof))
-	_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
 	var front := z + depth * 0.5
-	_box(Vector3(1.5, 2.5, 0.12), Vector3(x, 1.25, front + 0.05), _mat(Color(0.3, 0.2, 0.12)))
-	var floors := int(h / 3.2)
-	for f in maxi(floors, 1):
-		for side: float in [-1.0, 1.0]:
-			_box(Vector3(1.6, 1.3, 0.1), Vector3(x + side * w * 0.3, 2.1 + f * 3.2, front + 0.05), window_mat)
-	_sign(title, Vector3(x, h + 1.4, front + 0.3))
+	var look: Array = LOOKS.get(key, [])
+	var own := _kit_size(look[0]) if not look.is_empty() else Vector3.ZERO
+	if own != Vector3.ZERO:
+		# A ready-made building, stretched a little to stand on this plot and painted in the place's colours.
+		h = own.y * (w / own.x + depth / own.z) * 0.5
+		_fit(look[0], Vector3(x, 0, z), Vector3(w, h, depth), look[1], {"wall": wall.lerp(Color.WHITE, 0.35), "warm": roof.lerp(Color.WHITE, 0.15), "green": roof.lerp(Color.WHITE, 0.15)})
+		_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
+		_shop_sign(title, Vector3(x, look[2], front), roof)
+	else:
+		_box(Vector3(w, h, depth), Vector3(x, h * 0.5, z), _tex("brick" if key in ["work", "school", "build", "hall"] else "plaster", wall, 0.28))
+		_box(Vector3(w + 0.6, 0.4, depth + 0.6), Vector3(x, h + 0.2, z), _mat(roof))
+		_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
+		_box(Vector3(1.5, 2.5, 0.12), Vector3(x, 1.25, front + 0.05), _mat(Color(0.3, 0.2, 0.12)))
+		var floors := int(h / 3.2)
+		for f in maxi(floors, 1):
+			for side: float in [-1.0, 1.0]:
+				_box(Vector3(1.6, 1.3, 0.1), Vector3(x + side * w * 0.3, 2.1 + f * 3.2, front + 0.05), window_mat)
+		_sign(title, Vector3(x, h + 1.4, front + 0.3))
 	# Door mat marks where to stand.
 	_box(Vector3(2.4, 0.04, 1.6), Vector3(x, 0.03, front + 1.3), _mat(roof.lightened(0.2)))
 	var p := Place.new()
@@ -495,6 +534,35 @@ func _building(key: String, title: String, x: float, w: float, h: float, wall: C
 	p.open_from = open_from
 	p.open_to = open_to
 	places.append(p)
+
+
+## A family house from the suburban kit on a plot `size` wide and deep, its door turned by `yaw`
+## (0 = facing south). False when the kit is missing, and the caller builds the plain box instead.
+func _house(pos: Vector3, size: Vector3, pick: int, wall: Color, yaw: float = 0.0) -> bool:
+	var path: String = HOUSES[pick % HOUSES.size()]
+	var own := _kit_size(path)
+	if own == Vector3.ZERO:
+		return false
+	var grow := (size.x / own.x + size.z / own.z) * 0.5
+	return _fit(path, pos, Vector3(size.x, own.y * grow, size.z), yaw,
+		{"wall": wall.lerp(Color.WHITE, 0.35), "green": ROOFS[(pick * 3 + 1) % ROOFS.size()], "green_from": 0.3})
+
+
+## A name board fixed flat on a shop front, `pos` being the middle of the wall it hangs on.
+func _shop_sign(text: String, pos: Vector3, color: Color) -> void:
+	var l := Label3D.new()
+	l.text = _h(text)
+	l.font = font
+	l.font_size = 72
+	l.pixel_size = 0.012
+	l.outline_size = 18
+	l.modulate = Color.WHITE
+	l.outline_modulate = Color(0.08, 0.08, 0.16)
+	l.position = pos + Vector3(0, 0, 0.34)
+	add_child(l)
+	var wide := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 72).x * 0.012 + 0.9
+	_box(Vector3(wide, 1.25, 0.16), pos + Vector3(0, 0, 0.2), _mat(color.darkened(0.25)))
+	_box(Vector3(wide + 0.24, 1.49, 0.1), pos + Vector3(0, 0, 0.15), _mat(Color(0.93, 0.92, 0.88)))
 
 
 func _tree(pos: Vector3) -> void:
@@ -569,6 +637,20 @@ func _build_world() -> void:
 	lamp_mat = _mat(Color(1.0, 0.95, 0.75))
 	lamp_mat.emission_enabled = true
 	lamp_mat.emission = Color(1.0, 0.9, 0.6)
+	shade_mat = _mat(Color(1.0, 0.93, 0.72))
+	shade_mat.emission_enabled = true
+	shade_mat.emission = Color(1.0, 0.82, 0.5)
+	shade_mat.emission_energy_multiplier = 1.6
+	pane_mat = _mat(Color(0.72, 0.88, 1.0))
+	pane_mat.emission_enabled = true
+	pane_mat.emission = Color(0.7, 0.86, 1.0)
+	pane_mat.emission_energy_multiplier = 0.9
+	glass_mat = StandardMaterial3D.new()
+	glass_mat.vertex_color_use_as_albedo = true
+	glass_mat.vertex_color_is_srgb = true
+	glass_mat.roughness = 0.25
+	glass_mat.emission_enabled = true
+	glass_mat.emission = Color(1.0, 0.82, 0.45)
 
 	# Ground, road, pavements.
 	_box(Vector3(500, 1, 260), Vector3(20, -0.5, 35), _tex("grass", Color(0.3, 0.5, 0.24), 0.11))
@@ -627,8 +709,9 @@ func _build_world() -> void:
 	_box(Vector3(0.15, 2.2, 0.15), Vector3(-6, 1.1, 8.2), pole_mat)
 	var bench := _mat(Color(0.5, 0.33, 0.2))
 	for x: float in [-3.0, 11.0]:
-		_box(Vector3(2.4, 0.15, 0.7), Vector3(x, 0.55, 9.5), bench)
-		_box(Vector3(2.4, 0.7, 0.12), Vector3(x, 0.95, 9.85), bench)
+		if not _put("holiday/bench", Vector3(x, 0, 9.6), 1.2, PI):
+			_box(Vector3(2.4, 0.15, 0.7), Vector3(x, 0.55, 9.5), bench)
+			_box(Vector3(2.4, 0.7, 0.12), Vector3(x, 0.95, 9.85), bench)
 		_solid(Vector3(2.4, 1.2, 0.8), Vector3(x, 0.6, 9.6))
 		var seat := Place.new()
 		seat.key = "bench"
@@ -679,6 +762,7 @@ func _build_world() -> void:
 	_box(Vector3(0.15, 2.2, 0.15), Vector3(8, 1.1, 7.4), _mat(Color(0.2, 0.2, 0.22)))
 	_build_forest()
 	_build_cars()
+	_dress_town()
 
 
 func _cap(radius: float, height: float, pos: Vector3, mat: Material, parent: Node, squash: Vector3 = Vector3.ONE) -> MeshInstance3D:
@@ -875,6 +959,16 @@ func _apply_daylight() -> void:
 	env.glow_enabled = glow > 0.6                         # bloom only for lamps at night; by day it made bright surfaces sparkle
 	lamp_mat.emission_energy_multiplier = glow * 3.0
 	window_mat.emission_energy_multiplier = glow * 1.4
+	glass_mat.emission_energy_multiplier = glow * 1.1
+	if inside:
+		# Indoors the daylight is gentle and the lamps of the room you are in do the work.
+		sun.light_energy = 0.5
+		sun.rotation_degrees = Vector3(-62.0, -28.0, 0)
+		env.ambient_light_color = Color(0.43, 0.41, 0.4)
+		env.glow_enabled = true
+	for key: String in room_lights:
+		for lamp: OmniLight3D in room_lights[key]:
+			lamp.visible = inside and key == room
 
 
 # ----------------------------------------------------------------- life ----
@@ -2034,6 +2128,10 @@ func _ball(radius: float, pos: Vector3, mat: Material, parent: Node, squash: Vec
 
 ## A small model for each product, sitting on y = 0.
 func _product_node(pid: int) -> Node3D:
+	var food: Array = FOODS.get(pid, [])
+	var ready := _kit_node(food[0], food[1]) if not food.is_empty() else null
+	if ready != null:
+		return ready
 	var n := Node3D.new()
 	match pid:
 		0:  # bread
@@ -2090,8 +2188,12 @@ func _product_node(pid: int) -> Node3D:
 
 func _shelf(pid: int, pos: Vector3) -> void:
 	var wood := _mat(Color(0.4, 0.29, 0.2))
-	_box(Vector3(3.4, 1.0, 1.0), pos + Vector3(0, 0.5, 0), wood)
-	_box(Vector3(3.4, 1.3, 0.15), pos + Vector3(0, 1.65, -0.42), _mat(Color(0.16, 0.34, 0.55)))
+	if _fit("furniture/kitchenBar", pos, Vector3(3.4, 1.0, 1.0), PI, {"wood": Color(0.93, 0.93, 0.9), "woodDark": Color(0.2, 0.42, 0.66), "metal": Color(0.3, 0.32, 0.38)}):
+		_box(Vector3(3.4, 0.9, 0.12), pos + Vector3(0, 1.85, -0.44), _mat(Color(0.16, 0.34, 0.55)))
+		_box(Vector3(3.4, 0.9, 0.06), pos + Vector3(0, 1.4, -0.47), _mat(Color(0.93, 0.93, 0.9)))
+	else:
+		_box(Vector3(3.4, 1.0, 1.0), pos + Vector3(0, 0.5, 0), wood)
+		_box(Vector3(3.4, 1.3, 0.15), pos + Vector3(0, 1.65, -0.42), _mat(Color(0.16, 0.34, 0.55)))
 	_solid(Vector3(3.4, 2.0, 1.0), pos + Vector3(0, 1.0, 0))
 	var tag := Label3D.new()
 	tag.text = _h("%s ₪%d" % [PRODUCTS[pid]["name"], PRODUCTS[pid]["price"]])
@@ -2134,7 +2236,24 @@ func _build_store() -> void:
 	var desk := STORE + Vector3(-7, 0, 3.4)
 	_box(Vector3(3.6, 1.1, 1.2), desk + Vector3(0, 0.55, 0), _mat(Color(0.3, 0.33, 0.4)))
 	_solid(Vector3(3.6, 1.1, 1.2), desk + Vector3(0, 0.55, 0))
-	_box(Vector3(0.7, 0.5, 0.6), desk + Vector3(-1.0, 1.35, 0), _mat(Color(0.15, 0.15, 0.18)))
+	if not _put("shop/cash-register", desk + Vector3(-0.9, 1.1, 0), 0.75, PI, {}, 0.0):
+		_box(Vector3(0.7, 0.5, 0.6), desk + Vector3(-1.0, 1.35, 0), _mat(Color(0.15, 0.15, 0.18)))
+	# Fridges along the wall, displays near the door, trolleys waiting by the exit.
+	for k in 3:
+		if _put("shop/freezers-standing", STORE + Vector3(-14.7, 0, -0.6 + k * 2.5), 2.3, PI * 0.5, {}, 0.0):
+			_solid(Vector3(1.2, 2.3, 2.5), STORE + Vector3(-14.8, 1.15, -0.6 + k * 2.5))
+	var shows: Array[String] = ["shop/display-flowers", "shop/display-fruit", "shop/display-cans", "shop/display-bread"]
+	for k in shows.size():
+		var at := STORE + Vector3(3.2 + k * 3.3, 0, 6.7)
+		if _put(shows[k], at, 1.25 if k != 2 else 1.6, 0.0, {}, 0.0):
+			_solid(Vector3(1.5, 1.2, 1.5), at + Vector3(0, 0.6, 0))
+	for k in 3:
+		_put("shop/shopping-cart", STORE + Vector3(-3.4 - k * 0.75, 0, 7.6), 1.0, PI, {}, 0.0)
+	_put("shop/shopping-basket", STORE + Vector3(-2.4, 0, 7.7), 0.4, 0.3, {}, 0.0)
+	_put("shop/gacha-machine", STORE + Vector3(-12.2, 0, 7.6), 1.7, PI, {}, 0.0)
+	_put("shop/bottle-return", STORE + Vector3(-13.6, 0, 7.6), 2.0, PI, {}, 0.0)
+	_put("shop/freezer", STORE + Vector3(-11.0, 0, 3.6), 0.95, PI * 0.5, {}, 0.0)
+	_solid(Vector3(1.6, 1.0, 2.2), STORE + Vector3(-11.0, 0.5, 3.6))
 	var cashier := _make_person(Color(0.15, 0.6, 0.35), Color(0.2, 0.2, 0.25))
 	cashier.root.position = desk + Vector3(0, 0, -1.3)
 	add_child(cashier.root)
@@ -3229,7 +3348,7 @@ func _tumble(n: Person, delta: float) -> bool:
 # ---------------------------------------------------- knockable objects ----
 
 ## A piece of street furniture: solid until a car hits it hard, then it tumbles.
-func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3D:
+func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array, kit: String = "", high: float = 0.0, tint: Dictionary = {}) -> RigidBody3D:
 	var body := RigidBody3D.new()
 	body.mass = mass
 	body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
@@ -3241,8 +3360,10 @@ func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3
 	cs.shape = shape
 	cs.position.y = size.y * 0.5
 	body.add_child(cs)
-	for part: Array in parts:
-		_box(part[0], part[1], part[2], body)
+	# A kit model when there is one; otherwise the plain boxes.
+	if kit == "" or _kit_node(kit, high, tint, body) == null:
+		for part: Array in parts:
+			_box(part[0], part[1], part[2], body)
 	add_child(body)
 	body.set_meta("home", body.transform)
 	props.append(body)
@@ -3250,9 +3371,18 @@ func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3
 
 
 func _lamp_post(pos: Vector3, reach: float) -> void:
-	var post := _prop(pos, Vector3(0.3, 4.3, 0.3), 45.0, [[Vector3(0.18, 4.2, 0.18), Vector3(0, 2.1, 0), _mat(Color(0.2, 0.2, 0.22))],
-		[Vector3(0.9, 0.25, 0.5), Vector3(0, 4.2, reach), lamp_mat]])
+	var post := _prop(pos, Vector3(0.3, 4.3, 0.3), 45.0, [])
 	post.set_meta("lamp", true)
+	var side := signf(reach)
+	var ready := _kit_node("roads/light-curved", 4.7, {"wall": Color(0.36, 0.38, 0.44)}, post)
+	if ready != null:
+		# The kit lamp reaches north; turn it so that its head hangs over the road.
+		ready.rotation.y = PI if side > 0.0 else 0.0
+		ready.position.z = side * 0.6
+		_box(Vector3(0.26, 0.07, 0.62), Vector3(0, 4.33, side * 1.28), lamp_mat, post)
+	else:
+		_box(Vector3(0.18, 4.2, 0.18), Vector3(0, 2.1, 0), _mat(Color(0.2, 0.2, 0.22)), post)
+		_box(Vector3(0.9, 0.25, 0.5), Vector3(0, 4.2, reach), lamp_mat, post)
 
 
 func _knock_prop(body: RigidBody3D, dir: Vector3, impact: float) -> void:
@@ -3424,7 +3554,7 @@ func _refuel() -> void:
 # ------------------------------------------------------------ interiors ----
 
 ## Floor, three walls (the camera side stays open) and a way out.
-func _room(key: String, floor_color: Color, wall_color: Color) -> Vector3:
+func _room(key: String, floor_color: Color, wall_color: Color, panes: Array = [-0.6, 0.6]) -> Vector3:
 	var o: Vector3 = ROOMS[key]["origin"]
 	var half: Vector2 = ROOMS[key]["half"]
 	var w := half.x * 2.0 + 2.0
@@ -3437,6 +3567,21 @@ func _room(key: String, floor_color: Color, wall_color: Color) -> Vector3:
 	for side: float in [-1.0, 1.0]:
 		_box(Vector3(0.5, 4.5, d), o + Vector3(side * (half.x + 0.75), 2.25, 0), wall)
 		_solid(Vector3(0.5, 4.5, d), o + Vector3(side * (half.x + 0.75), 2.25, 0))
+	# Panelling along the foot of the walls, windows in the back wall, and lamps hanging over the room.
+	var trim := _mat(wall_color.darkened(0.22).lerp(floor_color, 0.25))
+	var rail := _mat(wall_color.lerp(Color.WHITE, 0.5))
+	var back := o.z - half.y - 0.5
+	_box(Vector3(w - 1.0, 1.05, 0.07), Vector3(o.x, 0.53, back + 0.03), trim)
+	_box(Vector3(w - 1.0, 0.09, 0.11), Vector3(o.x, 1.09, back + 0.05), rail)
+	for side: float in [-1.0, 1.0]:
+		_box(Vector3(0.07, 1.05, d - 0.5), Vector3(o.x + side * (half.x + 0.47), 0.53, o.z + 0.25), trim)
+		_box(Vector3(0.11, 0.09, d - 0.5), Vector3(o.x + side * (half.x + 0.45), 1.09, o.z + 0.25), rail)
+	for pane: float in panes:
+		_window(Vector3(o.x + pane * half.x, 2.55, back), 2.2, wall_color.lerp(floor_color, 0.5).lerp(Color(0.75, 0.3, 0.25), 0.35))
+	for side: float in [-1.0, 1.0]:
+		_room_lamp(key, o + Vector3(side * half.x * 0.46, 3.5, -half.y * 0.2))
+	for side: float in [-1.0, 1.0]:                 # a plant in each front corner
+		_furn("pottedPlant", o + Vector3(side * (half.x - 0.3), 0, half.y - 0.5), side, {"plant": Color(0.28, 0.6, 0.3)}, 0.34)
 	_box(Vector3(2.6, 0.04, 1.4), o + Vector3(0, 0.03, half.y - 0.3), _mat(Color(0.25, 0.7, 0.4)))
 	var out := Place.new()
 	out.room = key
@@ -3505,6 +3650,8 @@ func _tag(text: String, pos: Vector3, size: int = 52) -> void:
 
 
 func _chair(pos: Vector3, back_side: float, color: Color) -> void:
+	if _furn("chair", pos, PI if back_side > 0.0 else (0.0 if back_side < 0.0 else -PI * 0.5), {"wood": color}):
+		return
 	var m := _mat(color)
 	_box(Vector3(0.6, 0.1, 0.6), pos + Vector3(0, 0.55, 0), m)
 	_box(Vector3(0.6, 0.7, 0.1), pos + Vector3(0, 0.95, back_side * 0.25), m)
@@ -3514,12 +3661,147 @@ func _chair(pos: Vector3, back_side: float, color: Color) -> void:
 
 
 func _table(pos: Vector3, size: Vector2, color: Color) -> void:
+	_solid(Vector3(size.x, 1.0, size.y), pos + Vector3(0, 0.5, 0))
+	if _fit("furniture/table", pos, Vector3(size.x, 1.0, size.y), 0.0, {"wood": color}):
+		return
 	var m := _mat(color)
 	_box(Vector3(size.x, 0.1, size.y), pos + Vector3(0, 0.95, 0), m)
 	for sx: float in [-1.0, 1.0]:
 		for sz: float in [-1.0, 1.0]:
 			_box(Vector3(0.12, 0.9, 0.12), pos + Vector3(sx * (size.x * 0.5 - 0.12), 0.45, sz * (size.y * 0.5 - 0.12)), m)
-	_solid(Vector3(size.x, 1.0, size.y), pos + Vector3(0, 0.5, 0))
+
+
+## A piece from the furniture kit standing at `pos`. The kit is drawn small, so everything is
+## scaled alike (`k`) and keeps its proportions next to the people. With `yaw` 0 it faces south, towards the camera.
+func _furn(piece: String, pos: Vector3, yaw: float = 0.0, tint: Dictionary = {}, k: float = 0.28) -> bool:
+	var data := _kit("furniture/" + piece, tint)
+	if data.is_empty():
+		return false
+	_stamp(data, _kit_xf(data, pos, Vector3(k, k, k), yaw + PI), 0.0)     # the kit's pieces face north; turn them to face us
+	return true
+
+
+## A window in a room's back wall, with curtains; `pos` is its middle on the face of the wall.
+func _window(pos: Vector3, wide: float, curtain: Color) -> void:
+	var frame := _mat(Color(0.96, 0.95, 0.92))
+	_box(Vector3(wide + 0.24, 1.9, 0.08), pos + Vector3(0, 0, 0.04), frame)
+	_box(Vector3(wide, 1.66, 0.06), pos + Vector3(0, 0, 0.08), pane_mat)
+	_box(Vector3(0.07, 1.66, 0.05), pos + Vector3(0, 0, 0.11), frame)
+	_box(Vector3(wide, 0.07, 0.05), pos + Vector3(0, 0.1, 0.11), frame)
+	_box(Vector3(wide + 0.5, 0.08, 0.3), pos + Vector3(0, -0.98, 0.15), frame)                 # sill
+	_box(Vector3(wide + 0.9, 0.07, 0.07), pos + Vector3(0, 1.08, 0.2), _mat(Color(0.35, 0.27, 0.2)))   # curtain rail
+	for side: float in [-1.0, 1.0]:
+		_box(Vector3(0.42, 2.0, 0.09), pos + Vector3(side * (wide * 0.5 + 0.12), 0.05, 0.2), _mat(curtain))
+	_furn("plantSmall1", pos + Vector3(wide * 0.3, -0.94, 0.16), 0.0, {"plant": Color(0.3, 0.62, 0.3), "wood": Color(0.75, 0.4, 0.3)}, 0.26)
+
+
+## A lamp hanging over a room. It only shines while you are in that room.
+func _room_lamp(key: String, pos: Vector3, color: Color = Color(1.0, 0.88, 0.72), energy: float = 0.85) -> void:
+	var lamp := OmniLight3D.new()
+	lamp.position = pos - Vector3(0, 0.5, 0)
+	lamp.omni_range = 10.0
+	lamp.omni_attenuation = 1.1
+	lamp.light_color = color
+	lamp.light_energy = energy
+	lamp.visible = false
+	add_child(lamp)
+	if not room_lights.has(key):
+		room_lights[key] = []
+	(room_lights[key] as Array).append(lamp)
+	_box(Vector3(0.04, 1.3, 0.04), pos + Vector3(0, 0.75, 0), _mat(Color(0.2, 0.2, 0.22)))
+	var shade := CylinderMesh.new()
+	shade.top_radius = 0.16
+	shade.bottom_radius = 0.42
+	shade.height = 0.34
+	shade.radial_segments = 10
+	var mi := MeshInstance3D.new()
+	mi.mesh = shade
+	mi.material_override = shade_mat
+	mi.position = pos
+	add_child(mi)
+
+
+## A framed picture on a wall. `yaw` 0 hangs it on the back wall; PI/2 on the west wall, -PI/2 on the east.
+func _picture(pos: Vector3, size: Vector2, color: Color, yaw: float = 0.0) -> void:
+	var turn := Basis(Vector3.UP, yaw)
+	var frame := _box(Vector3(size.x + 0.16, size.y + 0.16, 0.06), pos + turn * Vector3(0, 0, 0.03), _mat(Color(0.3, 0.22, 0.15)))
+	frame.rotation.y = yaw
+	var canvas := _box(Vector3(size.x, size.y, 0.03), pos + turn * Vector3(0, 0, 0.07), _mat(color))
+	canvas.rotation.y = yaw
+	var hill := _box(Vector3(size.x, size.y * 0.42, 0.02), pos + turn * Vector3(0, -size.y * 0.29, 0.09), _mat(color.darkened(0.3).lerp(Color(0.3, 0.55, 0.3), 0.5)))
+	hill.rotation.y = yaw
+	var sun_spot := _box(Vector3(size.y * 0.2, size.y * 0.2, 0.02), pos + turn * Vector3(size.x * 0.22, size.y * 0.2, 0.09), _mat(Color(1.0, 0.88, 0.5)))
+	sun_spot.rotation.y = yaw
+
+
+## A round clock on the back wall.
+func _clock(pos: Vector3) -> void:
+	for ring in 2:
+		var disc := CylinderMesh.new()
+		disc.top_radius = 0.42 - ring * 0.07
+		disc.bottom_radius = disc.top_radius
+		disc.height = 0.06 + ring * 0.03
+		var mi := MeshInstance3D.new()
+		mi.mesh = disc
+		mi.material_override = _mat(Color(0.25, 0.2, 0.18) if ring == 0 else Color(0.97, 0.96, 0.92))
+		mi.rotation.x = PI * 0.5
+		mi.position = pos + Vector3(0, 0, 0.04)
+		add_child(mi)
+	_box(Vector3(0.04, 0.26, 0.02), pos + Vector3(0, 0.11, 0.1), _mat(Color(0.1, 0.1, 0.12)))
+	_box(Vector3(0.2, 0.04, 0.02), pos + Vector3(0.08, 0, 0.1), _mat(Color(0.1, 0.1, 0.12)))
+
+
+## Something from the food kit standing at `pos`: every dish, jar and pan is scaled alike.
+func _food(piece: String, pos: Vector3, yaw: float = 0.0, k: float = 0.6) -> bool:
+	var data := _kit("food/" + piece)
+	if data.is_empty():
+		return false
+	_stamp(data, _kit_xf(data, pos, Vector3(k, k, k), yaw), 0.0)
+	return true
+
+
+## A kit piece turned any way round (hung on a wall, laid on its side); `pos` is its middle
+## and `span` its longest side.
+func _hang(path: String, pos: Vector3, span: float, euler: Vector3, tint: Dictionary = {}) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var box: AABB = data["box"]
+	var s := span / maxf(maxf(box.size.x, box.size.z), maxf(box.size.y, 0.001))
+	_stamp(data, Transform3D(Basis.from_euler(euler) * Basis.from_scale(Vector3(s, s, s)), pos) * Transform3D(Basis.IDENTITY, -box.get_center()), 0.0)
+	return true
+
+
+## A shelf on a wall with supplies standing on it. `yaw` as for a picture.
+func _wall_shelf(pos: Vector3, wide: float, items: Array, yaw: float = 0.0, wood: Color = Color(0.55, 0.4, 0.27)) -> void:
+	var turn := Basis(Vector3.UP, yaw)
+	var board := _box(Vector3(wide, 0.07, 0.4), pos + turn * Vector3(0, 0, 0.2), _mat(wood))
+	board.rotation.y = yaw
+	for side: float in [-1.0, 1.0]:
+		var arm := _box(Vector3(0.07, 0.26, 0.3), pos + turn * Vector3(side * (wide * 0.5 - 0.2), -0.16, 0.15), _mat(wood.darkened(0.25)))
+		arm.rotation.y = yaw
+	for k in items.size():
+		var along := ((k + 0.5) / items.size() - 0.5) * (wide - 0.25)
+		_food(items[k], pos + turn * Vector3(along, 0.035, 0.2), yaw + k * 0.7, 0.62)
+
+
+## Lay a place at a table: plate, glass, knife and fork. `yaw` turns it to face the diner.
+func _place_setting(pos: Vector3, yaw: float, dish: String = "") -> void:
+	var turn := Basis(Vector3.UP, yaw)
+	_food("plate", pos, yaw, 0.42)
+	if dish != "":
+		_food(dish, pos + Vector3(0, 0.03, 0), yaw + 0.5, 0.4)
+	_food("utensil-fork", pos + turn * Vector3(-0.27, 0, 0), yaw + PI * 0.5, 0.5)
+	_food("utensil-knife", pos + turn * Vector3(0.27, 0, 0), yaw + PI * 0.5, 0.5)
+	_food("glass", pos + turn * Vector3(0.22, 0, -0.22), yaw, 0.55)
+
+
+## Nothing to see: just a point that a hand can reach for.
+func _marker(pos: Vector3) -> Node3D:
+	var n := Node3D.new()
+	n.position = pos
+	add_child(n)
+	return n
 
 
 func _build_interiors() -> void:
@@ -3534,10 +3816,11 @@ func _build_interiors() -> void:
 	_build_hall()
 	_build_shul()
 	_build_police_room()
+	_dress_rooms()
 
 
 func _build_home() -> void:
-	var o := _room("home", Color(0.62, 0.48, 0.34), Color(0.86, 0.8, 0.68))
+	var o := _room("home", Color(0.62, 0.48, 0.34), Color(0.86, 0.8, 0.68), [])
 	var wood := Color(0.45, 0.3, 0.18)
 	var wall := _mat(Color(0.86, 0.8, 0.68))
 
@@ -3547,85 +3830,135 @@ func _build_home() -> void:
 		_solid(Vector3(0.25, 3.2, 4.6), o + Vector3(wx, 1.6, -6.2))
 
 	# --- Bedroom
-	_box(Vector3(5.6, 0.03, 3.6), o + Vector3(-8.0, 0.02, -5.6), _mat(Color(0.35, 0.42, 0.6)))
 	var bed := o + Vector3(-9.6, 0, -6.2)
-	_box(Vector3(2.4, 0.5, 3.8), bed + Vector3(0, 0.25, 0), _mat(wood))
-	var mattress := _box(Vector3(2.2, 0.25, 3.6), bed + Vector3(0, 0.62, 0), _mat(Color(0.93, 0.93, 0.9)))
-	_box(Vector3(2.22, 0.27, 2.1), bed + Vector3(0, 0.64, 0.75), _mat(Color(0.25, 0.4, 0.75)))
-	for sx: float in [-0.5, 0.5]:
-		_box(Vector3(0.85, 0.2, 0.6), bed + Vector3(sx, 0.85, -1.35), _mat(Color(1, 1, 1)))
-	_box(Vector3(2.4, 1.3, 0.2), bed + Vector3(0, 0.65, -1.95), _mat(wood))
+	var kit := _furn("bedDouble", bed, 0.0, {"carpet": Color(0.3, 0.45, 0.8), "wood": wood.lightened(0.25)}, 0.3)
+	var mattress: Node3D
+	if kit:
+		_furn("rugRectangle", o + Vector3(-7.4, 0.02, -5.2), 0.0, {"carpet": Color(0.42, 0.5, 0.7), "carpetDarker": Color(0.32, 0.4, 0.6)}, 0.36)
+		mattress = _marker(bed + Vector3(0, 0.7, 0))
+		_furn("cabinetBedDrawerTable", bed + Vector3(2.0, 0, -1.3), 0.0, {"wood": wood.lightened(0.25)})
+		_furn("lampRoundTable", bed + Vector3(2.0, 0.74, -1.3))
+		_furn("bookcaseClosedWide", o + Vector3(-5.9, 0, -8.05), 0.0, {"wood": wood.lightened(0.15)}, 0.3)
+		_furn("pottedPlant", o + Vector3(-11.6, 0, -3.4), 0.0, {"plant": Color(0.3, 0.62, 0.32)})
+	else:
+		_box(Vector3(5.6, 0.03, 3.6), o + Vector3(-8.0, 0.02, -5.6), _mat(Color(0.35, 0.42, 0.6)))
+		_box(Vector3(2.4, 0.5, 3.8), bed + Vector3(0, 0.25, 0), _mat(wood))
+		mattress = _box(Vector3(2.2, 0.25, 3.6), bed + Vector3(0, 0.62, 0), _mat(Color(0.93, 0.93, 0.9)))
+		_box(Vector3(2.22, 0.27, 2.1), bed + Vector3(0, 0.64, 0.75), _mat(Color(0.25, 0.4, 0.75)))
+		for sx: float in [-0.5, 0.5]:
+			_box(Vector3(0.85, 0.2, 0.6), bed + Vector3(sx, 0.85, -1.35), _mat(Color(1, 1, 1)))
+		_box(Vector3(2.4, 1.3, 0.2), bed + Vector3(0, 0.65, -1.95), _mat(wood))
+		_box(Vector3(0.7, 0.6, 0.6), bed + Vector3(1.7, 0.3, -1.6), _mat(wood))                    # nightstand
+		_box(Vector3(0.25, 0.35, 0.25), bed + Vector3(1.7, 0.78, -1.6), lamp_mat)
+		_box(Vector3(2.2, 2.6, 0.8), o + Vector3(-5.6, 1.3, -8.0), _mat(wood.darkened(0.1)))        # wardrobe
 	_solid(Vector3(2.4, 1.0, 3.8), bed + Vector3(0, 0.5, 0))
 	_tag("מיטה", bed + Vector3(0, 2.0, 0))
 	var bed_spot := _spot("home", "bed", "מיטה", "לישון במיטה", bed + Vector3(2.1, 0, 0.8))
 	_handle(mattress, "home", _interact.bind(bed_spot))
-	_box(Vector3(0.7, 0.6, 0.6), bed + Vector3(1.7, 0.3, -1.6), _mat(wood))                    # nightstand
-	_box(Vector3(0.25, 0.35, 0.25), bed + Vector3(1.7, 0.78, -1.6), lamp_mat)
-	_box(Vector3(2.2, 2.6, 0.8), o + Vector3(-5.6, 1.3, -8.0), _mat(wood.darkened(0.1)))        # wardrobe
 	_solid(Vector3(2.2, 2.6, 0.8), o + Vector3(-5.6, 1.3, -8.0))
 
 	# --- Kitchen
 	var fridge_pos := o + Vector3(-3.2, 0, -7.9)
-	var fridge_box := _box(Vector3(1.2, 2.3, 0.9), fridge_pos + Vector3(0, 1.15, 0), _mat(Color(0.82, 0.85, 0.88)))
-	_box(Vector3(0.06, 0.8, 0.06), fridge_pos + Vector3(0.42, 1.35, 0.48), _mat(Color(0.3, 0.3, 0.32)))
+	var fridge_box: Node3D
+	if _furn("kitchenFridge", fridge_pos, 0.0, {}, 0.27):
+		fridge_box = _marker(fridge_pos + Vector3(0, 1.2, 0))
+		var cupboard := {"wood": Color(0.93, 0.92, 0.86), "woodDark": Color(0.8, 0.78, 0.7), "metal": Color(0.36, 0.37, 0.42)}
+		_furn("kitchenCabinet", o + Vector3(-1.6, 0, -7.75), 0.0, cupboard)
+		_furn("kitchenSink", o + Vector3(-0.4, 0, -7.75), 0.0, cupboard)
+		_furn("kitchenStove", o + Vector3(0.8, 0, -7.75), 0.0, cupboard)
+		_furn("kitchenCabinet", o + Vector3(2.0, 0, -7.75), 0.0, cupboard)
+		_furn("kitchenCoffeeMachine", o + Vector3(2.0, 1.26, -7.85))
+		for k in 3:
+			_furn("kitchenCabinetUpper", o + Vector3(-1.0 + k * 1.2, 2.3, -8.05), 0.0, {"wood": wood.lightened(0.3), "woodDark": wood.lightened(0.15)})
+	else:
+		fridge_box = _box(Vector3(1.2, 2.3, 0.9), fridge_pos + Vector3(0, 1.15, 0), _mat(Color(0.82, 0.85, 0.88)))
+		_box(Vector3(0.06, 0.8, 0.06), fridge_pos + Vector3(0.42, 1.35, 0.48), _mat(Color(0.3, 0.3, 0.32)))
+		_box(Vector3(4.6, 1.0, 0.8), o + Vector3(0.2, 0.5, -8.0), _mat(Color(0.9, 0.9, 0.86)))
+		_box(Vector3(4.6, 0.08, 0.85), o + Vector3(0.2, 1.04, -8.0), _mat(Color(0.3, 0.3, 0.33)))
+		_box(Vector3(0.9, 0.05, 0.5), o + Vector3(-0.9, 1.09, -8.0), _mat(Color(0.6, 0.65, 0.7)))    # sink
+		_box(Vector3(1.0, 0.04, 0.7), o + Vector3(1.4, 1.1, -8.0), _mat(Color(0.1, 0.1, 0.12)))     # hob
+		for k in 3:
+			_box(Vector3(1.3, 0.7, 0.4), o + Vector3(-1.1 + k * 1.4, 2.5, -8.25), _mat(wood.lightened(0.1)))
 	_solid(Vector3(1.2, 2.3, 0.9), fridge_pos + Vector3(0, 1.15, 0))
 	_tag("מקרר", fridge_pos + Vector3(0, 2.8, 0))
 	var fridge_spot := _spot("home", "fridge", "המקרר", "לפתוח את המקרר", fridge_pos + Vector3(0, 0, 1.4))
 	_handle(fridge_box, "home", _interact.bind(fridge_spot))
-	_box(Vector3(4.6, 1.0, 0.8), o + Vector3(0.2, 0.5, -8.0), _mat(Color(0.9, 0.9, 0.86)))
-	_box(Vector3(4.6, 0.08, 0.85), o + Vector3(0.2, 1.04, -8.0), _mat(Color(0.3, 0.3, 0.33)))
-	_box(Vector3(0.9, 0.05, 0.5), o + Vector3(-0.9, 1.09, -8.0), _mat(Color(0.6, 0.65, 0.7)))    # sink
-	_box(Vector3(1.0, 0.04, 0.7), o + Vector3(1.4, 1.1, -8.0), _mat(Color(0.1, 0.1, 0.12)))     # hob
 	_solid(Vector3(4.6, 1.1, 0.8), o + Vector3(0.2, 0.55, -8.0))
-	for k in 3:
-		_box(Vector3(1.3, 0.7, 0.4), o + Vector3(-1.1 + k * 1.4, 2.5, -8.25), _mat(wood.lightened(0.1)))
 
 	# --- Bathroom
 	_box(Vector3(6.0, 0.03, 4.4), o + Vector3(8.6, 0.02, -6.2), _mat(Color(0.75, 0.85, 0.9)))
 	var loo := o + Vector3(7.0, 0, -7.9)
-	var bowl := _box(Vector3(0.55, 0.45, 0.7), loo + Vector3(0, 0.23, 0.1), _mat(Color(0.97, 0.97, 0.97)))
-	_box(Vector3(0.6, 0.06, 0.74), loo + Vector3(0, 0.48, 0.1), _mat(Color(0.9, 0.9, 0.92)))
-	_box(Vector3(0.6, 0.6, 0.25), loo + Vector3(0, 0.75, -0.35), _mat(Color(0.97, 0.97, 0.97)))
+	var bowl: Node3D
+	var shower := o + Vector3(10.5, 0, -5.4)
+	var tray: Node3D
+	if _furn("toilet", loo + Vector3(0, 0, 0.1)):
+		bowl = _marker(loo + Vector3(0, 0.5, 0.1))
+		_furn("bathroomSink", o + Vector3(8.8, 0, -8.0))
+		_furn("bathroomMirror", o + Vector3(8.8, 1.7, -8.3))
+		_furn("shower", shower + Vector3(0.2, 0, -0.1), 0.0, {}, 0.26)
+		tray = _marker(shower + Vector3(0, 0.1, 0))
+		_furn("rugRound", o + Vector3(8.6, 0.03, -5.4), 0.0, {"carpet": Color(0.95, 0.95, 0.98), "carpetDarker": Color(0.6, 0.75, 0.9)}, 0.16)
+	else:
+		bowl = _box(Vector3(0.55, 0.45, 0.7), loo + Vector3(0, 0.23, 0.1), _mat(Color(0.97, 0.97, 0.97)))
+		_box(Vector3(0.6, 0.06, 0.74), loo + Vector3(0, 0.48, 0.1), _mat(Color(0.9, 0.9, 0.92)))
+		_box(Vector3(0.6, 0.6, 0.25), loo + Vector3(0, 0.75, -0.35), _mat(Color(0.97, 0.97, 0.97)))
+		_box(Vector3(1.0, 0.85, 0.6), o + Vector3(8.8, 0.43, -8.1), _mat(Color(0.95, 0.95, 0.95)))   # basin
+		_box(Vector3(0.9, 0.9, 0.05), o + Vector3(8.8, 1.8, -8.45), _mat(Color(0.7, 0.85, 0.95)))   # mirror
+		tray = _box(Vector3(1.6, 0.12, 1.6), shower + Vector3(0, 0.06, 0), _mat(Color(0.55, 0.75, 0.9)))
+		_box(Vector3(0.06, 2.3, 0.06), shower + Vector3(0.6, 1.15, -0.6), _mat(Color(0.75, 0.75, 0.78)))
+		_box(Vector3(0.4, 0.06, 0.3), shower + Vector3(0.4, 2.25, -0.5), _mat(Color(0.75, 0.75, 0.78)))
 	_solid(Vector3(0.6, 1.0, 1.0), loo + Vector3(0, 0.5, 0))
 	_tag("שירותים", loo + Vector3(0, 1.9, 0))
 	var loo_spot := _spot("home", "toilet", "שירותים", "להשתמש בשירותים", loo + Vector3(0, 0, 1.5))
 	_handle(bowl, "home", _interact.bind(loo_spot))
-	_box(Vector3(1.0, 0.85, 0.6), o + Vector3(8.8, 0.43, -8.1), _mat(Color(0.95, 0.95, 0.95)))   # basin
-	_box(Vector3(0.9, 0.9, 0.05), o + Vector3(8.8, 1.8, -8.45), _mat(Color(0.7, 0.85, 0.95)))   # mirror
 	_solid(Vector3(1.0, 0.9, 0.6), o + Vector3(8.8, 0.45, -8.1))
-	var shower := o + Vector3(10.5, 0, -5.4)
-	var tray := _box(Vector3(1.6, 0.12, 1.6), shower + Vector3(0, 0.06, 0), _mat(Color(0.55, 0.75, 0.9)))
-	_box(Vector3(0.06, 2.3, 0.06), shower + Vector3(0.6, 1.15, -0.6), _mat(Color(0.75, 0.75, 0.78)))
-	_box(Vector3(0.4, 0.06, 0.3), shower + Vector3(0.4, 2.25, -0.5), _mat(Color(0.75, 0.75, 0.78)))
 	_tag("מקלחת", shower + Vector3(0, 2.8, 0))
 	var shower_spot := _spot("home", "shower", "מקלחת", "להתקלח", shower + Vector3(-1.8, 0, 0))
 	_handle(tray, "home", _interact.bind(shower_spot))
 
 	# --- Living room
-	_box(Vector3(5.4, 0.03, 4.2), o + Vector3(6.6, 0.02, 0.6), _mat(Color(0.6, 0.2, 0.22)))
 	var sofa := o + Vector3(6.6, 0, -1.8)
-	var fabric := _mat(Color(0.3, 0.5, 0.45))
-	var seat := _box(Vector3(3.6, 0.5, 1.1), sofa + Vector3(0, 0.35, 0), fabric)
-	_box(Vector3(3.6, 1.0, 0.3), sofa + Vector3(0, 0.8, -0.45), fabric)
-	for sx: float in [-1.7, 1.7]:
-		_box(Vector3(0.3, 0.8, 1.1), sofa + Vector3(sx, 0.5, 0), fabric)
-	for sx: float in [-0.9, 0.9]:
-		_box(Vector3(0.7, 0.3, 0.3), sofa + Vector3(sx, 0.75, -0.2), _mat(Color(0.9, 0.75, 0.3)))
+	var seat: Node3D
+	if _furn("loungeSofa", sofa, 0.0, {"carpet": Color(0.3, 0.55, 0.5), "wood": wood}, 0.36):
+		seat = _marker(sofa + Vector3(0, 0.6, 0))
+		_furn("rugRectangle", o + Vector3(6.6, 0.02, 0.9), 0.0, {"carpet": Color(0.72, 0.28, 0.3), "carpetDarker": Color(0.55, 0.18, 0.22)}, 0.36)
+		_furn("pillow", sofa + Vector3(-1.0, 0.75, 0.0), 0.3, {"carpetWhite": Color(0.95, 0.8, 0.35)})
+		_furn("pillow", sofa + Vector3(1.0, 0.75, 0.0), -0.3, {"carpetWhite": Color(0.95, 0.8, 0.35)})
+		_furn("tableCoffee", o + Vector3(6.6, 0, 1.6), 0.0, {"wood": wood.lightened(0.1)})
+		_furn("cabinetTelevision", o + Vector3(6.6, 0, 3.9), PI, {"wood": wood.darkened(0.15)}, 0.3)
+		_furn("televisionModern", o + Vector3(6.6, 0.93, 3.9), PI, {}, 0.3)
+		for k in 2:
+			_furn("bookcaseOpen", o + Vector3(11.15, 0, 0.35 + k * 1.3), -PI * 0.5, {"wood": wood.lightened(0.1)}, 0.3)
+			for shelf in 3:
+				_furn("books", o + Vector3(11.1, 0.42 + shelf * 0.69, 0.35 + k * 1.3 + (shelf % 2) * 0.25 - 0.1), -PI * 0.5 + shelf, {}, 0.3)
+		_furn("lampRoundFloor", o + Vector3(9.3, 0, -2.2))
+		_furn("pottedPlant", o + Vector3(10.8, 0, -2.6), 0.0, {"plant": Color(0.25, 0.6, 0.3)}, 0.32)
+		_furn("speaker", o + Vector3(8.6, 0, 3.9), PI)
+		_furn("speaker", o + Vector3(4.6, 0, 3.9), PI)
+	else:
+		_box(Vector3(5.4, 0.03, 4.2), o + Vector3(6.6, 0.02, 0.6), _mat(Color(0.6, 0.2, 0.22)))
+		var fabric := _mat(Color(0.3, 0.5, 0.45))
+		seat = _box(Vector3(3.6, 0.5, 1.1), sofa + Vector3(0, 0.35, 0), fabric)
+		_box(Vector3(3.6, 1.0, 0.3), sofa + Vector3(0, 0.8, -0.45), fabric)
+		for sx: float in [-1.7, 1.7]:
+			_box(Vector3(0.3, 0.8, 1.1), sofa + Vector3(sx, 0.5, 0), fabric)
+		for sx: float in [-0.9, 0.9]:
+			_box(Vector3(0.7, 0.3, 0.3), sofa + Vector3(sx, 0.75, -0.2), _mat(Color(0.9, 0.75, 0.3)))
+		_box(Vector3(1.6, 0.4, 0.8), o + Vector3(6.6, 0.2, 1.6), _mat(wood))                         # coffee table
+		_box(Vector3(2.4, 0.5, 0.5), o + Vector3(6.6, 0.25, 3.9), _mat(wood.darkened(0.2)))          # TV stand
+		_box(Vector3(2.0, 1.2, 0.08), o + Vector3(6.6, 1.15, 3.9), _mat(Color(0.05, 0.05, 0.07)))
+		_box(Vector3(0.6, 2.4, 2.6), o + Vector3(11.2, 1.2, 1.0), _mat(wood))                        # bookcase
+		for k in 12:
+			_box(Vector3(0.1, 0.5, 0.16), o + Vector3(10.87, 0.55 + (k / 4) * 0.75, 0.1 + (k % 4) * 0.5), _mat(Color.from_hsv(k * 0.08, 0.6, 0.8)))
+		_cap(0.25, 0.6, o + Vector3(10.8, 0.3, -2.6), _mat(Color(0.6, 0.35, 0.2)), self)             # plant pot
+		_ball(0.5, o + Vector3(10.8, 1.0, -2.6), _mat(Color(0.2, 0.55, 0.25)), self, Vector3(1, 1.3, 1))
 	_solid(Vector3(3.6, 1.0, 1.1), sofa + Vector3(0, 0.5, 0))
 	_tag("ספה", sofa + Vector3(0, 2.0, 0))
 	var sofa_spot := _spot("home", "sofa", "ספה", "לנוח על הספה", sofa + Vector3(0, 0, 1.4))
 	_handle(seat, "home", _interact.bind(sofa_spot))
-	_box(Vector3(1.6, 0.4, 0.8), o + Vector3(6.6, 0.2, 1.6), _mat(wood))                         # coffee table
 	_solid(Vector3(1.6, 0.4, 0.8), o + Vector3(6.6, 0.2, 1.6))
-	_box(Vector3(2.4, 0.5, 0.5), o + Vector3(6.6, 0.25, 3.9), _mat(wood.darkened(0.2)))          # TV stand
-	_box(Vector3(2.0, 1.2, 0.08), o + Vector3(6.6, 1.15, 3.9), _mat(Color(0.05, 0.05, 0.07)))
 	_solid(Vector3(2.4, 1.6, 0.5), o + Vector3(6.6, 0.8, 3.9))
-	_box(Vector3(0.6, 2.4, 2.6), o + Vector3(11.2, 1.2, 1.0), _mat(wood))                        # bookcase
-	for k in 12:
-		_box(Vector3(0.1, 0.5, 0.16), o + Vector3(10.87, 0.55 + (k / 4) * 0.75, 0.1 + (k % 4) * 0.5), _mat(Color.from_hsv(k * 0.08, 0.6, 0.8)))
 	_solid(Vector3(0.6, 2.4, 2.6), o + Vector3(11.2, 1.2, 1.0))
-	_cap(0.25, 0.6, o + Vector3(10.8, 0.3, -2.6), _mat(Color(0.6, 0.35, 0.2)), self)             # plant pot
-	_ball(0.5, o + Vector3(10.8, 1.0, -2.6), _mat(Color(0.2, 0.55, 0.25)), self, Vector3(1, 1.3, 1))
 
 	# --- Dining area: a table for six, with the Shabbat candlesticks.
 	var table := o + Vector3(-4.2, 0, 1.6)
@@ -3658,17 +3991,45 @@ func _build_home() -> void:
 		_box(Vector3(0.3, 0.3, 0.3), o + Vector3(0.8 + (k % 3) * 0.4, 0.2 + (k / 3) * 0.3, 3.0 + (k % 2) * 0.3), _mat(Color.from_hsv(k * 0.19, 0.75, 0.95)))
 	_spot("home", "play_home", "פינת משחקים", "לשחק עם הילדים", o + Vector3(2.4, 0, 3.8))
 
+	_furn("bear", o + Vector3(2.6, 0.04, 2.9), -0.5, {}, 0.2)
+
 	# --- Desk by the wall
-	_table(o + Vector3(-10.4, 0, 3.6), Vector2(1.4, 2.4), wood.lightened(0.1))
-	_box(Vector3(0.08, 0.6, 0.9), o + Vector3(-10.7, 1.35, 3.6), _mat(Color(0.1, 0.12, 0.16)))
-	_chair(o + Vector3(-9.2, 0, 3.6), 0.0, Color(0.2, 0.22, 0.28))
+	if _furn("desk", o + Vector3(-10.45, 0, 3.6), PI * 0.5, {"wood": wood.lightened(0.2)}):
+		_solid(Vector3(1.4, 1.0, 2.4), o + Vector3(-10.4, 0.5, 3.6))
+		_furn("computerScreen", o + Vector3(-10.7, 1.08, 3.6), PI * 0.5)
+		_furn("computerKeyboard", o + Vector3(-10.2, 1.08, 3.6), PI * 0.5)
+		_furn("chairDesk", o + Vector3(-9.2, 0, 3.6), -PI * 0.5, {"carpet": Color(0.25, 0.3, 0.45)}, 0.24)
+		_furn("lampSquareFloor", o + Vector3(-11.0, 0, 5.4))
+	else:
+		_table(o + Vector3(-10.4, 0, 3.6), Vector2(1.4, 2.4), wood.lightened(0.1))
+		_box(Vector3(0.08, 0.6, 0.9), o + Vector3(-10.7, 1.35, 3.6), _mat(Color(0.1, 0.12, 0.16)))
+		_chair(o + Vector3(-9.2, 0, 3.6), 0.0, Color(0.2, 0.22, 0.28))
 
 
 func _build_cafe() -> void:
-	var o := _room("cafe", Color(0.5, 0.36, 0.26), Color(0.9, 0.82, 0.68))
+	var o := _room("cafe", Color(0.5, 0.36, 0.26), Color(0.9, 0.82, 0.68), [0.74])
 	var wood := Color(0.4, 0.26, 0.15)
-	_box(Vector3(6.0, 1.1, 1.0), o + Vector3(0, 0.55, -4.2), _mat(wood))
-	_box(Vector3(6.1, 0.08, 1.1), o + Vector3(0, 1.14, -4.2), _mat(Color(0.85, 0.8, 0.7)))
+	var bar := {"wood": wood.lightened(0.1), "woodDark": wood.darkened(0.2), "metal": Color(0.88, 0.84, 0.74)}
+	if _fit("furniture/kitchenBar", o + Vector3(0, 0, -4.2), Vector3(6.0, 1.14, 1.0), 0.0, bar):
+		_furn("kitchenCoffeeMachine", o + Vector3(2.6, 1.14, -4.3), 0.0, {}, 0.34)
+		_put("food/cake", o + Vector3(0.2, 1.14, -4.2), 0.3, 0.0, {}, 0.0)
+		_put("food/croissant", o + Vector3(-0.6, 1.14, -4.1), 0.16, 0.6, {}, 0.0)
+		_put("food/donut-sprinkles", o + Vector3(-2.6, 1.14, -4.2), 0.12, 0.0, {}, 0.0)
+		for sx: float in [-2.3, 2.3]:
+			_furn("stoolBar", o + Vector3(sx, 0, -3.2), 0.0, {"wood": wood, "carpet": Color(0.75, 0.3, 0.25)})
+		# Shelves behind the bar, plants in the corners, and a rug under each table.
+		for sx: float in [-3.4, 3.4]:
+			_furn("kitchenCabinetUpper", o + Vector3(sx, 2.2, -6.2), 0.0, {"wood": wood.lightened(0.2), "woodDark": wood}, 0.36)
+		_furn("kitchenFridge", o + Vector3(-5.2, 0, -6.0))
+		for sx: float in [-5.0, 5.0]:
+			_furn("rugRound", o + Vector3(sx, 0.02, 0.5), 0.0, {"carpet": Color(0.8, 0.55, 0.35), "carpetDarker": Color(0.6, 0.35, 0.22)}, 0.36)
+			_put("food/cup-coffee", o + Vector3(sx + 0.3, 1.0, 0.6), 0.16, sx, {}, 0.0)
+			_put("food/plate", o + Vector3(sx - 0.25, 1.0, 0.3), 0.05, 0.0, {}, 0.0)
+		_furn("loungeSofa", o + Vector3(7.6, 0, -3.0), -PI * 0.5, {"carpet": Color(0.65, 0.3, 0.28), "wood": wood}, 0.3)
+		_furn("lampRoundFloor", o + Vector3(7.7, 0, -5.4))
+	else:
+		_box(Vector3(6.0, 1.1, 1.0), o + Vector3(0, 0.55, -4.2), _mat(wood))
+		_box(Vector3(6.1, 0.08, 1.1), o + Vector3(0, 1.14, -4.2), _mat(Color(0.85, 0.8, 0.7)))
 	_solid(Vector3(6.0, 1.1, 1.0), o + Vector3(0, 0.55, -4.2))
 	var barista := _make_person(Color(0.25, 0.25, 0.28), Color(0.15, 0.15, 0.18))
 	barista.root.position = o + Vector3(0, 0, -5.4)
@@ -3677,17 +4038,19 @@ func _build_cafe() -> void:
 	var meal := Node3D.new()
 	meal.position = o + Vector3(-1.6, 1.18, -4.1)
 	add_child(meal)
-	_box(Vector3(0.7, 0.05, 0.7), Vector3.ZERO, _mat(Color(0.96, 0.96, 0.93)), meal)
-	_ball(0.2, Vector3(-0.1, 0.15, 0), _mat(Color(0.7, 0.4, 0.2)), meal, Vector3(1.2, 0.7, 1))
-	_ball(0.12, Vector3(0.2, 0.1, 0.1), _mat(Color(0.3, 0.65, 0.25)), meal)
+	if _kit_node("food/plate-dinner", 0.2, {}, meal) == null:
+		_box(Vector3(0.7, 0.05, 0.7), Vector3.ZERO, _mat(Color(0.96, 0.96, 0.93)), meal)
+		_ball(0.2, Vector3(-0.1, 0.15, 0), _mat(Color(0.7, 0.4, 0.2)), meal, Vector3(1.2, 0.7, 1))
+		_ball(0.12, Vector3(0.2, 0.1, 0.1), _mat(Color(0.3, 0.65, 0.25)), meal)
 	_tag("ארוחה חמה ₪30", meal.position + Vector3(0, 1.0, 0))
 	_handle(meal, "cafe", _cafe.bind(30, 60.0, 0.0, 0.75, "אכלת ארוחה חמה. טעים!"))
 
 	var cup := Node3D.new()
 	cup.position = o + Vector3(1.6, 1.18, -4.1)
 	add_child(cup)
-	_box(Vector3(0.28, 0.3, 0.28), Vector3(0, 0.15, 0), _mat(Color(0.95, 0.95, 0.95)), cup)
-	_box(Vector3(0.22, 0.02, 0.22), Vector3(0, 0.31, 0), _mat(Color(0.3, 0.18, 0.1)), cup)
+	if _kit_node("food/cup-coffee", 0.26, {}, cup) == null:
+		_box(Vector3(0.28, 0.3, 0.28), Vector3(0, 0.15, 0), _mat(Color(0.95, 0.95, 0.95)), cup)
+		_box(Vector3(0.22, 0.02, 0.22), Vector3(0, 0.31, 0), _mat(Color(0.3, 0.18, 0.1)), cup)
 	_tag("קפה ₪8", cup.position + Vector3(0, 1.0, 0))
 	_handle(cup, "cafe", _cafe.bind(8, 3.0, 15.0, 0.25, "שתית קפה. קצת יותר ערני."))
 
@@ -3734,9 +4097,15 @@ func _build_work() -> void:
 	for x: float in [-2.0, 1.5]:
 		var d := o + Vector3(x, 0, -5.6)
 		_table(d, Vector2(2.2, 1.1), Color(0.75, 0.72, 0.66))
-		_box(Vector3(0.9, 0.6, 0.08), d + Vector3(0, 1.4, -0.2), _mat(Color(0.1, 0.12, 0.16)))
-		_box(Vector3(0.1, 0.2, 0.1), d + Vector3(0, 1.1, -0.2), _mat(Color(0.1, 0.12, 0.16)))
+		if not _furn("computerScreen", d + Vector3(0, 1.0, -0.2)):
+			_box(Vector3(0.9, 0.6, 0.08), d + Vector3(0, 1.4, -0.2), _mat(Color(0.1, 0.12, 0.16)))
+			_box(Vector3(0.1, 0.2, 0.1), d + Vector3(0, 1.1, -0.2), _mat(Color(0.1, 0.12, 0.16)))
+		_furn("computerKeyboard", d + Vector3(0, 1.0, 0.2))
 		_chair(d + Vector3(0, 0, 1.0), 1.0, Color(0.2, 0.22, 0.28))
+	_put("shop/hand-truck", o + Vector3(-9.3, 0, -0.6), 1.5, 0.6, {}, 0.0)
+	for k in 5:
+		_put("survival/box-large" if k % 2 == 0 else "survival/box", o + Vector3(-9.4 + (k % 2) * 0.2, (k / 2) * 0.8, -5.6 + (k % 2) * 1.3), 0.8, k * 0.4, {}, 0.0)
+	_put("survival/barrel", o + Vector3(9.2, 0, 4.6), 1.2, 0.0, {}, 0.0)
 	var boss := _make_person(Color(0.9, 0.9, 0.92), Color(0.15, 0.17, 0.25))
 	boss.root.position = o + Vector3(-4.2, 0, -5.2)
 	add_child(boss.root)
@@ -3745,7 +4114,8 @@ func _build_work() -> void:
 
 func _build_gun_shop() -> void:
 	var o := _room("guns", Color(0.36, 0.34, 0.3), Color(0.55, 0.57, 0.5))
-	_box(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.2), _mat(Color(0.3, 0.24, 0.18)))
+	if not _fit("furniture/kitchenBar", o + Vector3(0, 0, -3.2), Vector3(5.0, 1.1, 1.0), 0.0, {"wood": Color(0.4, 0.32, 0.24), "woodDark": Color(0.28, 0.22, 0.16), "metal": Color(0.55, 0.57, 0.5)}):
+		_box(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.2), _mat(Color(0.3, 0.24, 0.18)))
 	_solid(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.2))
 	var seller := _make_person(Color(0.35, 0.4, 0.25), Color(0.2, 0.2, 0.18))
 	seller.root.position = o + Vector3(0, 0, -4.4)
@@ -3889,6 +4259,13 @@ func _thug_point(t: Person) -> Vector3:
 
 ## An apartment block with rows of windows. Only scenery.
 func _block(pos: Vector3, size: Vector3, color: Color) -> void:
+	var path: String = BLOCKS[int(absf(pos.x) / 3.0) % BLOCKS.size()]
+	var own := _kit_size(path)
+	if own != Vector3.ZERO:
+		size.y = own.y * (size.x / own.x + size.z / own.z) * 0.5
+		_fit(path, pos, size, PI, {"wall": color.lerp(Color.WHITE, 0.4)})
+		_solid(size, pos + Vector3(0, size.y * 0.5, 0))
+		return
 	_box(size, pos + Vector3(0, size.y * 0.5, 0), _tex("plaster" if int(pos.x) % 3 != 0 else "brick", color, 0.22))
 	_solid(size, pos + Vector3(0, size.y * 0.5, 0))
 	_box(Vector3(size.x + 0.4, 0.3, size.z + 0.4), pos + Vector3(0, size.y + 0.15, 0), _mat(color.darkened(0.3)))
@@ -3915,11 +4292,12 @@ func _build_town_extras() -> void:
 	# Houses south of the road, east of the park.
 	for k in 4:
 		var hp := Vector3(52 + k * 9.5, 0, 14)
-		_box(Vector3(7, 3.6, 6), hp + Vector3(0, 1.8, 0), _mat(palette[(k + 1) % 4]))
-		_box(Vector3(7.6, 0.4, 6.6), hp + Vector3(0, 3.8, 0), _mat(Color(0.6, 0.25, 0.2)))
-		_box(Vector3(1.3, 2.2, 0.1), hp + Vector3(0, 1.1, -3.03), _mat(Color(0.3, 0.2, 0.12)))
-		for sx: float in [-2.2, 2.2]:
-			_box(Vector3(1.4, 1.2, 0.1), hp + Vector3(sx, 2.0, -3.03), window_mat)
+		if not _house(hp, Vector3(7, 0, 6), k + 5, palette[(k + 1) % 4], PI):
+			_box(Vector3(7, 3.6, 6), hp + Vector3(0, 1.8, 0), _mat(palette[(k + 1) % 4]))
+			_box(Vector3(7.6, 0.4, 6.6), hp + Vector3(0, 3.8, 0), _mat(Color(0.6, 0.25, 0.2)))
+			_box(Vector3(1.3, 2.2, 0.1), hp + Vector3(0, 1.1, -3.03), _mat(Color(0.3, 0.2, 0.12)))
+			for sx: float in [-2.2, 2.2]:
+				_box(Vector3(1.4, 1.2, 0.1), hp + Vector3(sx, 2.0, -3.03), window_mat)
 		_solid(Vector3(7, 3.6, 6), hp + Vector3(0, 1.8, 0))
 		_tree(hp + Vector3(4.6, 0, 3.5))
 	# Zebra crossings.
@@ -3944,28 +4322,41 @@ func _build_town_extras() -> void:
 	# Traffic cones and crates near the building site, and bollards by the crossings.
 	for k in 6:
 		_prop(Vector3(64.5 + k * 1.6, 0, -1.2), Vector3(0.45, 0.7, 0.45), 4.0, [[Vector3(0.45, 0.08, 0.45), Vector3(0, 0.04, 0), _mat(Color(0.95, 0.45, 0.1))],
-			[Vector3(0.22, 0.6, 0.22), Vector3(0, 0.38, 0), _mat(Color(0.95, 0.45, 0.1))], [Vector3(0.24, 0.12, 0.24), Vector3(0, 0.45, 0), _mat(Color(0.95, 0.95, 0.95))]])
+			[Vector3(0.22, 0.6, 0.22), Vector3(0, 0.38, 0), _mat(Color(0.95, 0.45, 0.1))], [Vector3(0.24, 0.12, 0.24), Vector3(0, 0.45, 0), _mat(Color(0.95, 0.95, 0.95))]],
+			"roads/construction-cone", 0.75)
 	for k in 4:
-		_prop(Vector3(80.5 + (k % 2) * 1.0, 0, -6.2 - (k / 2) * 1.0), Vector3(0.9, 0.9, 0.9), 14.0, [[Vector3(0.9, 0.9, 0.9), Vector3(0, 0.45, 0), _mat(Color(0.62, 0.45, 0.25))]])
+		_prop(Vector3(80.5 + (k % 2) * 1.0, 0, -6.2 - (k / 2) * 1.0), Vector3(0.9, 0.9, 0.9), 14.0, [[Vector3(0.9, 0.9, 0.9), Vector3(0, 0.45, 0), _mat(Color(0.62, 0.45, 0.25))]], "survival/box", 0.9)
 	for x: float in [-46.0, 0.0, 66.0]:
+		if _put_wide("suburban/planter", Vector3(x, 0, -5.3), 2.2, 0.0, {"green": Color(0.3, 0.62, 0.3)}):
+			for k in 3:
+				_put(["nature/flower_redA", "nature/flower_yellowA", "nature/flower_purpleA"][k], Vector3(x - 0.6 + k * 0.6, 0.55, -5.3), 0.75, k * 2.0, _wild(Color(0.3, 0.6, 0.28)))
+			continue
 		_box(Vector3(3.0, 0.3, 0.9), Vector3(x, 0.15, -5.4), _mat(Color(0.4, 0.3, 0.2)))
 		for k in 5:
 			_ball(0.22, Vector3(x - 1.1 + k * 0.55, 0.45, -5.4), _mat(Color.from_hsv(rng.randf(), 0.7, 0.95)), self)
 
 
 func _build_clinic() -> void:
-	var o := _room("clinic", Color(0.78, 0.84, 0.86), Color(0.92, 0.95, 0.96))
-	_box(Vector3(3.0, 1.1, 0.9), o + Vector3(-3.5, 0.55, -3.6), _mat(Color(0.85, 0.87, 0.9)))
+	var o := _room("clinic", Color(0.7, 0.78, 0.8), Color(0.84, 0.9, 0.92), [-0.7])
+	var white := {"wood": Color(0.93, 0.95, 0.97), "woodDark": Color(0.55, 0.75, 0.85), "metal": Color(0.5, 0.55, 0.6), "carpet": Color(0.6, 0.8, 0.9)}
+	if _fit("furniture/kitchenBar", o + Vector3(-3.5, 0, -3.6), Vector3(3.0, 1.1, 0.9), 0.0, white):
+		_furn("computerScreen", o + Vector3(-4.3, 1.1, -3.6), PI)
+		_furn("benchCushion", o + Vector3(-4.85, 0, 3.4), PI, white)
+		_furn("rugRectangle", o + Vector3(-4.8, 0.02, 2.2), 0.0, {"carpet": Color(0.7, 0.85, 0.9), "carpetDarker": Color(0.5, 0.7, 0.8)}, 0.2)
+	else:
+		_box(Vector3(3.0, 1.1, 0.9), o + Vector3(-3.5, 0.55, -3.6), _mat(Color(0.85, 0.87, 0.9)))
 	_solid(Vector3(3.0, 1.1, 0.9), o + Vector3(-3.5, 0.55, -3.6))
 	_box(Vector3(0.5, 0.2, 0.5), o + Vector3(-3.5, 1.35, -3.6), _mat(Color(0.85, 0.1, 0.1)))
 	_box(Vector3(0.2, 0.5, 0.5), o + Vector3(-3.5, 1.35, -3.6), _mat(Color(0.85, 0.1, 0.1)))
 	# Examination bed
 	var bed := o + Vector3(3.8, 0, -3.8)
-	_box(Vector3(1.4, 0.7, 3.0), bed + Vector3(0, 0.35, 0), _mat(Color(0.5, 0.55, 0.6)))
-	_box(Vector3(1.3, 0.15, 2.9), bed + Vector3(0, 0.78, 0), _mat(Color(0.95, 0.97, 1.0)))
+	if not _fit("furniture/bedSingle", bed, Vector3(1.5, 1.05, 3.0), PI, {"carpet": Color(0.55, 0.8, 0.9), "wood": Color(0.7, 0.74, 0.78)}):
+		_box(Vector3(1.4, 0.7, 3.0), bed + Vector3(0, 0.35, 0), _mat(Color(0.5, 0.55, 0.6)))
+		_box(Vector3(1.3, 0.15, 2.9), bed + Vector3(0, 0.78, 0), _mat(Color(0.95, 0.97, 1.0)))
 	_solid(Vector3(1.4, 0.9, 3.0), bed + Vector3(0, 0.45, 0))
 	# Medicine cabinet
-	_box(Vector3(2.0, 2.4, 0.6), o + Vector3(0.5, 1.2, -5.1), _mat(Color(0.95, 0.95, 0.95)))
+	if not _fit("furniture/bookcaseOpen", o + Vector3(0.5, 0, -5.1), Vector3(2.0, 2.4, 0.6), PI, {"wood": Color(0.95, 0.95, 0.95)}):
+		_box(Vector3(2.0, 2.4, 0.6), o + Vector3(0.5, 1.2, -5.1), _mat(Color(0.95, 0.95, 0.95)))
 	for k in 6:
 		_box(Vector3(0.25, 0.35, 0.1), o + Vector3(-0.2 + (k % 3) * 0.7, 1.0 + (k / 3) * 0.8, -4.77), _mat(Color.from_hsv(k * 0.15, 0.6, 0.9)))
 	_solid(Vector3(2.0, 2.4, 0.6), o + Vector3(0.5, 1.2, -5.1))
@@ -3985,21 +4376,26 @@ func _job_spots(room_key: String, from: Vector3, from_text: String, to: Vector3,
 
 
 func _build_diner() -> void:
-	var o := _room("diner", Color(0.42, 0.3, 0.24), Color(0.85, 0.75, 0.62))
+	var o := _room("diner", Color(0.42, 0.3, 0.24), Color(0.85, 0.75, 0.62), [])
 	var wood := Color(0.42, 0.27, 0.16)
 	# Kitchen pass with plates waiting.
 	var kitchen := o + Vector3(-6.5, 0, -4.5)
-	_box(Vector3(4.0, 1.1, 1.0), kitchen + Vector3(0, 0.55, 0), _mat(Color(0.75, 0.76, 0.78)))
+	var steel := {"wood": Color(0.8, 0.81, 0.84), "woodDark": Color(0.62, 0.64, 0.68), "metal": Color(0.4, 0.42, 0.46)}
+	if _fit("furniture/kitchenBar", kitchen, Vector3(4.0, 1.1, 1.0), 0.0, steel):
+		pass
+	else:
+		_box(Vector3(4.0, 1.1, 1.0), kitchen + Vector3(0, 0.55, 0), _mat(Color(0.75, 0.76, 0.78)))
 	_solid(Vector3(4.0, 1.1, 1.0), kitchen + Vector3(0, 0.55, 0))
 	for k in 3:
 		var plate := Node3D.new()
 		plate.position = kitchen + Vector3(-1.1 + k * 1.1, 1.13, 0.1)
 		add_child(plate)
-		_box(Vector3(0.6, 0.05, 0.6), Vector3.ZERO, _mat(Color(0.96, 0.96, 0.93)), plate)
-		_ball(0.17, Vector3(0, 0.14, 0), _mat(Color.from_hsv(0.05 + k * 0.1, 0.7, 0.8)), plate, Vector3(1.2, 0.7, 1))
+		if _kit_node(["food/burger", "food/pizza", "food/plate-dinner"][k], [0.36, 0.08, 0.2][k], {}, plate) == null:
+			_box(Vector3(0.6, 0.05, 0.6), Vector3.ZERO, _mat(Color(0.96, 0.96, 0.93)), plate)
+			_ball(0.17, Vector3(0, 0.14, 0), _mat(Color.from_hsv(0.05 + k * 0.1, 0.7, 0.8)), plate, Vector3(1.2, 0.7, 1))
 		_handle(plate, "diner", _take_parcel)
 	var cook := _make_person(Color(0.97, 0.97, 0.97), Color(0.2, 0.2, 0.22))
-	cook.root.position = kitchen + Vector3(0, 0, -1.2)
+	cook.root.position = kitchen + Vector3(0, 0, -1.0)
 	add_child(cook.root)
 	_tag("מטבח", kitchen + Vector3(0, 2.7, 0))
 	# The table that is waiting for its food.
@@ -4021,7 +4417,7 @@ func _build_diner() -> void:
 
 
 func _build_site() -> void:
-	var o := _room("build", Color(0.6, 0.52, 0.4), Color(0.62, 0.62, 0.6))
+	var o := _room("build", Color(0.6, 0.52, 0.4), Color(0.62, 0.62, 0.6), [])
 	var brick := _mat(Color(0.7, 0.3, 0.2))
 	# Pile of bricks.
 	var pile := o + Vector3(-7, 0, -3)
@@ -4195,7 +4591,13 @@ func _perform() -> void:
 
 func _build_music_shop() -> void:
 	var o := _room("music", Color(0.4, 0.32, 0.26), Color(0.72, 0.62, 0.74))
-	_box(Vector3(4.6, 1.1, 1.0), o + Vector3(0, 0.55, -3.2), _mat(Color(0.3, 0.2, 0.3)))
+	if _fit("furniture/kitchenBar", o + Vector3(0, 0, -3.2), Vector3(4.6, 1.1, 1.0), 0.0, {"wood": Color(0.42, 0.28, 0.42), "woodDark": Color(0.28, 0.18, 0.3), "metal": Color(0.85, 0.8, 0.7)}):
+		_furn("radio", o + Vector3(1.6, 1.1, -3.2), 0.0, {"wood": Color(0.6, 0.35, 0.3)})
+		for sx: float in [-5.2, 5.2]:
+			_furn("speaker", o + Vector3(sx, 0, -4.4), 0.0, {"wood": Color(0.2, 0.2, 0.24)}, 0.34)
+		_furn("rugRound", o + Vector3(0, 0.02, 1.2), 0.0, {"carpet": Color(0.6, 0.4, 0.65), "carpetDarker": Color(0.42, 0.26, 0.48)}, 0.36)
+	else:
+		_box(Vector3(4.6, 1.1, 1.0), o + Vector3(0, 0.55, -3.2), _mat(Color(0.3, 0.2, 0.3)))
 	_solid(Vector3(4.6, 1.1, 1.0), o + Vector3(0, 0.55, -3.2))
 	var seller := _make_person(Color(0.55, 0.3, 0.6), Color(0.2, 0.2, 0.25))
 	seller.root.position = o + Vector3(0, 0, -4.4)
@@ -4228,12 +4630,13 @@ func _build_music_shop() -> void:
 
 
 func _build_hall() -> void:
-	var o := _room("hall", Color(0.3, 0.2, 0.2), Color(0.42, 0.14, 0.16))
+	var o := _room("hall", Color(0.3, 0.2, 0.2), Color(0.42, 0.14, 0.16), [])
 	# Stage with curtains, a microphone and speakers.
 	_box(Vector3(16, 0.08, 4.6), o + Vector3(0, 0.04, -5.6), _mat(Color(0.5, 0.36, 0.22)))
 	for sx: float in [-1.0, 1.0]:
 		_box(Vector3(3.0, 4.4, 0.3), o + Vector3(sx * 8.5, 2.2, -8.2), _mat(Color(0.65, 0.08, 0.1)))
-		_box(Vector3(1.0, 1.6, 0.9), o + Vector3(sx * 6.6, 0.8, -7.2), _mat(Color(0.1, 0.1, 0.12)))
+		if not _fit("furniture/speaker", o + Vector3(sx * 6.6, 0, -7.2), Vector3(1.0, 2.2, 0.9), PI, {"wood": Color(0.12, 0.12, 0.14)}):
+			_box(Vector3(1.0, 1.6, 0.9), o + Vector3(sx * 6.6, 0.8, -7.2), _mat(Color(0.1, 0.1, 0.12)))
 		_solid(Vector3(1.0, 1.6, 0.9), o + Vector3(sx * 6.6, 0.8, -7.2))
 	_box(Vector3(0.06, 1.5, 0.06), o + Vector3(0, 0.75, -4.4), _mat(Color(0.2, 0.2, 0.22)))
 	_ball(0.1, o + Vector3(0, 1.55, -4.4), _mat(Color(0.3, 0.3, 0.32)), self)
@@ -4255,8 +4658,15 @@ func _build_hall() -> void:
 
 
 func _fence(from: Vector3, to: Vector3) -> void:
-	var wood := _mat(Color(0.45, 0.32, 0.2))
 	var span := to - from
+	if _kit_size("nature/fence_simple") != Vector3.ZERO:
+		var pieces := maxi(int(round(span.length() / 3.2)), 1)
+		var yaw := atan2(-span.z, span.x)
+		for k in pieces:
+			_fit("nature/fence_simple", from + span * ((k + 0.5) / pieces), Vector3(span.length() / pieces, 1.5, 0.3), yaw,
+				{"wood": Color(0.56, 0.4, 0.26), "woodDark": Color(0.42, 0.29, 0.18)}, 150.0)
+		return
+	var wood := _mat(Color(0.45, 0.32, 0.2))
 	var count := int(span.length() / 4.0)
 	for k in count + 1:
 		_box(Vector3(0.25, 1.6, 0.25), from + span * (float(k) / count) + Vector3(0, 0.8, 0), wood)
@@ -4289,11 +4699,12 @@ func _build_neighbourhood() -> void:
 	var doorsteps: Array[Vector3] = []
 	for k in 3:
 		var hp := Vector3(90 + k * 11.0, 0, -10)
-		_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k]))
-		_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
-		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
-		for sx: float in [-2.5, 2.5]:
-			_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
+		if not _house(hp, Vector3(8, 0, 7), k, palette[k]):
+			_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k]))
+			_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
+			_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+			for sx: float in [-2.5, 2.5]:
+				_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
 		_solid(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0))
 		doorsteps.append(hp + Vector3(1.8, 0, 5.0))
 	for k in 4:
@@ -4435,7 +4846,7 @@ func _shower() -> void:
 
 
 func _build_shul() -> void:
-	var o := _room("shul", Color(0.55, 0.45, 0.35), Color(0.92, 0.9, 0.82))
+	var o := _room("shul", Color(0.55, 0.45, 0.35), Color(0.92, 0.9, 0.82), [-0.62, 0.62])
 	var wood := Color(0.42, 0.28, 0.16)
 	# The ark with its curtain, on a step at the front.
 	_box(Vector3(5.0, 0.2, 1.6), o + Vector3(0, 0.1, -6.6), _mat(wood.lightened(0.1)))
@@ -4454,10 +4865,13 @@ func _build_shul() -> void:
 	for side: float in [-1.0, 1.0]:
 		for row in 3:
 			var b := o + Vector3(side * 5.4, 0, -3.5 + row * 2.3)
-			_box(Vector3(3.6, 0.12, 0.6), b + Vector3(0, 0.55, 0), _mat(wood.lightened(0.15)))
-			_box(Vector3(3.6, 0.7, 0.1), b + Vector3(0, 0.9, 0.3), _mat(wood.lightened(0.15)))
+			if not _fit("furniture/bench", b, Vector3(3.6, 1.3, 0.7), 0.0, {"wood": wood.lightened(0.15)}):
+				_box(Vector3(3.6, 0.12, 0.6), b + Vector3(0, 0.55, 0), _mat(wood.lightened(0.15)))
+				_box(Vector3(3.6, 0.7, 0.1), b + Vector3(0, 0.9, 0.3), _mat(wood.lightened(0.15)))
 			_solid(Vector3(3.6, 1.0, 0.7), b + Vector3(0, 0.5, 0))
-	_box(Vector3(0.6, 2.6, 2.4), o + Vector3(8.4, 1.3, 3.0), _mat(wood))
+	_put("holiday/hanukkah-menorah-candles", o + Vector3(-3.4, 0.2, -6.6), 1.7, 0.0, {}, 0.0)
+	if not _fit("furniture/bookcaseOpen", o + Vector3(8.4, 0, 3.0), Vector3(2.4, 2.6, 0.6), PI * 0.5, {"wood": wood}):
+		_box(Vector3(0.6, 2.6, 2.4), o + Vector3(8.4, 1.3, 3.0), _mat(wood))
 	for k in 12:
 		_box(Vector3(0.1, 0.5, 0.16), o + Vector3(8.07, 0.6 + (k / 4) * 0.8, 2.2 + (k % 4) * 0.5), _mat(Color(0.25, 0.2, 0.15).lightened(k * 0.03)))
 	for side: float in [-1.0, 1.0]:
@@ -4552,10 +4966,14 @@ func _build_family(o: Vector3) -> void:
 	for k in 4:
 		var rc := o + Vector3(KID_ROOMS[k], 0, -6.2)
 		_box(Vector3(3.5, 0.03, 4.2), rc + Vector3(0, 0.02, 0), _mat(room_colors[k].lightened(0.45)))
-		_box(Vector3(1.4, 0.45, 2.8), rc + Vector3(-0.8, 0.23, -0.9), _mat(Color(0.45, 0.3, 0.18)))
-		_box(Vector3(1.3, 0.2, 2.6), rc + Vector3(-0.8, 0.55, -0.9), _mat(Color(0.95, 0.95, 0.92)))
-		_box(Vector3(1.32, 0.22, 1.6), rc + Vector3(-0.8, 0.57, -0.4), _mat(room_colors[k]))
-		_box(Vector3(0.9, 0.16, 0.5), rc + Vector3(-0.8, 0.72, -1.9), _mat(Color(1, 1, 1)))
+		if _fit("furniture/bedSingle", rc + Vector3(-0.8, 0, -0.9), Vector3(1.45, 0.95, 2.8), PI, {"carpet": room_colors[k], "wood": Color(0.62, 0.45, 0.3)}):
+			_furn("bear", rc + Vector3(1.1, 0.5, -1.9), 0.3 * k, {}, 0.13)
+			_furn("lampRoundTable", rc + Vector3(0.4, 0, -2.0), 0.0, {}, 0.5)
+		else:
+			_box(Vector3(1.4, 0.45, 2.8), rc + Vector3(-0.8, 0.23, -0.9), _mat(Color(0.45, 0.3, 0.18)))
+			_box(Vector3(1.3, 0.2, 2.6), rc + Vector3(-0.8, 0.55, -0.9), _mat(Color(0.95, 0.95, 0.92)))
+			_box(Vector3(1.32, 0.22, 1.6), rc + Vector3(-0.8, 0.57, -0.4), _mat(room_colors[k]))
+			_box(Vector3(0.9, 0.16, 0.5), rc + Vector3(-0.8, 0.72, -1.9), _mat(Color(1, 1, 1)))
 		_solid(Vector3(1.4, 0.8, 2.8), rc + Vector3(-0.8, 0.4, -0.9))
 		_box(Vector3(0.8, 0.5, 0.6), rc + Vector3(1.1, 0.25, -1.9), _mat(room_colors[k].darkened(0.2)))     # toy box
 		_ball(0.2, rc + Vector3(1.1, 0.2, 0.2), _mat(Color.from_hsv(k * 0.23, 0.8, 0.95)), self)           # ball
@@ -4699,16 +5117,19 @@ func _is_school_day() -> bool:
 
 func _build_school() -> void:
 	var at := Vector3(126, 0, -10)
-	_box(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0), _tex("brick", Color(0.8, 0.62, 0.45), 0.28))
-	_box(Vector3(15.6, 0.4, 8.6), at + Vector3(0, 6.6, 0), _mat(Color(0.25, 0.4, 0.65)))
 	_solid(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0))
-	_box(Vector3(2.2, 2.6, 0.12), at + Vector3(0, 1.3, 4.05), _mat(Color(0.25, 0.4, 0.65)))
-	for f in 2:
-		for c in 4:
-			_box(Vector3(1.6, 1.3, 0.1), at + Vector3(-5.4 + c * 3.6 + (0.0 if c < 2 else 0.0), 2.1 + f * 3.0, 4.05), window_mat)
-	_sign("בית ספר", at + Vector3(0, 7.8, 4.3))
-	_box(Vector3(0.9, 0.9, 0.06), at + Vector3(0, 5.2, 4.06), _mat(Color(0.95, 0.8, 0.15)))       # the school emblem
-	_box(Vector3(0.5, 0.5, 0.07), at + Vector3(0, 5.2, 4.07), _mat(Color(0.12, 0.16, 0.38)))
+	if _fit("commercial/building-k", at, Vector3(15, 9.6, 8), PI, {"wall": Color(0.98, 0.86, 0.66), "warm": Color(0.3, 0.5, 0.85)}):
+		_shop_sign("בית ספר", at + Vector3(0, 4.9, 4.0), Color(0.25, 0.4, 0.65))
+	else:
+		_box(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0), _tex("brick", Color(0.8, 0.62, 0.45), 0.28))
+		_box(Vector3(15.6, 0.4, 8.6), at + Vector3(0, 6.6, 0), _mat(Color(0.25, 0.4, 0.65)))
+		_box(Vector3(2.2, 2.6, 0.12), at + Vector3(0, 1.3, 4.05), _mat(Color(0.25, 0.4, 0.65)))
+		for f in 2:
+			for c in 4:
+				_box(Vector3(1.6, 1.3, 0.1), at + Vector3(-5.4 + c * 3.6 + (0.0 if c < 2 else 0.0), 2.1 + f * 3.0, 4.05), window_mat)
+		_sign("בית ספר", at + Vector3(0, 7.8, 4.3))
+		_box(Vector3(0.9, 0.9, 0.06), at + Vector3(0, 5.2, 4.06), _mat(Color(0.95, 0.8, 0.15)))       # the school emblem
+		_box(Vector3(0.5, 0.5, 0.07), at + Vector3(0, 5.2, 4.07), _mat(Color(0.12, 0.16, 0.38)))
 	_box(Vector3(3.0, 0.04, 1.6), SCHOOL_DOOR + Vector3(0, 0.03, 0), _mat(Color(0.95, 0.75, 0.2)))
 	var gate := Place.new()
 	gate.key = "school"
@@ -5016,8 +5437,9 @@ func _build_outskirts() -> void:
 		_box(Vector3(0.2, 0.9, 0.2), LAKE + Vector3(6 + (0.7 if k % 2 == 0 else -0.7), 0.3, -4.5 + (k / 2) * 6.5), _mat(Color(0.4, 0.28, 0.16)))
 	for k in 3:
 		var px := LAKE + Vector3(-8 + k * 5.0, 0, -8.5)
-		_box(Vector3(0.1, 2.2, 0.1), px + Vector3(0, 1.1, 0), _mat(Color(0.9, 0.9, 0.9)))
-		_ball(1.2, px + Vector3(0, 2.3, 0), _mat(Color.from_hsv(k * 0.3, 0.7, 0.95)), self, Vector3(1.0, 0.3, 1.0))
+		if not _put("commercial/detail-parasol-a", px, 2.8, k * 1.7, {"green": Color.from_hsv(k * 0.3, 0.65, 0.95)}):
+			_box(Vector3(0.1, 2.2, 0.1), px + Vector3(0, 1.1, 0), _mat(Color(0.9, 0.9, 0.9)))
+			_ball(1.2, px + Vector3(0, 2.3, 0), _mat(Color.from_hsv(k * 0.3, 0.7, 0.95)), self, Vector3(1.0, 0.3, 1.0))
 		_box(Vector3(0.8, 0.12, 1.8), px + Vector3(1.2, 0.25, 0), _mat(Color(0.95, 0.95, 0.9)))    # sun bed
 	_sign("חוף האגם", LAKE + Vector3(0, 3.2, -12.6), 80)
 	_box(Vector3(0.15, 2.8, 0.15), LAKE + Vector3(0, 1.4, -12.6), _mat(Color(0.2, 0.2, 0.22)))
@@ -5030,9 +5452,10 @@ func _build_outskirts() -> void:
 	places.append(beach)
 
 	# --- The farm
-	_box(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4), _mat(Color(0.7, 0.18, 0.15)))             # barn
-	_box(Vector3(9.6, 0.5, 7.6), FARM + Vector3(-6, 5.2, 4), _mat(Color(0.35, 0.3, 0.28)))
-	_box(Vector3(2.6, 3.2, 0.1), FARM + Vector3(-6, 1.6, 0.47), _mat(Color(0.95, 0.93, 0.85)))
+	if not _fit("industrial/building-i", FARM + Vector3(-6, 0, 4), Vector3(9, 6.4, 7), 0.0, {"wall": Color(0.82, 0.24, 0.2), "dark": Color(0.36, 0.3, 0.28)}):
+		_box(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4), _mat(Color(0.7, 0.18, 0.15)))             # barn
+		_box(Vector3(9.6, 0.5, 7.6), FARM + Vector3(-6, 5.2, 4), _mat(Color(0.35, 0.3, 0.28)))
+		_box(Vector3(2.6, 3.2, 0.1), FARM + Vector3(-6, 1.6, 0.47), _mat(Color(0.95, 0.93, 0.85)))
 	_solid(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4))
 	_box(Vector3(14, 0.04, 10), FARM + Vector3(7, 0.02, 4), _mat(Color(0.5, 0.42, 0.25)))          # paddock
 	_fence(FARM + Vector3(0, 0, -1), FARM + Vector3(14, 0, -1))
@@ -5071,11 +5494,12 @@ func _build_outskirts() -> void:
 	var palette: Array[Color] = [Color(0.82, 0.74, 0.6), Color(0.68, 0.76, 0.8), Color(0.8, 0.66, 0.62), Color(0.72, 0.78, 0.66)]
 	for k in 5:
 		var hp := Vector3([-112.0, -126.0, -140.0, 148.0, 162.0][k], 0, -10)
-		_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k % 4]))
-		_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
-		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
-		for sx: float in [-2.5, 2.5]:
-			_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
+		if not _house(hp, Vector3(8, 0, 7), k + 3, palette[k % 4]):
+			_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k % 4]))
+			_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
+			_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+			for sx: float in [-2.5, 2.5]:
+				_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
 		_solid(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0))
 		_tree(hp + Vector3(5.5, 0, 2.0))
 
@@ -5169,10 +5593,14 @@ func _report_robbery() -> void:
 
 
 func _build_police_room() -> void:
-	var o := _room("police", Color(0.45, 0.47, 0.5), Color(0.75, 0.8, 0.86))
+	var o := _room("police", Color(0.45, 0.47, 0.5), Color(0.75, 0.8, 0.86), [])
 	var navy := Color(0.12, 0.2, 0.45)
-	_box(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.0), _mat(navy))
-	_box(Vector3(5.1, 0.08, 1.1), o + Vector3(0, 1.14, -3.0), _mat(Color(0.85, 0.85, 0.88)))
+	if _fit("furniture/kitchenBar", o + Vector3(0, 0, -3.0), Vector3(5.0, 1.14, 1.0), 0.0, {"wood": navy.lightened(0.1), "woodDark": navy, "metal": Color(0.85, 0.85, 0.88)}):
+		_furn("computerScreen", o + Vector3(-1.6, 1.14, -3.0), PI)
+		_furn("lampSquareFloor", o + Vector3(-8.2, 0, -5.6))
+	else:
+		_box(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.0), _mat(navy))
+		_box(Vector3(5.1, 0.08, 1.1), o + Vector3(0, 1.14, -3.0), _mat(Color(0.85, 0.85, 0.88)))
 	_solid(Vector3(5.0, 1.1, 1.0), o + Vector3(0, 0.55, -3.0))
 	var desk_cop := _officer()
 	desk_cop.root.position = o + Vector3(0, 0, -4.2)
@@ -5247,12 +5675,13 @@ func _build_north() -> void:
 			continue                         # the police station stands here
 		var hp := Vector3(x, 0, NORTH_Z - 10.5)
 		var tall := 3.8 + (count % 3) * 1.6
-		_box(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0), _mat(palette[count % 5]))
-		_box(Vector3(9.6, 0.4, 7.6), hp + Vector3(0, tall + 0.2, 0), _mat(Color(0.55, 0.22, 0.18) if count % 2 == 0 else Color(0.3, 0.32, 0.38)))
-		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
-		for f in int(tall / 3.0):
-			for sx: float in [-2.8, 2.8]:
-				_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1 + f * 3.0, 3.53), window_mat)
+		if not _house(hp, Vector3(9, 0, 7), count, palette[count % 5]):
+			_box(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0), _mat(palette[count % 5]))
+			_box(Vector3(9.6, 0.4, 7.6), hp + Vector3(0, tall + 0.2, 0), _mat(Color(0.55, 0.22, 0.18) if count % 2 == 0 else Color(0.3, 0.32, 0.38)))
+			_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+			for f in int(tall / 3.0):
+				for sx: float in [-2.8, 2.8]:
+					_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1 + f * 3.0, 3.53), window_mat)
 		_solid(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0))
 		if count % 2 == 0:
 			_tree(hp + Vector3(6.3, 0, 1.5))
@@ -5264,11 +5693,14 @@ func _build_north() -> void:
 	_box(Vector3(span, 0.07, 1.2), Vector3(mid, 0.035, SEA_Z - 10.4), _mat(Color(0.85, 0.95, 1.0)))       # surf
 	for k in 14:
 		var px := Vector3(WEST + 14.0 + k * 24.0, 0, SEA_Z - 4.0 - (k % 2) * 2.0)
-		_box(Vector3(0.1, 2.2, 0.1), px + Vector3(0, 1.1, 0), _mat(Color(0.9, 0.9, 0.9)))
-		_ball(1.3, px + Vector3(0, 2.3, 0), _mat(Color.from_hsv(k * 0.17, 0.7, 0.95)), self, Vector3(1.0, 0.3, 1.0))
+		if not _put("commercial/detail-parasol-a", px, 2.9, k * 1.1, {"green": Color.from_hsv(fmod(k * 0.17, 1.0), 0.65, 0.95)}):
+			_box(Vector3(0.1, 2.2, 0.1), px + Vector3(0, 1.1, 0), _mat(Color(0.9, 0.9, 0.9)))
+			_ball(1.3, px + Vector3(0, 2.3, 0), _mat(Color.from_hsv(k * 0.17, 0.7, 0.95)), self, Vector3(1.0, 0.3, 1.0))
 		_box(Vector3(0.8, 0.12, 1.8), px + Vector3(1.3, 0.25, 0), _mat(Color(0.95, 0.95, 0.9)))
 	for k in 4:
 		var boat := Vector3(WEST + 50.0 + k * 85.0, 0.2, SEA_Z - 24.0 - (k % 2) * 14.0)
+		if _put(["boats/boat-sail-a", "boats/boat-fishing-small", "boats/boat-sail-b", "boats/boat-speed-a"][k], boat - Vector3(0, 0.45, 0), [6.5, 4.2, 6.5, 2.6][k], 0.6 + k * 1.3, {}, 0.0):
+			continue
 		_box(Vector3(3.6, 0.6, 1.4), boat, _mat(Color(0.9, 0.9, 0.92)))
 		_box(Vector3(0.08, 3.0, 0.08), boat + Vector3(0, 1.6, 0), _mat(Color(0.4, 0.3, 0.2)))
 		_box(Vector3(0.04, 2.2, 1.6), boat + Vector3(0, 1.8, 0.4), _mat(Color.from_hsv(k * 0.25, 0.6, 0.95)))
@@ -5968,6 +6400,12 @@ func _build_hill_farm() -> void:
 		for j in r.path.size():
 			r.path[j] += lift
 	hill.door += lift
+	# Wild flowers and grass on the hilltop, and barrels by the caravans.
+	_scatter(["nature/flower_redA", "nature/flower_yellowA", "nature/flower_purpleA", "nature/grass_large", "nature/grass", "nature/plant_bushSmall"], 110,
+		Vector2(96, 15), Vector2(148, 41), 0.5, 0.9, 60.0)
+	for k in 3:
+		_put("survival/barrel", Vector3(127.2 + k * 0.9, HILL_H, 28.0 + (k % 2) * 0.5), 1.1)
+	_put("survival/bucket", Vector3(102.4, HILL_H, 18.6), 0.45)
 	# Your own caravan on the farm: the same home, with a door up here.
 	var mine := Place.new()
 	mine.key = "home"
@@ -6678,3 +7116,675 @@ func _balaclava(root: Node3D) -> void:
 	for sx: float in [-0.055, 0.055]:
 		_ball(0.014, Vector3(sx, 1.765, 0.216), _mat(Color(0.1, 0.08, 0.07)), root, Vector3(1.0, 1.0, 0.4))
 	_limit(root, 70.0)
+
+
+# --------------------------------------------------- ready-made scenery ----
+# Models from Kenney's kits (see models/LICENSE.txt). Each one is read once into plain arrays, with its
+# colours taken from the kit's palette picture, and is then stamped as often as needed into one mesh per
+# stretch of town. A whole street of detailed buildings costs a handful of draw calls that way.
+
+## A kit model as bare triangles: "v" points, "n" normals, "c" colours, the same again for its window
+## glass ("gv", "gn", "gc"), and "box", the space it fills. Empty when the file is missing.
+func _kit(path: String, tint: Dictionary = {}) -> Dictionary:
+	var key := path if tint.is_empty() else path + str(tint)
+	if kit_cache.has(key):
+		return kit_cache[key]
+	var data := {}
+	var file := ""
+	for ext: String in [".glb", ".fbx"]:
+		if ResourceLoader.exists("res://models/" + path + ext):
+			file = "res://models/" + path + ext
+	var scene := load(file) as PackedScene if file != "" else null
+	if scene != null:
+		data = {"v": PackedVector3Array(), "n": PackedVector3Array(), "c": PackedColorArray(),
+			"gv": PackedVector3Array(), "gn": PackedVector3Array(), "gc": PackedColorArray(), "box": AABB()}
+		var node := scene.instantiate()
+		_kit_read(node, Transform3D.IDENTITY, data, tint)
+		node.free()
+	kit_cache[key] = data
+	return data
+
+
+func _kit_read(node: Node, xf: Transform3D, data: Dictionary, tint: Dictionary) -> void:
+	var here := xf
+	if node is Node3D:
+		here = xf * (node as Node3D).transform
+	var mi := node as MeshInstance3D
+	if mi != null and mi.mesh != null:
+		var turn := Transform3D(here.basis.inverse().transposed(), Vector3.ZERO)
+		var split: bool = tint.get("glass", true)
+		var low_green: float = tint.get("green_from", -1000.0)   # below this height the kit's greens are plants, not roof
+		for k in mi.mesh.get_surface_count():
+			var arrays := mi.mesh.surface_get_arrays(k)
+			var verts: PackedVector3Array = here * (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array)
+			var normals: PackedVector3Array = turn * (arrays[Mesh.ARRAY_NORMAL] as PackedVector3Array)
+			var mat := mi.get_active_material(k) as BaseMaterial3D
+			var base := mat.albedo_color if mat != null else Color(0.6, 0.6, 0.6)
+			var named := mat.resource_name if mat != null else ""
+			var img: Image = _palette(mat.albedo_texture) if mat != null and mat.albedo_texture != null else null
+			var cols := PackedColorArray()
+			cols.resize(verts.size())
+			if img != null and arrays[Mesh.ARRAY_TEX_UV] != null:
+				var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+				var w := img.get_width()
+				var h := img.get_height()
+				for i in verts.size():
+					var c := img.get_pixel(clampi(int(fposmod(uvs[i].x, 1.0) * w), 0, w - 1), clampi(int(fposmod(uvs[i].y, 1.0) * h), 0, h - 1)) * base
+					cols[i] = c if tint.is_empty() or (c.s > 0.3 and verts[i].y < low_green) else _retint(c, tint, named)
+			else:
+				cols.fill(base if tint.is_empty() else _retint(base, tint, named))
+			var box := AABB(verts[0], Vector3.ZERO)
+			for p in verts:
+				box = box.expand(p)
+			data["box"] = box if (data["v"] as PackedVector3Array).is_empty() and (data["gv"] as PackedVector3Array).is_empty() else (data["box"] as AABB).merge(box)
+			var index := PackedInt32Array()
+			if arrays[Mesh.ARRAY_INDEX] != null:
+				index = arrays[Mesh.ARRAY_INDEX]
+			else:
+				index.resize(verts.size())
+				for i in verts.size():
+					index[i] = i
+			var v: PackedVector3Array = data["v"]
+			var n: PackedVector3Array = data["n"]
+			var c: PackedColorArray = data["c"]
+			var gv: PackedVector3Array = data["gv"]
+			var gn: PackedVector3Array = data["gn"]
+			var gc: PackedColorArray = data["gc"]
+			for t in range(0, index.size() - 2, 3):
+				var first := cols[index[t]]
+				var glass := split and first.b > 0.62 and first.b > first.r + 0.12 and first.g > 0.42
+				for j in 3:
+					var i := index[t + j]
+					if glass:
+						gv.append(verts[i])
+						gn.append(normals[i])
+						gc.append(cols[i])
+					else:
+						v.append(verts[i])
+						n.append(normals[i])
+						c.append(cols[i])
+			data["v"] = v
+			data["n"] = n
+			data["c"] = c
+			data["gv"] = gv
+			data["gn"] = gn
+			data["gc"] = gc
+	for child in node.get_children():
+		_kit_read(child, here, data, tint)
+
+
+## The pixels of a kit's palette picture.
+func _palette(tex: Texture2D) -> Image:
+	if not palettes.has(tex):
+		var img := tex.get_image()
+		if img != null and img.is_compressed():
+			img.decompress()
+		palettes[tex] = img
+	return palettes[tex]
+
+
+## Repaint a kit colour. "wall" replaces the kit's white walls, "dark" its slate roofs and trim,
+## "green" its turquoise-green (roof tiles, awnings, leaves), "warm" its orange awnings, and a
+## material's own name replaces that whole material. The kit's light and shade are kept.
+func _retint(c: Color, tint: Dictionary, named: String) -> Color:
+	if tint.has(named):
+		return tint[named]
+	var shade := c.v
+	if c.s < 0.22 and shade > 0.7:
+		if tint.has("wall"):
+			var wall: Color = tint["wall"]
+			return Color(wall.r * shade, wall.g * shade, wall.b * shade)
+	elif c.s < 0.4 and shade < 0.62:
+		if tint.has("dark"):
+			var dark: Color = tint["dark"]
+			var k := clampf(shade / 0.4, 0.5, 1.5)
+			return Color(dark.r * k, dark.g * k, dark.b * k)
+	elif c.h > 0.34 and c.h < 0.5 and c.s > 0.3:
+		if tint.has("green"):
+			var green: Color = tint["green"]
+			var k := clampf(shade / 0.8, 0.5, 1.2)
+			return Color(green.r * k, green.g * k, green.b * k)
+	elif c.h > 0.03 and c.h < 0.14 and c.s > 0.5:
+		if tint.has("warm"):
+			var warm: Color = tint["warm"]
+			return Color(warm.r * shade, warm.g * shade, warm.b * shade)
+	return c
+
+
+## How big a kit model is before any scaling (zero when it is missing).
+func _kit_size(path: String) -> Vector3:
+	var data := _kit(path)
+	return (data["box"] as AABB).size if not data.is_empty() else Vector3.ZERO
+
+
+## Where a model goes so that the middle of its base stands on `pos`.
+func _kit_xf(data: Dictionary, pos: Vector3, scale: Vector3, yaw: float) -> Transform3D:
+	var box: AABB = data["box"]
+	var foot := Vector3(box.position.x + box.size.x * 0.5, box.position.y, box.position.z + box.size.z * 0.5)
+	return Transform3D(Basis(Vector3.UP, yaw) * Basis.from_scale(scale), pos) * Transform3D(Basis.IDENTITY, -foot)
+
+
+## Bake one copy of a model into the scenery. `far` is how far away it is still drawn (0 = always).
+func _stamp(data: Dictionary, xf: Transform3D, far: float) -> void:
+	var at := xf * (data["box"] as AABB).get_center()
+	var key := "%d|%d|%d" % [int(floor(at.x / 45.0)), int(floor(at.z / 45.0)), int(far)]
+	if not kit_groups.has(key):
+		kit_groups[key] = [PackedVector3Array(), PackedVector3Array(), PackedColorArray(),
+			PackedVector3Array(), PackedVector3Array(), PackedColorArray(), far]
+	var group: Array = kit_groups[key]
+	var turn := Transform3D(xf.basis.inverse().transposed(), Vector3.ZERO)
+	for part in 2:
+		var from: PackedVector3Array = data["v" if part == 0 else "gv"]
+		if from.is_empty():
+			continue
+		var v: PackedVector3Array = group[part * 3]
+		var n: PackedVector3Array = group[part * 3 + 1]
+		var c: PackedColorArray = group[part * 3 + 2]
+		v.append_array(xf * from)
+		n.append_array(turn * (data["n" if part == 0 else "gn"] as PackedVector3Array))
+		c.append_array(data["c" if part == 0 else "gc"])
+		group[part * 3] = v
+		group[part * 3 + 1] = n
+		group[part * 3 + 2] = c
+
+
+## Stand a model on the ground at `pos`, `high` metres tall. False when the model is missing.
+func _put(path: String, pos: Vector3, high: float, yaw: float = 0.0, tint: Dictionary = {}, far: float = 110.0) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var s := high / maxf((data["box"] as AABB).size.y, 0.001)
+	_stamp(data, _kit_xf(data, pos, Vector3(s, s, s), yaw), far)
+	return true
+
+
+## The same, sized by its width (the model's own left-to-right) instead of its height.
+func _put_wide(path: String, pos: Vector3, wide: float, yaw: float = 0.0, tint: Dictionary = {}, far: float = 110.0) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var s := wide / maxf((data["box"] as AABB).size.x, 0.001)
+	_stamp(data, _kit_xf(data, pos, Vector3(s, s, s), yaw), far)
+	return true
+
+
+## The same, sized by its longest side: right for stones and logs, which may lie flat or stand tall.
+func _put_span(path: String, pos: Vector3, span: float, yaw: float = 0.0, tint: Dictionary = {}, far: float = 110.0) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var own: Vector3 = (data["box"] as AABB).size
+	var s := span / maxf(maxf(own.x, own.z), maxf(own.y, 0.001))
+	_stamp(data, _kit_xf(data, pos, Vector3(s, s, s), yaw), far)
+	return true
+
+
+## Stretch a model to fill a box exactly: `size` is its width, height and depth before turning.
+func _fit(path: String, pos: Vector3, size: Vector3, yaw: float = 0.0, tint: Dictionary = {}, far: float = 0.0) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var own: Vector3 = (data["box"] as AABB).size
+	_stamp(data, _kit_xf(data, pos, Vector3(size.x / maxf(own.x, 0.001), size.y / maxf(own.y, 0.001), size.z / maxf(own.z, 0.001)), yaw), far)
+	return true
+
+
+## A model as a piece of its own that can move, `high` metres tall with the middle of its base at the
+## node's origin. Null when the model is missing.
+func _kit_node(path: String, high: float, tint: Dictionary = {}, parent: Node = null) -> Node3D:
+	var whole := tint.duplicate()
+	whole["glass"] = false
+	var data := _kit(path, whole)
+	if data.is_empty():
+		return null
+	var key := path + str(whole)
+	if not kit_meshes.has(key):
+		kit_meshes[key] = _soup(data["v"], data["n"], data["c"])
+	var mi := MeshInstance3D.new()
+	mi.mesh = kit_meshes[key]
+	mi.material_override = _paint()
+	var s := high / maxf((data["box"] as AABB).size.y, 0.001)
+	mi.transform = _kit_xf(data, Vector3.ZERO, Vector3(s, s, s), 0.0)
+	var holder := Node3D.new()
+	holder.add_child(mi)
+	if parent != null:
+		parent.add_child(holder)
+	return holder
+
+
+func _soup(v: PackedVector3Array, n: PackedVector3Array, c: PackedColorArray) -> ArrayMesh:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v
+	arrays[Mesh.ARRAY_NORMAL] = n
+	arrays[Mesh.ARRAY_COLOR] = c
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+## Turn everything that was stamped into real meshes: one for the solid parts and one for the glass.
+func _finish_scenery() -> void:
+	for key: String in kit_groups:
+		var group: Array = kit_groups[key]
+		for part in 2:
+			var v: PackedVector3Array = group[part * 3]
+			if v.is_empty():
+				continue
+			var mi := MeshInstance3D.new()
+			mi.mesh = _soup(v, group[part * 3 + 1], group[part * 3 + 2])
+			mi.material_override = _paint() if part == 0 else glass_mat
+			if float(group[6]) > 0.0:
+				mi.visibility_range_end = float(group[6])
+				mi.visibility_range_end_margin = 6.0
+			add_child(mi)
+	kit_groups.clear()
+
+
+## The colours for a piece of the nature kit: its turquoise leaves become `green`, its pale bark real wood.
+func _wild(green: Color) -> Dictionary:
+	return {"grass": green, "leafsGreen": green, "leafsDark": green.darkened(0.25), "woodBark": Color(0.47, 0.34, 0.23),
+		"woodBarkDark": Color(0.38, 0.27, 0.19), "wood": Color(0.58, 0.42, 0.27), "woodDark": Color(0.44, 0.31, 0.2),
+		"woodInner": Color(0.84, 0.7, 0.5), "dirt": Color(0.6, 0.58, 0.55)}
+
+
+## Sprinkle small plants and stones over a patch of ground, keeping clear of the circles in `keep`
+## (each one is [middle, radius]).
+func _scatter(kinds: Array, count: int, from: Vector2, to: Vector2, small: float, big: float, far: float, keep: Array = []) -> void:
+	var greens: Array[Dictionary] = [_wild(Color(0.3, 0.56, 0.26)), _wild(Color(0.36, 0.62, 0.28)), _wild(Color(0.24, 0.48, 0.24))]
+	for k in count:
+		var pos := Vector3(rng.randf_range(from.x, to.x), 0, rng.randf_range(from.y, to.y))
+		var clear := true
+		for spot: Array in keep:
+			if Vector2(pos.x - (spot[0] as Vector3).x, pos.z - (spot[0] as Vector3).z).length() < float(spot[1]):
+				clear = false
+		if not clear:
+			continue
+		pos.y = _ground_y(pos.x, pos.z)
+		_put_span(kinds[rng.randi() % kinds.size()], pos, rng.randf_range(small, big), rng.randf() * TAU, greens[k % 3], far)
+
+
+## The finishing touches all over town: plants, street furniture, boats, crops and the like.
+func _dress_town() -> void:
+	if _kit_size("nature/plant_bush") == Vector3.ZERO:
+		return                                    # the kits are missing; the plain town still works
+	var leaf := _wild(Color(0.3, 0.58, 0.27))
+	var flowers: Array = ["nature/flower_redA", "nature/flower_yellowA", "nature/flower_purpleA", "nature/flower_redB", "nature/flower_yellowB", "nature/flower_purpleB"]
+	var bushes: Array = ["nature/plant_bush", "nature/plant_bushDetailed", "nature/plant_bushLarge", "nature/plant_bushSmall"]
+	var stones: Array = ["nature/rock_largeA", "nature/rock_smallA", "nature/rock_tallA", "nature/stone_largeB", "nature/stone_smallC"]
+
+	# --- The main street: planters by the shop doors, benches, traffic lights, bins behind the shops.
+	for x: float in [-24.0, -8.0, 8.0, 24.0, 40.0, 56.0, -91.0, -74.0, -58.0, -40.0, 126.0]:
+		for side: float in [-1.0, 1.0]:
+			_put_wide("suburban/planter", Vector3(x + side * 3.1, 0, -5.45), 1.5, 0.0, {"green": Color(0.3, 0.62, 0.3)})
+	for x: float in [-33.0, 32.0, 62.5, -66.0, -83.0, 104.0]:
+		_put("holiday/bench", Vector3(x, 0, -5.3), 1.2, PI)
+		_solid(Vector3(1.8, 1.0, 0.7), Vector3(x, 0.5, -5.3))
+	for x: float in [-16.0, 16.0, 48.0]:
+		_put("roads/traffic-light", Vector3(x - 1.9, 0, -1.75), 3.3, PI * 0.5, {}, 150.0)
+		_put("roads/traffic-light", Vector3(x + 1.9, 0, 4.85), 3.3, -PI * 0.5, {}, 150.0)
+	for at: Vector3 in [Vector3(-16.6, 0, -9.0), Vector3(32.4, 0, -9.5), Vector3(48.2, 0, -9.2), Vector3(-49.2, 0, -9.4), Vector3(-82.4, 0, -9.0)]:
+		_put("roads/dumpster", at, 1.5, PI * 0.5)
+		_solid(Vector3(1.9, 1.5, 2.5), at + Vector3(0, 0.75, 0))
+	for cx in CROSSINGS:
+		_put("roads/road-sign-stop", Vector3(cx + 3.1, 0, -6.6), 2.9, 0.0)
+		_put("roads/road-sign-warning", Vector3(cx - 3.1, 0, NORTH_Z + 6.0), 2.9, PI)
+	# Tables under parasols outside the café.
+	for x: float in [4.3, 11.7]:
+		var at := Vector3(x, 0, -4.5)
+		_put("commercial/detail-parasol-a", at, 3.0, 0.0, {"green": Color(0.9, 0.5, 0.22)})
+		_fit("furniture/tableRound", at, Vector3(1.0, 0.85, 1.0), 0.0, {"wood": Color(0.55, 0.38, 0.24)}, 110.0)
+		_furn("chair", at + Vector3(-0.85, 0, 0), PI * 0.5, {"wood": Color(0.45, 0.3, 0.2)}, 0.25)
+		_furn("chair", at + Vector3(0.85, 0, 0), -PI * 0.5, {"wood": Color(0.45, 0.3, 0.2)}, 0.25)
+		_put("food/cup-coffee", at + Vector3(0.2, 0.85, 0.1), 0.14, x)
+		_solid(Vector3(1.0, 0.9, 1.0), at + Vector3(0, 0.45, 0))
+	# The building site: barriers on the kerb and containers at the side.
+	for k in 3:
+		_put("roads/construction-barrier", Vector3(74.2 + k * 1.9, 0, -1.25), 0.95, PI * 0.5)
+	_put("roads/construction-light", Vector3(79.6, 0, -1.3), 1.5)
+	if _put("industrial/shipping-container-a", Vector3(63.8, 0, -10.2), 2.5):
+		_put("industrial/shipping-container-b", Vector3(63.9, 2.5, -10.6), 2.5, 0.12)
+		_solid(Vector3(2.7, 5.0, 6.0), Vector3(63.8, 2.5, -10.3))
+
+	# --- The park: a fountain in the pond, water lilies, flowers, bushes and stones.
+	_put_wide("town/fountain-round-detail", Vector3(4, 0.0, 14), 3.4, 0.0, {}, 150.0)
+	for k in 7:
+		var angle := k * 0.9 + 0.4
+		_put("nature/lily_large" if k % 2 == 0 else "nature/lily_small", Vector3(4 + cos(angle) * (2.6 + (k % 3) * 0.6), 0.05, 14 + sin(angle) * (2.6 + (k % 3) * 0.6)), 0.22, angle, leaf, 70.0)
+	var busy: Array = [[Vector3(4, 0, 14), 6.0], [PLAYGROUND, 9.6], [CAR_LOT, 9.5], [Vector3(-14, 0, 17), 4.0], [Vector3(8, 0, 7.4), 2.5], [PICNIC, 4.0]]
+	_scatter(flowers, 110, Vector2(-43, 8.6), Vector2(47, 33), 0.45, 0.7, 60.0, busy)
+	_scatter(bushes, 34, Vector2(-43, 9.5), Vector2(47, 33), 1.0, 1.9, 90.0, busy)
+	_scatter(["nature/grass_large", "nature/grass", "nature/grass_leafs"], 120, Vector2(-43, 8.6), Vector2(47, 34), 0.6, 1.0, 50.0, busy)
+	_scatter(stones, 14, Vector2(-43, 9.5), Vector2(47, 33), 0.7, 1.6, 90.0, busy)
+	for k in 12:                                    # a ring of flowers round the pond
+		var angle := k * TAU / 12.0
+		_put(flowers[k % flowers.size()], Vector3(4 + cos(angle) * 5.7, 0, 14 + sin(angle) * 5.7), 0.7, angle, leaf, 70.0)
+
+	# --- The forest floor: logs, stumps, mushrooms, stones and undergrowth, and a camp by the picnic corner.
+	var glade: Array = [[PICNIC, 6.5], [Vector3(122, 0, 26), 40.0], [Vector3(0, 0, FOREST_Z + 4.0), 5.0]]
+	_scatter(["nature/log", "nature/log_large", "nature/stump_round", "nature/stump_old", "nature/log_stack"], 70, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 1.3, 2.4, 70.0, glade)
+	_scatter(["nature/mushroom_red", "nature/mushroom_redGroup", "nature/mushroom_tan", "nature/mushroom_tanGroup"], 110, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.35, 0.6, 45.0, glade)
+	_scatter(stones, 70, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.8, 2.4, 90.0, glade)
+	_scatter(bushes + ["nature/plant_flatTall", "nature/grass_large"], 220, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.9, 1.9, 60.0, glade)
+	_scatter(flowers, 90, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.45, 0.65, 45.0, glade)
+	if _put("survival/tent-canvas", PICNIC + Vector3(-4.6, 0, 1.6), 2.5, 0.5):
+		_solid(Vector3(2.4, 2.0, 2.4), PICNIC + Vector3(-4.6, 1.0, 1.6))
+	_put("survival/campfire-pit", PICNIC + Vector3(3.4, 0, 2.0), 0.55)
+	_put("survival/tree-log", PICNIC + Vector3(4.9, 0, 2.6), 0.5, 0.5)
+	_put("survival/tree-log", PICNIC + Vector3(3.0, 0, 3.6), 0.5, 1.9)
+	_put("survival/bucket", PICNIC + Vector3(-2.9, 0, 2.9), 0.45)
+
+	# --- The sea front: palms above the sand, stones on it, buoys and a ship out on the water.
+	for k in 15:
+		var px := WEST + 9.0 + k * 22.5 + rng.randf_range(-3.0, 3.0)
+		if absf(px) < 6.0:
+			continue
+		_put(["nature/tree_palmTall", "nature/tree_palm", "nature/tree_palmBend"][k % 3], Vector3(px, 0, SEA_Z - 0.9), rng.randf_range(6.0, 8.0), rng.randf() * TAU, _wild(Color(0.3, 0.6, 0.26)), 190.0)
+		_solid(Vector3(0.5, 3.0, 0.5), Vector3(px, 1.5, SEA_Z - 0.9))
+	_scatter(["survival/rock-sand-a", "survival/rock-sand-b", "survival/rock-sand-c"], 22, Vector2(WEST + 4.0, SEA_Z - 9.5), Vector2(EAST - 4.0, SEA_Z - 1.5), 0.6, 1.5, 90.0, [[Vector3(0, 0, SEA_Z - 6.0), 6.0], [Vector3(12, 0, SEA_Z - 3.0), 3.5]])
+	for k in 6:
+		_put("boats/buoy" if k % 2 == 0 else "boats/buoy-flag", Vector3(-70.0 + k * 34.0, -0.3, SEA_Z - 17.0 - (k % 3) * 2.5), 2.2, k * 1.0, {}, 0.0)
+	_put("boats/ship-cargo-a", Vector3(-95, -0.6, SEA_Z - 78.0), 15.0, PI * 0.5, {}, 0.0)
+	_put("boats/boat-row-small", Vector3(22, -0.15, SEA_Z - 12.5), 1.1, 2.4, {}, 0.0)
+
+	# --- The lake: a canoe and a rowing boat, lilies, and stones along the far shore.
+	var mid := LAKE + Vector3(0, 0, 6)
+	_put("nature/canoe", LAKE + Vector3(7.7, 0.02, 2.4), 0.6, 0.2, leaf)
+	_put("boats/boat-row-small", mid + Vector3(-3.5, -0.15, 2.0), 1.1, 0.9, {}, 0.0)
+	for k in 9:
+		var angle := 0.5 + k * 0.62
+		_put("nature/lily_large" if k % 2 == 0 else "nature/lily_small", mid + Vector3(cos(angle) * (5.0 + (k % 4) * 1.2), 0.06, sin(angle) * (5.0 + (k % 4) * 1.2)), 0.24, angle, leaf, 70.0)
+	for k in 13:
+		var angle := -0.25 + k * 0.29                # round the south side, away from the beach and the pier
+		_put_span(stones[k % stones.size()], mid + Vector3(cos(angle) * 11.7, 0, sin(angle) * 11.7), 1.0 + (k % 3) * 0.5, angle * 3.0, leaf, 110.0)
+		if k % 2 == 0:
+			_put_span(bushes[k % bushes.size()], mid + Vector3(cos(angle) * 12.8, 0, sin(angle) * 12.8), 1.5, angle, leaf, 90.0)
+
+	# --- The farm: a field of corn, wheat and pumpkins, a tractor and a water tower.
+	for row in 5:
+		for col in 15:
+			var at := FARM + Vector3(-9.0 + col * 1.55, 0, 12.0 + row * 1.5)
+			if row < 3:
+				_put("nature/crops_cornStageD", at, 1.9 + (col % 3) * 0.15, col * 1.3, leaf, 80.0)
+			elif row == 3:
+				_put("nature/crops_wheatStageB", at, 0.9, col * 0.7, {"woodInner": Color(0.9, 0.75, 0.35), "_defaultMat": Color(0.82, 0.66, 0.3)}, 80.0)
+			elif col % 2 == 0:
+				_put("nature/crop_pumpkin" if col % 4 == 0 else "nature/crop_melon", at, 0.55, col * 0.9, leaf, 80.0)
+	if _put("cars/tractor", FARM + Vector3(-13.6, 0, 1.2), 2.4, 0.5):
+		_solid(Vector3(2.2, 2.2, 3.4), FARM + Vector3(-13.6, 1.1, 1.2))
+	if _put("industrial/water-tower", FARM + Vector3(18.5, 0, 1.0), 9.5, 0.0, {}, 0.0):
+		_solid(Vector3(3.2, 6.0, 3.2), FARM + Vector3(18.5, 3.0, 1.0))
+	_put("survival/barrel", FARM + Vector3(-1.2, 0, -0.4), 1.1)
+	_put("survival/bucket", FARM + Vector3(0.8, 0, -1.6), 0.45)
+	_put("town/cart", FARM + Vector3(-9.6, 0, -4.4), 1.3, 1.2)
+
+	# --- The north street: a planter by each front door.
+	for x in range(int(WEST) + 12, int(EAST) - 6, 17):
+		if absf(x) >= 16.0:
+			_put_wide("suburban/planter", Vector3(x + 2.9, 0, NORTH_Z - 6.4), 1.5, 0.0, {"green": Color(0.3, 0.62, 0.3)})
+
+
+## The art pass over the rooms: what makes each one look lived in. Nothing here is needed to play.
+func _dress_rooms() -> void:
+	if _kit_size("food/plate") == Vector3.ZERO or _kit_size("furniture/chair") == Vector3.ZERO:
+		return
+	var steel := {"wood": Color(0.8, 0.82, 0.85), "woodDark": Color(0.6, 0.63, 0.68), "metal": Color(0.36, 0.38, 0.42)}
+	var oak := Color(0.5, 0.33, 0.2)
+
+	# ---------------------------------------------------------------- the restaurant
+	var o: Vector3 = ROOMS["diner"]["origin"]
+	# The kitchen: a tiled corner with a cooking line under a steel hood, cold storage, a prep
+	# counter, shelves of supplies and pans hanging within reach.
+	_box(Vector3(6.6, 0.03, 2.9), o + Vector3(-6.2, 0.02, -5.55), _tex("paving", Color(0.7, 0.73, 0.76), 0.5))
+	_box(Vector3(6.6, 2.0, 0.06), o + Vector3(-6.2, 2.1, -6.96), _tex("paving", Color(0.8, 0.83, 0.86), 0.9))     # tiled wall
+	_furn("kitchenFridge", o + Vector3(-9.0, 0, -6.45), 0.0, {}, 0.26)
+	for k in 2:
+		_furn("kitchenStove", o + Vector3(-7.75 + k * 1.05, 0, -6.45), 0.0, steel, 0.24)
+	_furn("kitchenSink", o + Vector3(-5.65, 0, -6.45), 0.0, steel, 0.24)
+	_furn("kitchenCabinet", o + Vector3(-4.6, 0, -6.45), 0.0, steel, 0.24)
+	_furn("kitchenCabinet", o + Vector3(-3.55, 0, -6.45), 0.0, steel, 0.24)
+	_solid(Vector3(6.6, 1.2, 1.0), o + Vector3(-6.2, 0.6, -6.5))
+	_food("pot-stew", o + Vector3(-7.95, 1.09, -6.5), 0.3, 0.55)
+	_food("frying-pan", o + Vector3(-6.75, 1.09, -6.45), -0.7, 0.55)
+	_food("cutting-board", o + Vector3(-4.6, 1.09, -6.4), 0.1)
+	_food("tomato", o + Vector3(-4.75, 1.13, -6.5))
+	_food("onion", o + Vector3(-4.45, 1.13, -6.3))
+	_food("cooking-knife", o + Vector3(-4.5, 1.13, -6.55), 0.9, 0.5)
+	_food("knife-block", o + Vector3(-3.3, 1.09, -6.7), 0.0, 0.5)
+	_food("bowl", o + Vector3(-3.75, 1.09, -6.35))
+	_food("pepper-mill", o + Vector3(-5.2, 1.18, -6.75))
+	var hood := _mat(Color(0.72, 0.74, 0.78))
+	hood.metallic = 0.6
+	hood.roughness = 0.35
+	_box(Vector3(2.5, 0.3, 1.25), o + Vector3(-7.2, 2.55, -6.4), hood)
+	_box(Vector3(1.5, 0.45, 0.85), o + Vector3(-7.2, 2.92, -6.5), hood)
+	_box(Vector3(0.6, 1.4, 0.5), o + Vector3(-7.2, 3.8, -6.65), hood)
+	_wall_shelf(o + Vector3(-4.6, 2.05, -6.93), 2.9, ["honey", "peanut-butter", "can", "bottle-oil", "bottle-ketchup", "bottle-musterd", "can-small", "honey"], 0.0, Color(0.7, 0.72, 0.76))
+	_wall_shelf(o + Vector3(-4.6, 2.85, -6.93), 2.9, ["pot", "bowl", "bowl", "mortar", "plate", "mug"], 0.0, Color(0.7, 0.72, 0.76))
+	_box(Vector3(2.4, 0.05, 0.05), o + Vector3(-9.3, 2.75, -5.0), hood).rotation.y = PI * 0.5
+	for k in 3:                                     # pans on a rail along the side wall
+		_hang("food/frying-pan" if k != 1 else "food/pan", o + Vector3(-9.33, 2.35, -5.8 + k * 0.8), 0.72, Vector3(0, PI * 0.5, PI * 0.5))
+	# Dry goods and vegetables on a rack by the kitchen door.
+	_furn("bookcaseOpen", o + Vector3(-9.05, 0, -2.6), PI * 0.5, steel, 0.3)
+	_solid(Vector3(0.8, 2.6, 1.3), o + Vector3(-9.05, 1.3, -2.6))
+	for shelf in 3:
+		_food(["cabbage", "bag", "barrel"][shelf], o + Vector3(-9.05, 0.42 + shelf * 0.69, -2.85), shelf * 1.0, 0.5)
+		_food(["carrot", "can", "pumpkin"][shelf], o + Vector3(-9.05, 0.42 + shelf * 0.69, -2.35), shelf * 2.0, 0.45)
+	_put("survival/box-open", o + Vector3(-8.9, 0, -3.9), 0.6, 0.2, {}, 0.0)
+	_food("leek", o + Vector3(-8.9, 0.2, -3.9), 0.0, 0.5)
+	# The pass: heat lamps over the waiting plates, a stack of clean ones, and the day's bread.
+	var pass_at := o + Vector3(-6.5, 1.1, -4.5)
+	for sx: float in [-1.1, 0.0, 1.1]:
+		_box(Vector3(0.03, 1.5, 0.03), pass_at + Vector3(sx, 1.95, 0), _mat(Color(0.2, 0.2, 0.22)))
+		_box(Vector3(0.34, 0.2, 0.34), pass_at + Vector3(sx, 1.15, 0), shade_mat)
+	for k in 4:
+		_food("plate", pass_at + Vector3(1.75, k * 0.05, -0.15), 0.0, 0.42)
+	_food("loaf-baguette", pass_at + Vector3(-1.75, 0, 0.1), 0.5)
+	_room_lamp("diner", o + Vector3(-6.4, 3.6, -5.2), Color(0.92, 0.96, 1.0), 0.5)
+	# The dining room: a brick wall with the wine and a sideboard, linen on the tables, booths
+	# along the side, a round family table, and a host stand by the door.
+	_box(Vector3(11.4, 3.4, 0.06), o + Vector3(3.8, 2.85, -6.97), _tex("brick", Color(0.62, 0.36, 0.28), 0.5))
+	_furn("cabinetTelevision", o + Vector3(1.9, 0, -6.45), 0.0, {"wood": oak}, 0.34)
+	_solid(Vector3(2.7, 1.0, 0.9), o + Vector3(1.9, 0.5, -6.5))
+	_food("loaf-round", o + Vector3(1.2, 1.06, -6.45), 0.4)
+	_food("cheese-cut", o + Vector3(1.9, 1.06, -6.4), 0.2, 0.5)
+	_food("grapes", o + Vector3(2.6, 1.06, -6.5), 0.0, 0.5)
+	_furn("lampRoundTable", o + Vector3(2.95, 1.06, -6.6), 0.0, {}, 0.4)
+	_wall_shelf(o + Vector3(1.9, 2.2, -6.93), 2.8, ["wine-red", "wine-white", "wine-red", "glass-wine", "glass-wine", "wine-white", "wine-red"], 0.0, oak)
+	_wall_shelf(o + Vector3(1.9, 3.0, -6.93), 2.8, ["glass-wine", "glass-wine", "glass-wine", "cocktail", "glass-wine", "glass-wine"], 0.0, oak)
+	_clock(o + Vector3(-0.7, 3.0, -6.9))
+	for k in 3:
+		_picture(o + Vector3(9.46, 2.5, -4.6 + k * 3.4), Vector2(1.5, 1.1), [Color(0.95, 0.75, 0.5), Color(0.6, 0.8, 0.9), Color(0.9, 0.6, 0.55)][k], -PI * 0.5)
+	_picture(o + Vector3(-9.46, 2.6, 2.4), Vector2(2.0, 1.2), Color(0.85, 0.8, 0.6), PI * 0.5)
+	# Linen and place settings on the tables that are already there.
+	var cloth := _mat(Color(0.96, 0.95, 0.9))
+	for x: float in [-2.5, 1.5]:
+		var t := o + Vector3(x, 1.0, 1.2)
+		_box(Vector3(1.1, 0.025, 1.5), t + Vector3(0, 0.012, 0), cloth)
+		_place_setting(t + Vector3(0, 0.03, 0.42), PI, ["salad", "burger"][int(x > 0.0)])
+		_place_setting(t + Vector3(0, 0.03, -0.42), 0.0)
+		_furn("plantSmall2", t + Vector3(0.38, 0.03, 0), x, {"plant": Color(0.8, 0.3, 0.35), "wood": Color(0.9, 0.9, 0.92)}, 0.22)
+		_food("shaker-salt", t + Vector3(-0.36, 0.03, 0.05))
+		_furn("rugRound", t + Vector3(0, -0.98, 0), 0.0, {"carpet": Color(0.6, 0.22, 0.2), "carpetDarker": Color(0.45, 0.14, 0.14)}, 0.4)
+	var wait := o + Vector3(6.0, 1.05, -2.0)
+	_place_setting(wait + Vector3(-0.65, 0, -0.3), 0.0)
+	_place_setting(wait + Vector3(0.65, 0, -0.3), 0.0)
+	_food("wine-red", wait + Vector3(0, 0, -0.45))
+	# Booths against the west wall.
+	var seat := {"carpet": Color(0.62, 0.2, 0.2), "wood": oak}
+	for k in 2:
+		var b := o + Vector3(-7.9, 0, 0.9 + k * 3.6)
+		_furn("loungeSofa", b + Vector3(0, 0, -1.25), 0.0, seat, 0.27)
+		_furn("loungeSofa", b + Vector3(0, 0, 1.25), PI, seat, 0.27)
+		_fit("furniture/table", b, Vector3(1.9, 1.0, 1.0), 0.0, {"wood": oak.lightened(0.15)})
+		_solid(Vector3(2.7, 1.0, 3.3), b + Vector3(0, 0.5, 0))
+		_box(Vector3(1.6, 0.02, 0.5), b + Vector3(0, 1.01, 0), _mat(Color(0.7, 0.2, 0.2)))          # runner
+		_place_setting(b + Vector3(-0.45, 1.02, -0.2), 0.0, "pizza" if k == 0 else "")
+		_place_setting(b + Vector3(0.45, 1.02, 0.2), PI)
+		_box(Vector3(0.08, 0.3, 0.08), b + Vector3(0, 1.17, 0), _mat(Color(0.97, 0.95, 0.88)))      # a candle
+		_box(Vector3(0.05, 0.07, 0.05), b + Vector3(0, 1.36, 0), shade_mat)
+	_picture(o + Vector3(-9.46, 2.6, 5.6), Vector2(1.2, 1.4), Color(0.7, 0.85, 0.75), PI * 0.5)
+	# The round table for a family, on its own rug.
+	var round_at := o + Vector3(6.4, 0, 3.4)
+	_furn("rugRound", round_at + Vector3(0, 0.02, 0), 0.0, {"carpet": Color(0.25, 0.4, 0.45), "carpetDarker": Color(0.16, 0.28, 0.33)}, 0.46)
+	_fit("furniture/tableRound", round_at, Vector3(1.9, 1.0, 1.9), 0.0, {"wood": oak.lightened(0.15)})
+	_solid(Vector3(1.7, 1.0, 1.7), round_at + Vector3(0, 0.5, 0))
+	for k in 4:
+		var angle := k * PI * 0.5 + PI * 0.25
+		_furn("chairCushion", round_at + Vector3(sin(angle) * 1.45, 0, cos(angle) * 1.45), angle + PI, {"wood": oak, "carpet": Color(0.62, 0.2, 0.2)})
+		_place_setting(round_at + Vector3(sin(angle) * 0.55, 1.0, cos(angle) * 0.55), angle + PI, ["bowl-soup", "", "sub", ""][k])
+	_furn("plantSmall3", round_at + Vector3(0, 1.0, 0), 0.0, {"plant": Color(0.3, 0.62, 0.3), "wood": Color(0.9, 0.9, 0.92)}, 0.3)
+	# The host stand, with the menu, by the door.
+	var host := o + Vector3(3.3, 0, 5.3)
+	_fit("furniture/kitchenBar", host, Vector3(1.5, 1.15, 0.7), PI, {"wood": oak, "woodDark": oak.darkened(0.25), "metal": Color(0.85, 0.75, 0.5)})
+	_solid(Vector3(1.5, 1.1, 0.7), host + Vector3(0, 0.55, 0))
+	_put("shop/cash-register", host + Vector3(-0.3, 1.15, 0), 0.5, 0.0, {}, 0.0)
+	_menu_board(o + Vector3(6.2, 2.6, -6.9), "התפריט", ["מרק היום", "המבורגר הבית", "פיצה מהתנור", "סלט ירוק", "עוגת שוקולד"])
+	_furn("coatRackStanding", o + Vector3(8.9, 0, -6.0))
+	_furn("rugRectangle", o + Vector3(0, 0.02, 4.6), PI * 0.5, {"carpet": Color(0.6, 0.22, 0.2), "carpetDarker": Color(0.45, 0.14, 0.14)}, 0.3)
+	_room_lamp("diner", o + Vector3(-7.9, 3.4, 2.7))
+	_room_lamp("diner", o + Vector3(6.4, 3.4, 3.4))
+
+	# ---------------------------------------------------------------- the café
+	o = ROOMS["cafe"]["origin"]
+	_menu_board(o + Vector3(0, 2.85, -6.42), "קפה ומאפה", ["קפה  ₪8", "ארוחה חמה  ₪30", "קרואסון חם", "עוגת היום"])
+	_food("cupcake", o + Vector3(1.0, 1.14, -4.15), 0.0, 0.5)
+	_food("muffin", o + Vector3(1.35, 1.14, -4.3), 0.6, 0.5)
+	_food("cookie-chocolate", o + Vector3(-1.1, 1.14, -4.4), 0.0, 0.5)
+	_food("pie", o + Vector3(-2.0, 1.14, -4.2), 0.0, 0.45)
+	_put("shop/cash-register", o + Vector3(-0.2, 1.14, -4.45), 0.5, PI, {}, 0.0)
+	for sx: float in [-2.55, 2.55]:
+		_wall_shelf(o + Vector3(sx, 1.75, -6.43), 1.5, ["mug", "cup-coffee", "mug", "cup-tea"], 0.0, oak)
+	_wall_shelf(o + Vector3(6.9, 2.0, -3.0), 2.2, ["honey", "carton", "peanut-butter", "can-small", "bag"], -PI * 0.5, oak)   # east wall (it faces west)
+	_picture(o + Vector3(-8.46, 2.5, -1.0), Vector2(1.8, 1.2), Color(0.95, 0.8, 0.55), PI * 0.5)
+	_picture(o + Vector3(-8.46, 2.5, 2.4), Vector2(1.1, 1.3), Color(0.65, 0.8, 0.7), PI * 0.5)
+	_clock(o + Vector3(-6.6, 3.0, -6.44))
+	for x: float in [-5.0, 5.0]:
+		var t := o + Vector3(x, 1.0, 0.5)
+		_furn("plantSmall2", t + Vector3(-0.35, 0, -0.3), x, {"plant": Color(0.85, 0.5, 0.3), "wood": Color(0.9, 0.9, 0.92)}, 0.2)
+	_furn("tableCoffee", o + Vector3(6.2, 0, -3.0), PI * 0.5, {"wood": oak}, 0.22)
+	_furn("bookcaseOpenLow", o + Vector3(-7.9, 0, 4.3), PI * 0.5, {"wood": oak}, 0.3)
+	_furn("books", o + Vector3(-7.9, 0.45, 4.2), 0.4, {}, 0.3)
+
+	# ---------------------------------------------------------------- home
+	o = ROOMS["home"]["origin"]
+	_window(o + Vector3(-9.6, 2.7, -8.5), 1.8, Color(0.35, 0.45, 0.7))
+	_food("cutting-board", o + Vector3(-1.6, 1.27, -7.7), 0.2, 0.5)
+	_food("bread", o + Vector3(-1.6, 1.3, -7.7), 0.3, 0.5)
+	_food("bowl", o + Vector3(1.9, 1.27, -7.5), 0.0, 0.5)
+	_food("apple", o + Vector3(1.9, 1.33, -7.5), 0.0, 0.5)
+	_food("pot", o + Vector3(0.8, 1.27, -7.8), 0.6, 0.45)
+	_picture(o + Vector3(6.6, 2.6, -3.82), Vector2(2.2, 1.2), Color(0.75, 0.85, 0.95))
+	_picture(o + Vector3(19.96, 2.6, 1.0), Vector2(1.6, 1.2), Color(0.95, 0.85, 0.6), -PI * 0.5)
+	_picture(o + Vector3(-19.96, 2.6, 2.0), Vector2(1.6, 1.2), Color(0.8, 0.9, 0.75), PI * 0.5)
+	_furn("coatRackStanding", o + Vector3(-2.6, 0, 7.2))
+	_furn("rugRectangle", o + Vector3(-4.2, 0.02, 1.6), 0.0, {"carpet": Color(0.8, 0.7, 0.5), "carpetDarker": Color(0.62, 0.5, 0.34)}, 0.34)
+	for sx: float in [-1.0, 0.0, 1.0]:
+		_place_setting(o + Vector3(-4.2 + sx, 1.02, 2.1), PI)
+		_place_setting(o + Vector3(-4.2 + sx, 1.02, 1.1), 0.0)
+	_room_lamp("home", o + Vector3(-4.2, 3.4, 1.6))
+	_room_lamp("home", o + Vector3(6.6, 3.4, 0.4))
+	_room_lamp("home", o + Vector3(-14.0, 3.5, -3.0))
+	_room_lamp("home", o + Vector3(14.0, 3.5, -3.0))
+
+	# ---------------------------------------------------------------- the supermarket
+	var store_lights: Array = []
+	for k in 6:
+		_room_lamp("market", STORE + Vector3(-10.0 + (k % 3) * 10.0, 3.9, -4.5 + (k / 3) * 7.0), Color(0.98, 0.97, 0.92), 0.7)
+	for k in 3:
+		_hang_sign(STORE + Vector3(-9.0 + k * 9.0, 3.3, -4.6), ["לחם ומאפים", "פירות וירקות", "מוצרי חלב"][k], [Color(0.75, 0.45, 0.2), Color(0.25, 0.6, 0.3), Color(0.2, 0.45, 0.75)][k])
+	_put("survival/box-large", STORE + Vector3(14.4, 0, 6.0), 0.7, 0.2, {}, 0.0)
+	_put("survival/box", STORE + Vector3(14.3, 0.7, 6.0), 0.6, 0.5, {}, 0.0)
+	_put("shop/hand-truck", STORE + Vector3(13.2, 0, 7.4), 1.4, -0.6, {}, 0.0)
+
+	# ---------------------------------------------------------------- the other rooms
+	o = ROOMS["work"]["origin"]
+	_clock(o + Vector3(-0.2, 3.2, -7.44))
+	_wall_shelf(o + Vector3(-0.2, 2.2, -7.43), 3.4, ["carton", "can", "bag", "mug", "can-small", "carton"], 0.0, Color(0.5, 0.52, 0.56))
+	_furn("rugRectangle", o + Vector3(-0.2, 0.02, -4.6), 0.0, {"carpet": Color(0.35, 0.42, 0.55), "carpetDarker": Color(0.25, 0.3, 0.42)}, 0.34)
+	_furn("coatRackStanding", o + Vector3(4.2, 0, -6.6))
+	_furn("trashcan", o + Vector3(3.4, 0, -6.6), 0.0, {}, 0.2)
+	_picture(o + Vector3(10.46, 2.6, 0.0), Vector2(2.2, 1.3), Color(0.8, 0.85, 0.9), -PI * 0.5)
+	for k in 3:
+		_put("survival/box-large", o + Vector3(8.6, k * 0.75, 1.0 + (k % 2) * 0.3), 0.75, 0.3 * k, {}, 0.0)
+
+	o = ROOMS["guns"]["origin"]
+	_furn("rugRectangle", o + Vector3(0, 0.02, 1.0), 0.0, {"carpet": Color(0.36, 0.42, 0.3), "carpetDarker": Color(0.26, 0.3, 0.2)}, 0.34)
+	_picture(o + Vector3(0, 3.0, -5.44), Vector2(1.8, 1.0), Color(0.75, 0.8, 0.6))
+	_put("survival/chest", o + Vector3(-4.6, 0, 3.4), 0.8, 0.4, {}, 0.0)
+	_put("survival/barrel", o + Vector3(4.8, 0, 3.4), 1.1, 0.0, {}, 0.0)
+	_put("survival/box-large", o + Vector3(4.6, 0, 2.2), 0.7, 0.3, {}, 0.0)
+
+	o = ROOMS["clinic"]["origin"]
+	_furn("bathroomSink", o + Vector3(6.3, 0, -5.2), 0.0)
+	_wall_shelf(o + Vector3(3.6, 2.3, -5.93), 2.4, ["carton", "can-small", "bottle-oil", "honey", "can-small"], 0.0, Color(0.9, 0.92, 0.94))
+	_picture(o + Vector3(-7.46, 2.5, 0.5), Vector2(1.4, 1.6), Color(0.75, 0.9, 0.85), PI * 0.5)
+	_clock(o + Vector3(-1.6, 3.1, -5.94))
+	_furn("tableCoffee", o + Vector3(-4.9, 0, 2.3), 0.0, {"wood": Color(0.9, 0.92, 0.94)}, 0.2)
+	_furn("books", o + Vector3(-4.9, 0.47, 2.3), 0.5, {}, 0.3)
+
+	o = ROOMS["music"]["origin"]
+	_picture(o + Vector3(-6.46, 2.6, 0.5), Vector2(1.6, 1.6), Color(0.9, 0.7, 0.85), PI * 0.5)
+	_picture(o + Vector3(6.46, 2.6, 0.5), Vector2(1.6, 1.6), Color(0.7, 0.75, 0.95), -PI * 0.5)
+	_furn("loungeChair", o + Vector3(-4.6, 0, 3.2), PI * 0.5, {"carpet": Color(0.55, 0.35, 0.6), "wood": Color(0.35, 0.25, 0.3)}, 0.26)
+	_clock(o + Vector3(0, 3.2, -5.44))
+
+	o = ROOMS["shul"]["origin"]
+	_furn("rugRectangle", o + Vector3(0, 0.02, 1.6), PI * 0.5, {"carpet": Color(0.2, 0.28, 0.6), "carpetDarker": Color(0.85, 0.72, 0.3)}, 0.42)
+	for side: float in [-1.0, 1.0]:
+		_fit("furniture/bookcaseOpen", o + Vector3(side * 8.4, 0, -3.0), Vector3(2.4, 2.6, 0.6), side * -PI * 0.5 + PI, {"wood": Color(0.4, 0.27, 0.16)})
+		for shelf in 3:
+			_furn("books", o + Vector3(side * 8.35, 0.42 + shelf * 0.69, -3.4 + shelf * 0.4), shelf * 1.0, {}, 0.3)
+		_furn("lampRoundFloor", o + Vector3(side * 3.0, 0, -6.4))
+	_room_lamp("shul", o + Vector3(0, 3.7, -4.6))
+
+	o = ROOMS["police"]["origin"]
+	_furn("desk", o + Vector3(-1.4, 0, -5.6), 0.0, {"wood": Color(0.42, 0.44, 0.5)})
+	_furn("laptop", o + Vector3(-1.4, 1.08, -5.6), 0.0)
+	_furn("chairDesk", o + Vector3(-1.4, 0, -4.6), PI, {"carpet": Color(0.2, 0.25, 0.45)}, 0.24)
+	_furn("benchCushion", o + Vector3(-5.9, 0, 4.9), PI, {"wood": Color(0.42, 0.44, 0.5), "carpet": Color(0.2, 0.25, 0.45)})
+	_furn("trashcan", o + Vector3(3.2, 0, -2.2), 0.0, {}, 0.2)
+	_picture(o + Vector3(3.6, 2.7, -6.94), Vector2(1.4, 1.0), Color(0.6, 0.7, 0.9))
+	_clock(o + Vector3(-3.4, 3.0, -6.94))
+
+	o = ROOMS["build"]["origin"]
+	for k in 4:
+		_put("roads/construction-cone", o + Vector3(-3.0 + k * 1.6, 0, 3.6), 0.75, 0.0, {}, 0.0)
+	_put("survival/workbench", o + Vector3(8.6, 0, 1.6), 1.2, -PI * 0.5, {}, 0.0)
+	_put("survival/tool-shovel", o + Vector3(9.3, 0, -0.2), 1.5, 0.3, {}, 0.0)
+	_put("survival/resource-planks", o + Vector3(-8.6, 0, 2.6), 0.5, 0.4, {}, 0.0)
+	_put("survival/barrel", o + Vector3(-8.8, 0, 4.4), 1.1, 0.0, {}, 0.0)
+	_put("roads/construction-barrier", o + Vector3(3.6, 0, 4.6), 0.95, PI * 0.5, {}, 0.0)
+
+
+## A dark board on the back wall with the menu chalked on it.
+func _menu_board(pos: Vector3, title: String, lines: Array) -> void:
+	var high := 0.75 + lines.size() * 0.36
+	_box(Vector3(3.0, high + 0.2, 0.07), pos + Vector3(0, 0, 0.03), _mat(Color(0.42, 0.3, 0.2)))
+	_box(Vector3(2.8, high, 0.05), pos + Vector3(0, 0, 0.06), _mat(Color(0.12, 0.16, 0.15)))
+	for k in lines.size() + 1:
+		var l := Label3D.new()
+		l.text = _h(title if k == 0 else String(lines[k - 1]))
+		l.font = font
+		l.font_size = 46 if k == 0 else 30
+		l.pixel_size = 0.008
+		l.outline_size = 0
+		l.modulate = Color(1.0, 0.9, 0.55) if k == 0 else Color(0.95, 0.95, 0.9)
+		l.position = pos + Vector3(0, high * 0.5 - 0.3 - k * 0.36 - (0.08 if k > 0 else 0.0), 0.1)
+		add_child(l)
+
+
+## A sign hanging over an aisle of the shop.
+func _hang_sign(pos: Vector3, text: String, color: Color) -> void:
+	_box(Vector3(3.2, 0.7, 0.08), pos, _mat(color))
+	for sx: float in [-1.3, 1.3]:
+		_box(Vector3(0.03, 1.2, 0.03), pos + Vector3(sx, 0.95, 0), _mat(Color(0.3, 0.3, 0.32)))
+	var l := Label3D.new()
+	l.text = _h(text)
+	l.font = font
+	l.font_size = 52
+	l.pixel_size = 0.008
+	l.outline_size = 10
+	l.outline_modulate = color.darkened(0.5)
+	l.position = pos + Vector3(0, 0, 0.06)
+	add_child(l)
