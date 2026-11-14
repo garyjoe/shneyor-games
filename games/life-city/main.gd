@@ -97,6 +97,20 @@ const TRAFFIC_MODELS: Array[String] = ["sedan", "suv", "taxi", "van", "hatchback
 const LEAF_TREES: Array[String] = ["tree_default", "tree_oak", "tree_detailed", "tree_fat"]
 const PINE_TREES: Array[String] = ["tree_pineTallA", "tree_pineTallB", "tree_pineDefaultA", "tree_pineRoundC"]
 const GAS_PUMP := Vector3(15, 0, 5.6)
+## The kit building that stands in for each place: model, which way to turn it so that its door
+## faces the street, and how high on the front its name board hangs.
+const LOOKS := {
+	"home": ["commercial/building-b", PI, 5.2], "market": ["commercial/building-k", PI, 4.6], "cafe": ["commercial/building-h", PI, 5.0],
+	"work": ["commercial/building-l", PI, 5.0], "guns": ["commercial/building-g", PI, 5.0], "shul": ["commercial/building-e", PI, 5.0],
+	"music": ["commercial/building-c", PI, 5.0], "hall": ["commercial/building-j", PI, 5.0], "clinic": ["commercial/building-n", PI, 5.0],
+	"diner": ["commercial/building-i", PI, 5.0], "build": ["industrial/building-a", PI, 5.0], "police": ["commercial/building-d", PI, 5.0],
+}
+const HOUSES: Array[String] = ["suburban/building-type-a", "suburban/building-type-c", "suburban/building-type-e", "suburban/building-type-g",
+	"suburban/building-type-i", "suburban/building-type-j", "suburban/building-type-o", "suburban/building-type-s", "suburban/building-type-u",
+	"suburban/building-type-h", "suburban/building-type-p", "suburban/building-type-q"]
+const ROOFS: Array[Color] = [Color(0.74, 0.32, 0.22), Color(0.62, 0.27, 0.2), Color(0.82, 0.45, 0.26), Color(0.4, 0.45, 0.56), Color(0.56, 0.3, 0.24)]
+const BLOCKS: Array[String] = ["commercial/building-f", "commercial/building-l", "commercial/building-g", "commercial/building-m", "commercial/building-a",
+	"commercial/building-i", "commercial/building-d", "commercial/building-skyscraper-e", "commercial/building-j"]
 const SAVE_PATH := "user://life-city.cfg"
 
 enum State { MENU, PLAY, OVER }
@@ -318,6 +332,11 @@ var fps_frames := 0
 var prints: Array[MeshInstance3D] = []   # your last footprints; the oldest is reused
 var print_next := 0
 var pine_groups := {}
+var kit_cache := {}                  # kit models already read, ready to be stamped
+var kit_meshes := {}
+var kit_groups := {}                 # stretch of town -> the scenery mesh being put together there
+var palettes := {}
+var glass_mat: StandardMaterial3D    # window panes of the kit buildings; they light up at night
 var fps_label: Label
 var paint_mat: StandardMaterial3D   # one shared material for everything that is merged; colours live in the mesh
 var tex_cache := {}
@@ -409,6 +428,7 @@ func _ready() -> void:
 	_build_parking()
 	_build_donkey()
 	_merge_static()
+	_finish_scenery()
 	var gfx := ConfigFile.new()
 	if gfx.load("user://life-city-gfx.cfg") == OK:
 		quality = clampi(int(gfx.get_value("gfx", "quality", 2)), 0, 2)     # what this device managed last time
@@ -475,16 +495,25 @@ func _sign(text: String, pos: Vector3, size: int = 96) -> void:
 func _building(key: String, title: String, x: float, w: float, h: float, wall: Color, roof: Color,
 		open_from: float, open_to: float, z: float = -10.0) -> void:
 	var depth := 8.0
-	_box(Vector3(w, h, depth), Vector3(x, h * 0.5, z), _tex("brick" if key in ["work", "school", "build", "hall"] else "plaster", wall, 0.28))
-	_box(Vector3(w + 0.6, 0.4, depth + 0.6), Vector3(x, h + 0.2, z), _mat(roof))
-	_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
 	var front := z + depth * 0.5
-	_box(Vector3(1.5, 2.5, 0.12), Vector3(x, 1.25, front + 0.05), _mat(Color(0.3, 0.2, 0.12)))
-	var floors := int(h / 3.2)
-	for f in maxi(floors, 1):
-		for side: float in [-1.0, 1.0]:
-			_box(Vector3(1.6, 1.3, 0.1), Vector3(x + side * w * 0.3, 2.1 + f * 3.2, front + 0.05), window_mat)
-	_sign(title, Vector3(x, h + 1.4, front + 0.3))
+	var look: Array = LOOKS.get(key, [])
+	var own := _kit_size(look[0]) if not look.is_empty() else Vector3.ZERO
+	if own != Vector3.ZERO:
+		# A ready-made building, stretched a little to stand on this plot and painted in the place's colours.
+		h = own.y * (w / own.x + depth / own.z) * 0.5
+		_fit(look[0], Vector3(x, 0, z), Vector3(w, h, depth), look[1], {"wall": wall.lerp(Color.WHITE, 0.35), "warm": roof.lerp(Color.WHITE, 0.15), "green": roof.lerp(Color.WHITE, 0.15)})
+		_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
+		_shop_sign(title, Vector3(x, look[2], front), roof)
+	else:
+		_box(Vector3(w, h, depth), Vector3(x, h * 0.5, z), _tex("brick" if key in ["work", "school", "build", "hall"] else "plaster", wall, 0.28))
+		_box(Vector3(w + 0.6, 0.4, depth + 0.6), Vector3(x, h + 0.2, z), _mat(roof))
+		_solid(Vector3(w, h, depth), Vector3(x, h * 0.5, z))
+		_box(Vector3(1.5, 2.5, 0.12), Vector3(x, 1.25, front + 0.05), _mat(Color(0.3, 0.2, 0.12)))
+		var floors := int(h / 3.2)
+		for f in maxi(floors, 1):
+			for side: float in [-1.0, 1.0]:
+				_box(Vector3(1.6, 1.3, 0.1), Vector3(x + side * w * 0.3, 2.1 + f * 3.2, front + 0.05), window_mat)
+		_sign(title, Vector3(x, h + 1.4, front + 0.3))
 	# Door mat marks where to stand.
 	_box(Vector3(2.4, 0.04, 1.6), Vector3(x, 0.03, front + 1.3), _mat(roof.lightened(0.2)))
 	var p := Place.new()
@@ -495,6 +524,35 @@ func _building(key: String, title: String, x: float, w: float, h: float, wall: C
 	p.open_from = open_from
 	p.open_to = open_to
 	places.append(p)
+
+
+## A family house from the suburban kit on a plot `size` wide and deep, its door turned by `yaw`
+## (0 = facing south). False when the kit is missing, and the caller builds the plain box instead.
+func _house(pos: Vector3, size: Vector3, pick: int, wall: Color, yaw: float = 0.0) -> bool:
+	var path: String = HOUSES[pick % HOUSES.size()]
+	var own := _kit_size(path)
+	if own == Vector3.ZERO:
+		return false
+	var grow := (size.x / own.x + size.z / own.z) * 0.5
+	return _fit(path, pos, Vector3(size.x, own.y * grow, size.z), yaw,
+		{"wall": wall.lerp(Color.WHITE, 0.35), "green": ROOFS[(pick * 3 + 1) % ROOFS.size()], "green_from": 0.3})
+
+
+## A name board fixed flat on a shop front, `pos` being the middle of the wall it hangs on.
+func _shop_sign(text: String, pos: Vector3, color: Color) -> void:
+	var l := Label3D.new()
+	l.text = _h(text)
+	l.font = font
+	l.font_size = 72
+	l.pixel_size = 0.012
+	l.outline_size = 18
+	l.modulate = Color.WHITE
+	l.outline_modulate = Color(0.08, 0.08, 0.16)
+	l.position = pos + Vector3(0, 0, 0.34)
+	add_child(l)
+	var wide := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 72).x * 0.012 + 0.9
+	_box(Vector3(wide, 1.25, 0.16), pos + Vector3(0, 0, 0.2), _mat(color.darkened(0.25)))
+	_box(Vector3(wide + 0.24, 1.49, 0.1), pos + Vector3(0, 0, 0.15), _mat(Color(0.93, 0.92, 0.88)))
 
 
 func _tree(pos: Vector3) -> void:
@@ -569,6 +627,12 @@ func _build_world() -> void:
 	lamp_mat = _mat(Color(1.0, 0.95, 0.75))
 	lamp_mat.emission_enabled = true
 	lamp_mat.emission = Color(1.0, 0.9, 0.6)
+	glass_mat = StandardMaterial3D.new()
+	glass_mat.vertex_color_use_as_albedo = true
+	glass_mat.vertex_color_is_srgb = true
+	glass_mat.roughness = 0.25
+	glass_mat.emission_enabled = true
+	glass_mat.emission = Color(1.0, 0.82, 0.45)
 
 	# Ground, road, pavements.
 	_box(Vector3(500, 1, 260), Vector3(20, -0.5, 35), _tex("grass", Color(0.3, 0.5, 0.24), 0.11))
@@ -875,6 +939,7 @@ func _apply_daylight() -> void:
 	env.glow_enabled = glow > 0.6                         # bloom only for lamps at night; by day it made bright surfaces sparkle
 	lamp_mat.emission_energy_multiplier = glow * 3.0
 	window_mat.emission_energy_multiplier = glow * 1.4
+	glass_mat.emission_energy_multiplier = glow * 1.1
 
 
 # ----------------------------------------------------------------- life ----
@@ -3229,7 +3294,7 @@ func _tumble(n: Person, delta: float) -> bool:
 # ---------------------------------------------------- knockable objects ----
 
 ## A piece of street furniture: solid until a car hits it hard, then it tumbles.
-func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3D:
+func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array, kit: String = "", high: float = 0.0, tint: Dictionary = {}) -> RigidBody3D:
 	var body := RigidBody3D.new()
 	body.mass = mass
 	body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
@@ -3241,8 +3306,10 @@ func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3
 	cs.shape = shape
 	cs.position.y = size.y * 0.5
 	body.add_child(cs)
-	for part: Array in parts:
-		_box(part[0], part[1], part[2], body)
+	# A kit model when there is one; otherwise the plain boxes.
+	if kit == "" or _kit_node(kit, high, tint, body) == null:
+		for part: Array in parts:
+			_box(part[0], part[1], part[2], body)
 	add_child(body)
 	body.set_meta("home", body.transform)
 	props.append(body)
@@ -3250,9 +3317,18 @@ func _prop(pos: Vector3, size: Vector3, mass: float, parts: Array) -> RigidBody3
 
 
 func _lamp_post(pos: Vector3, reach: float) -> void:
-	var post := _prop(pos, Vector3(0.3, 4.3, 0.3), 45.0, [[Vector3(0.18, 4.2, 0.18), Vector3(0, 2.1, 0), _mat(Color(0.2, 0.2, 0.22))],
-		[Vector3(0.9, 0.25, 0.5), Vector3(0, 4.2, reach), lamp_mat]])
+	var post := _prop(pos, Vector3(0.3, 4.3, 0.3), 45.0, [])
 	post.set_meta("lamp", true)
+	var side := signf(reach)
+	var ready := _kit_node("roads/light-curved", 4.7, {}, post)
+	if ready != null:
+		# The kit lamp reaches north; turn it so that its head hangs over the road.
+		ready.rotation.y = PI if side > 0.0 else 0.0
+		ready.position.z = side * 0.6
+		_box(Vector3(0.26, 0.07, 0.62), Vector3(0, 4.33, side * 1.28), lamp_mat, post)
+	else:
+		_box(Vector3(0.18, 4.2, 0.18), Vector3(0, 2.1, 0), _mat(Color(0.2, 0.2, 0.22)), post)
+		_box(Vector3(0.9, 0.25, 0.5), Vector3(0, 4.2, reach), lamp_mat, post)
 
 
 func _knock_prop(body: RigidBody3D, dir: Vector3, impact: float) -> void:
@@ -3889,6 +3965,13 @@ func _thug_point(t: Person) -> Vector3:
 
 ## An apartment block with rows of windows. Only scenery.
 func _block(pos: Vector3, size: Vector3, color: Color) -> void:
+	var path: String = BLOCKS[int(absf(pos.x) / 3.0) % BLOCKS.size()]
+	var own := _kit_size(path)
+	if own != Vector3.ZERO:
+		size.y = own.y * (size.x / own.x + size.z / own.z) * 0.5
+		_fit(path, pos, size, PI, {"wall": color.lerp(Color.WHITE, 0.4)})
+		_solid(size, pos + Vector3(0, size.y * 0.5, 0))
+		return
 	_box(size, pos + Vector3(0, size.y * 0.5, 0), _tex("plaster" if int(pos.x) % 3 != 0 else "brick", color, 0.22))
 	_solid(size, pos + Vector3(0, size.y * 0.5, 0))
 	_box(Vector3(size.x + 0.4, 0.3, size.z + 0.4), pos + Vector3(0, size.y + 0.15, 0), _mat(color.darkened(0.3)))
@@ -3915,11 +3998,12 @@ func _build_town_extras() -> void:
 	# Houses south of the road, east of the park.
 	for k in 4:
 		var hp := Vector3(52 + k * 9.5, 0, 14)
-		_box(Vector3(7, 3.6, 6), hp + Vector3(0, 1.8, 0), _mat(palette[(k + 1) % 4]))
-		_box(Vector3(7.6, 0.4, 6.6), hp + Vector3(0, 3.8, 0), _mat(Color(0.6, 0.25, 0.2)))
-		_box(Vector3(1.3, 2.2, 0.1), hp + Vector3(0, 1.1, -3.03), _mat(Color(0.3, 0.2, 0.12)))
-		for sx: float in [-2.2, 2.2]:
-			_box(Vector3(1.4, 1.2, 0.1), hp + Vector3(sx, 2.0, -3.03), window_mat)
+		if not _house(hp, Vector3(7, 0, 6), k + 5, palette[(k + 1) % 4], PI):
+			_box(Vector3(7, 3.6, 6), hp + Vector3(0, 1.8, 0), _mat(palette[(k + 1) % 4]))
+			_box(Vector3(7.6, 0.4, 6.6), hp + Vector3(0, 3.8, 0), _mat(Color(0.6, 0.25, 0.2)))
+			_box(Vector3(1.3, 2.2, 0.1), hp + Vector3(0, 1.1, -3.03), _mat(Color(0.3, 0.2, 0.12)))
+			for sx: float in [-2.2, 2.2]:
+				_box(Vector3(1.4, 1.2, 0.1), hp + Vector3(sx, 2.0, -3.03), window_mat)
 		_solid(Vector3(7, 3.6, 6), hp + Vector3(0, 1.8, 0))
 		_tree(hp + Vector3(4.6, 0, 3.5))
 	# Zebra crossings.
@@ -3944,9 +4028,10 @@ func _build_town_extras() -> void:
 	# Traffic cones and crates near the building site, and bollards by the crossings.
 	for k in 6:
 		_prop(Vector3(64.5 + k * 1.6, 0, -1.2), Vector3(0.45, 0.7, 0.45), 4.0, [[Vector3(0.45, 0.08, 0.45), Vector3(0, 0.04, 0), _mat(Color(0.95, 0.45, 0.1))],
-			[Vector3(0.22, 0.6, 0.22), Vector3(0, 0.38, 0), _mat(Color(0.95, 0.45, 0.1))], [Vector3(0.24, 0.12, 0.24), Vector3(0, 0.45, 0), _mat(Color(0.95, 0.95, 0.95))]])
+			[Vector3(0.22, 0.6, 0.22), Vector3(0, 0.38, 0), _mat(Color(0.95, 0.45, 0.1))], [Vector3(0.24, 0.12, 0.24), Vector3(0, 0.45, 0), _mat(Color(0.95, 0.95, 0.95))]],
+			"roads/construction-cone", 0.75)
 	for k in 4:
-		_prop(Vector3(80.5 + (k % 2) * 1.0, 0, -6.2 - (k / 2) * 1.0), Vector3(0.9, 0.9, 0.9), 14.0, [[Vector3(0.9, 0.9, 0.9), Vector3(0, 0.45, 0), _mat(Color(0.62, 0.45, 0.25))]])
+		_prop(Vector3(80.5 + (k % 2) * 1.0, 0, -6.2 - (k / 2) * 1.0), Vector3(0.9, 0.9, 0.9), 14.0, [[Vector3(0.9, 0.9, 0.9), Vector3(0, 0.45, 0), _mat(Color(0.62, 0.45, 0.25))]], "survival/box", 0.9)
 	for x: float in [-46.0, 0.0, 66.0]:
 		_box(Vector3(3.0, 0.3, 0.9), Vector3(x, 0.15, -5.4), _mat(Color(0.4, 0.3, 0.2)))
 		for k in 5:
@@ -4289,11 +4374,12 @@ func _build_neighbourhood() -> void:
 	var doorsteps: Array[Vector3] = []
 	for k in 3:
 		var hp := Vector3(90 + k * 11.0, 0, -10)
-		_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k]))
-		_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
-		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
-		for sx: float in [-2.5, 2.5]:
-			_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
+		if not _house(hp, Vector3(8, 0, 7), k, palette[k]):
+			_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k]))
+			_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
+			_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+			for sx: float in [-2.5, 2.5]:
+				_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
 		_solid(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0))
 		doorsteps.append(hp + Vector3(1.8, 0, 5.0))
 	for k in 4:
@@ -4699,16 +4785,19 @@ func _is_school_day() -> bool:
 
 func _build_school() -> void:
 	var at := Vector3(126, 0, -10)
-	_box(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0), _tex("brick", Color(0.8, 0.62, 0.45), 0.28))
-	_box(Vector3(15.6, 0.4, 8.6), at + Vector3(0, 6.6, 0), _mat(Color(0.25, 0.4, 0.65)))
 	_solid(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0))
-	_box(Vector3(2.2, 2.6, 0.12), at + Vector3(0, 1.3, 4.05), _mat(Color(0.25, 0.4, 0.65)))
-	for f in 2:
-		for c in 4:
-			_box(Vector3(1.6, 1.3, 0.1), at + Vector3(-5.4 + c * 3.6 + (0.0 if c < 2 else 0.0), 2.1 + f * 3.0, 4.05), window_mat)
-	_sign("בית ספר", at + Vector3(0, 7.8, 4.3))
-	_box(Vector3(0.9, 0.9, 0.06), at + Vector3(0, 5.2, 4.06), _mat(Color(0.95, 0.8, 0.15)))       # the school emblem
-	_box(Vector3(0.5, 0.5, 0.07), at + Vector3(0, 5.2, 4.07), _mat(Color(0.12, 0.16, 0.38)))
+	if _fit("commercial/building-k", at, Vector3(15, 9.6, 8), PI, {"wall": Color(0.98, 0.86, 0.66), "warm": Color(0.3, 0.5, 0.85)}):
+		_shop_sign("בית ספר", at + Vector3(0, 4.9, 4.0), Color(0.25, 0.4, 0.65))
+	else:
+		_box(Vector3(15, 6.4, 8), at + Vector3(0, 3.2, 0), _tex("brick", Color(0.8, 0.62, 0.45), 0.28))
+		_box(Vector3(15.6, 0.4, 8.6), at + Vector3(0, 6.6, 0), _mat(Color(0.25, 0.4, 0.65)))
+		_box(Vector3(2.2, 2.6, 0.12), at + Vector3(0, 1.3, 4.05), _mat(Color(0.25, 0.4, 0.65)))
+		for f in 2:
+			for c in 4:
+				_box(Vector3(1.6, 1.3, 0.1), at + Vector3(-5.4 + c * 3.6 + (0.0 if c < 2 else 0.0), 2.1 + f * 3.0, 4.05), window_mat)
+		_sign("בית ספר", at + Vector3(0, 7.8, 4.3))
+		_box(Vector3(0.9, 0.9, 0.06), at + Vector3(0, 5.2, 4.06), _mat(Color(0.95, 0.8, 0.15)))       # the school emblem
+		_box(Vector3(0.5, 0.5, 0.07), at + Vector3(0, 5.2, 4.07), _mat(Color(0.12, 0.16, 0.38)))
 	_box(Vector3(3.0, 0.04, 1.6), SCHOOL_DOOR + Vector3(0, 0.03, 0), _mat(Color(0.95, 0.75, 0.2)))
 	var gate := Place.new()
 	gate.key = "school"
@@ -5030,9 +5119,10 @@ func _build_outskirts() -> void:
 	places.append(beach)
 
 	# --- The farm
-	_box(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4), _mat(Color(0.7, 0.18, 0.15)))             # barn
-	_box(Vector3(9.6, 0.5, 7.6), FARM + Vector3(-6, 5.2, 4), _mat(Color(0.35, 0.3, 0.28)))
-	_box(Vector3(2.6, 3.2, 0.1), FARM + Vector3(-6, 1.6, 0.47), _mat(Color(0.95, 0.93, 0.85)))
+	if not _fit("industrial/building-i", FARM + Vector3(-6, 0, 4), Vector3(9, 6.4, 7), 0.0, {"wall": Color(0.82, 0.24, 0.2), "dark": Color(0.36, 0.3, 0.28)}):
+		_box(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4), _mat(Color(0.7, 0.18, 0.15)))             # barn
+		_box(Vector3(9.6, 0.5, 7.6), FARM + Vector3(-6, 5.2, 4), _mat(Color(0.35, 0.3, 0.28)))
+		_box(Vector3(2.6, 3.2, 0.1), FARM + Vector3(-6, 1.6, 0.47), _mat(Color(0.95, 0.93, 0.85)))
 	_solid(Vector3(9, 5, 7), FARM + Vector3(-6, 2.5, 4))
 	_box(Vector3(14, 0.04, 10), FARM + Vector3(7, 0.02, 4), _mat(Color(0.5, 0.42, 0.25)))          # paddock
 	_fence(FARM + Vector3(0, 0, -1), FARM + Vector3(14, 0, -1))
@@ -5071,11 +5161,12 @@ func _build_outskirts() -> void:
 	var palette: Array[Color] = [Color(0.82, 0.74, 0.6), Color(0.68, 0.76, 0.8), Color(0.8, 0.66, 0.62), Color(0.72, 0.78, 0.66)]
 	for k in 5:
 		var hp := Vector3([-112.0, -126.0, -140.0, 148.0, 162.0][k], 0, -10)
-		_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k % 4]))
-		_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
-		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
-		for sx: float in [-2.5, 2.5]:
-			_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
+		if not _house(hp, Vector3(8, 0, 7), k + 3, palette[k % 4]):
+			_box(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0), _mat(palette[k % 4]))
+			_box(Vector3(8.6, 0.4, 7.6), hp + Vector3(0, 4.0, 0), _mat(Color(0.55, 0.22, 0.18)))
+			_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+			for sx: float in [-2.5, 2.5]:
+				_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1, 3.53), window_mat)
 		_solid(Vector3(8, 3.8, 7), hp + Vector3(0, 1.9, 0))
 		_tree(hp + Vector3(5.5, 0, 2.0))
 
@@ -5247,12 +5338,13 @@ func _build_north() -> void:
 			continue                         # the police station stands here
 		var hp := Vector3(x, 0, NORTH_Z - 10.5)
 		var tall := 3.8 + (count % 3) * 1.6
-		_box(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0), _mat(palette[count % 5]))
-		_box(Vector3(9.6, 0.4, 7.6), hp + Vector3(0, tall + 0.2, 0), _mat(Color(0.55, 0.22, 0.18) if count % 2 == 0 else Color(0.3, 0.32, 0.38)))
-		_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
-		for f in int(tall / 3.0):
-			for sx: float in [-2.8, 2.8]:
-				_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1 + f * 3.0, 3.53), window_mat)
+		if not _house(hp, Vector3(9, 0, 7), count, palette[count % 5]):
+			_box(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0), _mat(palette[count % 5]))
+			_box(Vector3(9.6, 0.4, 7.6), hp + Vector3(0, tall + 0.2, 0), _mat(Color(0.55, 0.22, 0.18) if count % 2 == 0 else Color(0.3, 0.32, 0.38)))
+			_box(Vector3(1.3, 2.3, 0.1), hp + Vector3(0, 1.15, 3.53), _mat(Color(0.3, 0.2, 0.12)))
+			for f in int(tall / 3.0):
+				for sx: float in [-2.8, 2.8]:
+					_box(Vector3(1.5, 1.2, 0.1), hp + Vector3(sx, 2.1 + f * 3.0, 3.53), window_mat)
 		_solid(Vector3(9, tall, 7), hp + Vector3(0, tall * 0.5, 0))
 		if count % 2 == 0:
 			_tree(hp + Vector3(6.3, 0, 1.5))
@@ -6678,3 +6770,255 @@ func _balaclava(root: Node3D) -> void:
 	for sx: float in [-0.055, 0.055]:
 		_ball(0.014, Vector3(sx, 1.765, 0.216), _mat(Color(0.1, 0.08, 0.07)), root, Vector3(1.0, 1.0, 0.4))
 	_limit(root, 70.0)
+
+
+# --------------------------------------------------- ready-made scenery ----
+# Models from Kenney's kits (see models/LICENSE.txt). Each one is read once into plain arrays, with its
+# colours taken from the kit's palette picture, and is then stamped as often as needed into one mesh per
+# stretch of town. A whole street of detailed buildings costs a handful of draw calls that way.
+
+## A kit model as bare triangles: "v" points, "n" normals, "c" colours, the same again for its window
+## glass ("gv", "gn", "gc"), and "box", the space it fills. Empty when the file is missing.
+func _kit(path: String, tint: Dictionary = {}) -> Dictionary:
+	var key := path if tint.is_empty() else path + str(tint)
+	if kit_cache.has(key):
+		return kit_cache[key]
+	var data := {}
+	var file := ""
+	for ext: String in [".glb", ".fbx"]:
+		if ResourceLoader.exists("res://models/" + path + ext):
+			file = "res://models/" + path + ext
+	var scene := load(file) as PackedScene if file != "" else null
+	if scene != null:
+		data = {"v": PackedVector3Array(), "n": PackedVector3Array(), "c": PackedColorArray(),
+			"gv": PackedVector3Array(), "gn": PackedVector3Array(), "gc": PackedColorArray(), "box": AABB()}
+		var node := scene.instantiate()
+		_kit_read(node, Transform3D.IDENTITY, data, tint)
+		node.free()
+	kit_cache[key] = data
+	return data
+
+
+func _kit_read(node: Node, xf: Transform3D, data: Dictionary, tint: Dictionary) -> void:
+	var here := xf
+	if node is Node3D:
+		here = xf * (node as Node3D).transform
+	var mi := node as MeshInstance3D
+	if mi != null and mi.mesh != null:
+		var turn := Transform3D(here.basis.inverse().transposed(), Vector3.ZERO)
+		var split: bool = tint.get("glass", true)
+		var low_green: float = tint.get("green_from", -1000.0)   # below this height the kit's greens are plants, not roof
+		for k in mi.mesh.get_surface_count():
+			var arrays := mi.mesh.surface_get_arrays(k)
+			var verts: PackedVector3Array = here * (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array)
+			var normals: PackedVector3Array = turn * (arrays[Mesh.ARRAY_NORMAL] as PackedVector3Array)
+			var mat := mi.get_active_material(k) as BaseMaterial3D
+			var base := mat.albedo_color if mat != null else Color(0.6, 0.6, 0.6)
+			var named := mat.resource_name if mat != null else ""
+			var img: Image = _palette(mat.albedo_texture) if mat != null and mat.albedo_texture != null else null
+			var cols := PackedColorArray()
+			cols.resize(verts.size())
+			if img != null and arrays[Mesh.ARRAY_TEX_UV] != null:
+				var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+				var w := img.get_width()
+				var h := img.get_height()
+				for i in verts.size():
+					var c := img.get_pixel(clampi(int(fposmod(uvs[i].x, 1.0) * w), 0, w - 1), clampi(int(fposmod(uvs[i].y, 1.0) * h), 0, h - 1)) * base
+					cols[i] = c if tint.is_empty() or (c.s > 0.3 and verts[i].y < low_green) else _retint(c, tint, named)
+			else:
+				cols.fill(base if tint.is_empty() else _retint(base, tint, named))
+			var box := AABB(verts[0], Vector3.ZERO)
+			for p in verts:
+				box = box.expand(p)
+			data["box"] = box if (data["v"] as PackedVector3Array).is_empty() and (data["gv"] as PackedVector3Array).is_empty() else (data["box"] as AABB).merge(box)
+			var index := PackedInt32Array()
+			if arrays[Mesh.ARRAY_INDEX] != null:
+				index = arrays[Mesh.ARRAY_INDEX]
+			else:
+				index.resize(verts.size())
+				for i in verts.size():
+					index[i] = i
+			var v: PackedVector3Array = data["v"]
+			var n: PackedVector3Array = data["n"]
+			var c: PackedColorArray = data["c"]
+			var gv: PackedVector3Array = data["gv"]
+			var gn: PackedVector3Array = data["gn"]
+			var gc: PackedColorArray = data["gc"]
+			for t in range(0, index.size() - 2, 3):
+				var first := cols[index[t]]
+				var glass := split and first.b > 0.62 and first.b > first.r + 0.12 and first.g > 0.42
+				for j in 3:
+					var i := index[t + j]
+					if glass:
+						gv.append(verts[i])
+						gn.append(normals[i])
+						gc.append(cols[i])
+					else:
+						v.append(verts[i])
+						n.append(normals[i])
+						c.append(cols[i])
+			data["v"] = v
+			data["n"] = n
+			data["c"] = c
+			data["gv"] = gv
+			data["gn"] = gn
+			data["gc"] = gc
+	for child in node.get_children():
+		_kit_read(child, here, data, tint)
+
+
+## The pixels of a kit's palette picture.
+func _palette(tex: Texture2D) -> Image:
+	if not palettes.has(tex):
+		var img := tex.get_image()
+		if img != null and img.is_compressed():
+			img.decompress()
+		palettes[tex] = img
+	return palettes[tex]
+
+
+## Repaint a kit colour. "wall" replaces the kit's white walls, "dark" its slate roofs and trim,
+## "green" its turquoise-green (roof tiles, awnings, leaves), "warm" its orange awnings, and a
+## material's own name replaces that whole material. The kit's light and shade are kept.
+func _retint(c: Color, tint: Dictionary, named: String) -> Color:
+	if tint.has(named):
+		return tint[named]
+	var shade := c.v
+	if c.s < 0.22 and shade > 0.7:
+		if tint.has("wall"):
+			var wall: Color = tint["wall"]
+			return Color(wall.r * shade, wall.g * shade, wall.b * shade)
+	elif c.s < 0.4 and shade < 0.62:
+		if tint.has("dark"):
+			var dark: Color = tint["dark"]
+			var k := clampf(shade / 0.4, 0.5, 1.5)
+			return Color(dark.r * k, dark.g * k, dark.b * k)
+	elif c.h > 0.34 and c.h < 0.5 and c.s > 0.3:
+		if tint.has("green"):
+			var green: Color = tint["green"]
+			var k := clampf(shade / 0.8, 0.5, 1.2)
+			return Color(green.r * k, green.g * k, green.b * k)
+	elif c.h > 0.03 and c.h < 0.14 and c.s > 0.5:
+		if tint.has("warm"):
+			var warm: Color = tint["warm"]
+			return Color(warm.r * shade, warm.g * shade, warm.b * shade)
+	return c
+
+
+## How big a kit model is before any scaling (zero when it is missing).
+func _kit_size(path: String) -> Vector3:
+	var data := _kit(path)
+	return (data["box"] as AABB).size if not data.is_empty() else Vector3.ZERO
+
+
+## Where a model goes so that the middle of its base stands on `pos`.
+func _kit_xf(data: Dictionary, pos: Vector3, scale: Vector3, yaw: float) -> Transform3D:
+	var box: AABB = data["box"]
+	var foot := Vector3(box.position.x + box.size.x * 0.5, box.position.y, box.position.z + box.size.z * 0.5)
+	return Transform3D(Basis(Vector3.UP, yaw) * Basis.from_scale(scale), pos) * Transform3D(Basis.IDENTITY, -foot)
+
+
+## Bake one copy of a model into the scenery. `far` is how far away it is still drawn (0 = always).
+func _stamp(data: Dictionary, xf: Transform3D, far: float) -> void:
+	var at := xf * (data["box"] as AABB).get_center()
+	var key := "%d|%d|%d" % [int(floor(at.x / 45.0)), int(floor(at.z / 45.0)), int(far)]
+	if not kit_groups.has(key):
+		kit_groups[key] = [PackedVector3Array(), PackedVector3Array(), PackedColorArray(),
+			PackedVector3Array(), PackedVector3Array(), PackedColorArray(), far]
+	var group: Array = kit_groups[key]
+	var turn := Transform3D(xf.basis.inverse().transposed(), Vector3.ZERO)
+	for part in 2:
+		var from: PackedVector3Array = data["v" if part == 0 else "gv"]
+		if from.is_empty():
+			continue
+		var v: PackedVector3Array = group[part * 3]
+		var n: PackedVector3Array = group[part * 3 + 1]
+		var c: PackedColorArray = group[part * 3 + 2]
+		v.append_array(xf * from)
+		n.append_array(turn * (data["n" if part == 0 else "gn"] as PackedVector3Array))
+		c.append_array(data["c" if part == 0 else "gc"])
+		group[part * 3] = v
+		group[part * 3 + 1] = n
+		group[part * 3 + 2] = c
+
+
+## Stand a model on the ground at `pos`, `high` metres tall. False when the model is missing.
+func _put(path: String, pos: Vector3, high: float, yaw: float = 0.0, tint: Dictionary = {}, far: float = 110.0) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var s := high / maxf((data["box"] as AABB).size.y, 0.001)
+	_stamp(data, _kit_xf(data, pos, Vector3(s, s, s), yaw), far)
+	return true
+
+
+## The same, sized by its width (the model's own left-to-right) instead of its height.
+func _put_wide(path: String, pos: Vector3, wide: float, yaw: float = 0.0, tint: Dictionary = {}, far: float = 110.0) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var s := wide / maxf((data["box"] as AABB).size.x, 0.001)
+	_stamp(data, _kit_xf(data, pos, Vector3(s, s, s), yaw), far)
+	return true
+
+
+## Stretch a model to fill a box exactly: `size` is its width, height and depth before turning.
+func _fit(path: String, pos: Vector3, size: Vector3, yaw: float = 0.0, tint: Dictionary = {}, far: float = 0.0) -> bool:
+	var data := _kit(path, tint)
+	if data.is_empty():
+		return false
+	var own: Vector3 = (data["box"] as AABB).size
+	_stamp(data, _kit_xf(data, pos, Vector3(size.x / maxf(own.x, 0.001), size.y / maxf(own.y, 0.001), size.z / maxf(own.z, 0.001)), yaw), far)
+	return true
+
+
+## A model as a piece of its own that can move, `high` metres tall with the middle of its base at the
+## node's origin. Null when the model is missing.
+func _kit_node(path: String, high: float, tint: Dictionary = {}, parent: Node = null) -> Node3D:
+	var whole := tint.duplicate()
+	whole["glass"] = false
+	var data := _kit(path, whole)
+	if data.is_empty():
+		return null
+	var key := path + str(whole)
+	if not kit_meshes.has(key):
+		kit_meshes[key] = _soup(data["v"], data["n"], data["c"])
+	var mi := MeshInstance3D.new()
+	mi.mesh = kit_meshes[key]
+	mi.material_override = _paint()
+	var s := high / maxf((data["box"] as AABB).size.y, 0.001)
+	mi.transform = _kit_xf(data, Vector3.ZERO, Vector3(s, s, s), 0.0)
+	var holder := Node3D.new()
+	holder.add_child(mi)
+	if parent != null:
+		parent.add_child(holder)
+	return holder
+
+
+func _soup(v: PackedVector3Array, n: PackedVector3Array, c: PackedColorArray) -> ArrayMesh:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v
+	arrays[Mesh.ARRAY_NORMAL] = n
+	arrays[Mesh.ARRAY_COLOR] = c
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+## Turn everything that was stamped into real meshes: one for the solid parts and one for the glass.
+func _finish_scenery() -> void:
+	for key: String in kit_groups:
+		var group: Array = kit_groups[key]
+		for part in 2:
+			var v: PackedVector3Array = group[part * 3]
+			if v.is_empty():
+				continue
+			var mi := MeshInstance3D.new()
+			mi.mesh = _soup(v, group[part * 3 + 1], group[part * 3 + 2])
+			mi.material_override = _paint() if part == 0 else glass_mat
+			if float(group[6]) > 0.0:
+				mi.visibility_range_end = float(group[6])
+				mi.visibility_range_end_margin = 6.0
+			add_child(mi)
+	kit_groups.clear()
