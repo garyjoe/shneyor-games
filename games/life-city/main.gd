@@ -118,6 +118,9 @@ const FOODS := {0: ["food/loaf", 0.34], 1: ["food/cheese", 0.2], 2: ["food/carto
 	6: ["food/turkey", 0.3], 7: ["food/chocolate", 0.06], 8: ["food/meat-raw", 0.16], 9: ["food/loaf-round", 0.24], 10: ["food/wine-red", 0.6],
 	11: ["food/bag-flat", 0.18], 12: ["food/banana", 0.2], 13: ["food/tomato", 0.28], 14: ["food/can-small", 0.2], 15: ["food/fish", 0.26],
 	16: ["food/cake", 0.24]}
+const DAWN := Vector3(-70, 0, 84)     # Dawn Hill: the empty hill in the western forest where you found your own place
+const DAWN_H := 4.0
+const SPRING := Vector3(-22, 0, 93)      # the hidden spring in the forest
 const SAVE_PATH := "user://life-city.cfg"
 
 enum State { MENU, PLAY, OVER }
@@ -343,6 +346,46 @@ var kit_cache := {}                  # kit models already read, ready to be stam
 var kit_meshes := {}
 var kit_groups := {}                 # stretch of town -> the scenery mesh being put together there
 var palettes := {}
+# --- action: emergencies, treasure, fishing, the race
+var quest := 0                       # how far along the story you are (an index into QUEST)
+var geula := 0.0                     # the redemption meter, 0..100: it fills with building and kindness
+var redeemed := false
+var q_t := 0.0
+var q_count := 0
+var q_told := 0.0
+var q_spawned := 0
+var q_things: Array[Node] = []       # what the current step put in the world
+var q_follow: Array = []             # whoever is walking behind you: [node, person or null]
+var sites := {}                      # each thing you build on Dawn Hill, hidden until it is built
+var quest_label: Label
+var quest_light: MeshInstance3D
+var quest_mark: Label3D
+var story_card: Label
+var story_queue: Array = []
+var story_t := 0.0
+var carry_node: Node3D
+var inspector: Person
+var rabbi: Person
+var party: Array[Person] = []
+var party_t := 0.0
+var hero := 0                        # stars earned by helping; they give you a rank in town
+var best_race := 0.0
+var mission := {}                    # the emergency under way ("kind", "time", ...); empty when all is calm
+var mission_wait := 22.0             # seconds until the next one
+var last_kind := ""
+var mission_label: Label
+var call_light: MeshInstance3D       # a column of light over the place where you are needed
+var actors: Array[Node] = []         # whatever belongs to the emergency; cleared away when it ends
+var coins: Array[Node3D] = []
+var coins_left := 0
+var digs: Array[Node3D] = []
+var dig_t := 0.0
+var hose: CPUParticles3D
+var fish_state := 0                  # 0 not fishing, 1 waiting for a bite, 2 a fish is on the hook
+var fish_t := 0.0
+var fish_spot := Vector3.ZERO
+var bobber: Node3D
+var race_gate := Vector3(-70, 0, 2.5)
 var room_lights := {}                # room -> its ceiling lamps; only the room you are in is lit
 var shade_mat: StandardMaterial3D    # lampshades that always glow
 var pane_mat: StandardMaterial3D     # daylight in an indoor window
@@ -439,6 +482,8 @@ func _ready() -> void:
 	_build_donkey()
 	_merge_static()
 	_finish_scenery()
+	_build_action()
+	_build_quest()
 	var gfx := ConfigFile.new()
 	if gfx.load("user://life-city-gfx.cfg") == OK:
 		quality = clampi(int(gfx.get_value("gfx", "quality", 2)), 0, 2)     # what this device managed last time
@@ -1015,12 +1060,13 @@ func _skip(hours: float, mode: String) -> void:
 
 
 func _new_day() -> void:
-	if (day - 1) % RENT_DAYS == 0:
+	if (day - 1) % RENT_DAYS == 0 and not redeemed:
 		rent_owed += RENT
 		_toast("הגיע הזמן לחדש שכר דירה: ₪%d. משלמים בדלת של הבית." % rent_owed)
 		_play("alarm")
 	_family_day()
 	_reset_props()
+	_fresh_treasure()
 	_save()
 
 
@@ -1464,6 +1510,8 @@ func _physics_process(delta: float) -> void:
 			_toast("המים כאן כבר עמוקים. שוחים רק ליד המציל." if player.position.z <= NORTH_LIMIT + 0.05 else "כאן נגמרת העיר. הגדר סוגרת את הדרך.")
 	_update_focus()
 	_update_forest(delta)
+	_update_action(delta)
+	_update_quest(delta)
 	_update_hud()
 
 
@@ -1599,6 +1647,11 @@ func _new_game() -> void:
 	if herding:
 		_stop_herd(false)
 	owned.assign([true, false, false, false, false])
+	hero = 0
+	best_race = 0.0
+	quest = 0
+	geula = 0.0
+	redeemed = false
 	hill_me = false
 	hill_gear.visible = false
 	day = 1
@@ -1662,6 +1715,11 @@ func _continue_game() -> void:
 	has_rifle = bool(cfg.get_value("life", "rifle", false))
 	has_can = bool(cfg.get_value("life", "can", false))
 	hill_me = bool(cfg.get_value("life", "hill_me", false))
+	hero = int(cfg.get_value("life", "hero", 0))
+	quest = clampi(int(cfg.get_value("life", "quest", 0)), 0, QUEST.size())
+	geula = float(cfg.get_value("life", "geula", 0.0))
+	redeemed = bool(cfg.get_value("life", "redeemed", false))
+	best_race = float(cfg.get_value("life", "best_race", 0.0))
 	var had: Array = cfg.get_value("life", "owned", [])
 	for k in owned.size():
 		owned[k] = k == 0 or (k < had.size() and bool(had[k]))
@@ -1693,6 +1751,10 @@ func _continue_game() -> void:
 
 
 func _begin() -> void:
+	_clear_mission()
+	mission_wait = 22.0
+	_fresh_treasure()
+	_quest_restore()
 	state = State.PLAY
 	busy = false
 	near = null
@@ -1714,7 +1776,8 @@ func _save() -> void:
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
 			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["family", family_joy], ["candles", candles_day], ["kiddush", kiddush_day],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading], ["car_damage", car_damage],
-			["can", has_can], ["car_model", car_model], ["hill_me", hill_me], ["owned", owned]]:
+			["can", has_can], ["car_model", car_model], ["hill_me", hill_me], ["owned", owned],
+			["hero", hero], ["best_race", best_race], ["quest", quest], ["geula", geula], ["redeemed", redeemed]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
 
@@ -2098,6 +2161,13 @@ func _build_sounds() -> void:
 		"skid": _tone(950, 700, 0.35, 0.22, 0.9),
 		"honk": _tone(430, 430, 0.4, 0.35),
 		"step": _tone(110, 70, 0.05, 0.035, 0.35),      # a soft pad, barely there
+		"coin": _tone(1250, 1900, 0.13, 0.2),
+		"win": _tone(620, 1320, 0.55, 0.3),
+		"lose": _tone(330, 110, 0.75, 0.3),
+		"splash": _tone(520, 180, 0.3, 0.3, 0.8),
+		"hiss": _tone(900, 600, 0.25, 0.12, 0.95),
+		"dig": _tone(160, 90, 0.18, 0.4, 0.7),
+		"shofar": _tone(300, 455, 1.9, 0.4),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -2321,6 +2391,8 @@ func _interact(p: Place) -> void:
 			_take_parcel()
 		"parcel_out":
 			_drop_parcel()
+		"fish":
+			_fish(p)
 		_:
 			_open_panel(p)
 
@@ -2580,6 +2652,10 @@ func _build_forest() -> void:
 			continue                       # keep a path in from the sign
 		if pos.x > 87.0 and pos.x < 157.0 and pos.z < 46.5:
 			continue                       # the hill stands here
+		if pos.distance_to(SPRING) < 6.5:
+			continue
+		if pos.distance_to(DAWN) < 27.5:
+			continue                       # and Dawn Hill is bare, waiting for you
 		_pine(pos)
 	for k in 20:
 		_make_animal(k < 9)
@@ -4502,6 +4578,8 @@ func _talk(n: Person) -> void:
 		return
 	n.talked_day = day
 	n.level += 1
+	_quest_event("talk")
+	_bless(1.0)
 	if n.level == 1:
 		_say(n, "נעים מאוד, אני %s!" % n.name, 4.0)
 		_toast("הכרת את %s. דברו שוב בימים הבאים כדי להתיידד." % n.name)
@@ -4824,6 +4902,7 @@ func _pray() -> void:
 	_time_skip("תפילת %s..." % names[part], func() -> void:
 		_skip(1.0 if shabbat else 0.4, "awake")
 		health = minf(health + (6.0 if shabbat else 2.0), 100.0)
+		_bless(2.0)
 		_toast(("התפללת %s בבית הכנסת. שבת שלום!" if shabbat else "התפללת %s בבית הכנסת.") % names[part]))
 
 
@@ -6541,6 +6620,7 @@ func _hill_job(doing: String, done: String, pay: int, thanks: String) -> void:
 	_time_skip(doing, func() -> void:
 		_skip(1.0, "work")
 		money += pay
+		_quest_event("hillwork")
 		_play("pay")
 		_toast(done % pay)
 		for n in npcs:
@@ -6680,6 +6760,10 @@ func _merge_static() -> void:
 
 ## Height of the ground. Flat everywhere except the hill: a flat top with steep sides and one road up from the west.
 func _ground_y(x: float, z: float) -> float:
+	var out := Vector2(x - DAWN.x, z - DAWN.z).length()
+	if out < 26.0:
+		var rise := clampf((26.0 - out) / 9.0, 0.0, 1.0)
+		return DAWN_H * rise * rise * (3.0 - 2.0 * rise)
 	if x < 76.0 or x > 157.0 or z < 5.0 or z > 46.5:
 		return 0.0
 	var dx := maxf(maxf(94.0 - x, x - 150.0), 0.0)
@@ -6756,13 +6840,13 @@ func _follow_ground() -> void:
 			if n.root == null or n.air or n.lying > 0.0:
 				continue
 			var at := n.root.position
-			if at.x > 76.0 and at.x < 157.0 and at.z > 5.0 and at.z < 46.5:
+			if (at.x > 76.0 and at.x < 157.0 and at.z > 5.0 and at.z < 46.5) or at.distance_to(DAWN) < 30.0:
 				n.root.position.y = _ground_y(at.x, at.z)
 			elif at.y > 0.0 and at.y < HILL_H + 0.5 and at.z > -100.0:
 				n.root.position.y = 0.0
 	for a in animals:
 		var at := a.node.position
-		if at.x > 76.0 and at.x < 157.0 and at.z < 46.5:
+		if (at.x > 76.0 and at.x < 157.0 and at.z < 46.5) or Vector3(at.x, 0, at.z).distance_to(DAWN) < 30.0:
 			a.node.position.y = _ground_y(at.x, at.z)
 
 
@@ -7095,6 +7179,7 @@ func _stop_herd(done: bool) -> void:
 			if not done:
 				r.node.position = PEN + Vector3(rng.randf_range(-5, 5), 0, rng.randf_range(-5, 5))
 	if done:
+		_quest_event("hillwork")
 		money += 40
 		family_joy = minf(family_joy + 3.0, 100.0)
 		_play("pay")
@@ -7461,7 +7546,7 @@ func _dress_town() -> void:
 		_put(flowers[k % flowers.size()], Vector3(4 + cos(angle) * 5.7, 0, 14 + sin(angle) * 5.7), 0.7, angle, leaf, 70.0)
 
 	# --- The forest floor: logs, stumps, mushrooms, stones and undergrowth, and a camp by the picnic corner.
-	var glade: Array = [[PICNIC, 6.5], [Vector3(122, 0, 26), 40.0], [Vector3(0, 0, FOREST_Z + 4.0), 5.0]]
+	var glade: Array = [[DAWN, 27.0], [SPRING, 6.0], [PICNIC, 6.5], [Vector3(122, 0, 26), 40.0], [Vector3(0, 0, FOREST_Z + 4.0), 5.0]]
 	_scatter(["nature/log", "nature/log_large", "nature/stump_round", "nature/stump_old", "nature/log_stack"], 70, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 1.3, 2.4, 70.0, glade)
 	_scatter(["nature/mushroom_red", "nature/mushroom_redGroup", "nature/mushroom_tan", "nature/mushroom_tanGroup"], 110, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.35, 0.6, 45.0, glade)
 	_scatter(stones, 70, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.8, 2.4, 90.0, glade)
@@ -7788,3 +7873,1370 @@ func _hang_sign(pos: Vector3, text: String, color: Color) -> void:
 	l.outline_modulate = color.darkened(0.5)
 	l.position = pos + Vector3(0, 0, 0.06)
 	add_child(l)
+
+
+# ------------------------------------------------------------- action ----
+# There is always something going on: emergencies that need you right now, coins and gems lying about,
+# treasure to dig up, fish to catch and a race round the town. Helping earns money and hero stars.
+
+const RANKS: Array[String] = ["תושב חדש", "שכן טוב", "מתנדב מסור", "גיבור השכונה", "אגדת העיר"]
+const RANK_AT: Array[int] = [0, 3, 8, 15, 25]
+const KINDS: Array[String] = ["fire", "injured", "child", "thief", "stranded", "sheep", "drowning", "delivery"]
+const SHOP_FRONTS: Array[float] = [-91.0, -74.0, -58.0, -40.0, -24.0, -8.0, 8.0, 24.0, 40.0, 56.0, 72.0]
+const DOORSTEPS: Array[Vector3] = [Vector3(91.8, 0, -5.0), Vector3(102.8, 0, -5.0), Vector3(113.8, 0, -5.0), Vector3(-112, 0, -5.0),
+	Vector3(-126, 0, -5.0), Vector3(148, 0, -5.0), Vector3(53.6, 0, 9.6), Vector3(72.6, 0, 9.6)]
+const RACE: Array[Vector3] = [Vector3(-20, 0, 2.5), Vector3(40, 0, 2.5), Vector3(82, 0, -6), Vector3(82, 0, -40), Vector3(30, 0, -44),
+	Vector3(-47.75, 0, -40), Vector3(-47.75, 0, -6), Vector3(-70, 0, 2.5)]
+
+
+func _rank() -> String:
+	var at := 0
+	for k in RANK_AT.size():
+		if hero >= RANK_AT[k]:
+			at = k
+	return RANKS[at]
+
+
+func _glow(color: Color, energy: float = 1.5) -> StandardMaterial3D:
+	var m := _mat(color)
+	m.emission_enabled = true
+	m.emission = color
+	m.emission_energy_multiplier = energy
+	return m
+
+
+func _build_action() -> void:
+	mission_label = _label(30, Color(1.0, 0.93, 0.6))
+	mission_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 20)
+	mission_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	mission_label.position.y = 222.0
+	hud.add_child(mission_label)
+	# The call_light: a tall shaft of light that shows where to run.
+	var shaft := CylinderMesh.new()
+	shaft.top_radius = 0.5
+	shaft.bottom_radius = 0.9
+	shaft.height = 26.0
+	shaft.radial_segments = 8
+	call_light = MeshInstance3D.new()
+	call_light.mesh = shaft
+	var light := _glow(Color(1.0, 0.85, 0.2), 2.2)
+	light.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	light.albedo_color.a = 0.32
+	light.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	call_light.material_override = light
+	call_light.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	call_light.visible = false
+	add_child(call_light)
+	# Water from the fire hose.
+	hose = _smoke(Color(0.55, 0.8, 1.0), 0.45, 40)
+	hose.gravity = Vector3(0, -6.0, 0)
+	hose.initial_velocity_min = 9.0
+	hose.initial_velocity_max = 11.0
+	hose.spread = 8.0
+	hose.emitting = false
+	# Coins all over town and gems in its far corners. They come back every morning.
+	var spots := RandomNumberGenerator.new()
+	spots.seed = 20240614
+	var gold := _glow(Color(1.0, 0.8, 0.15), 0.7)
+	gold.metallic = 0.8
+	gold.roughness = 0.3
+	var disc := CylinderMesh.new()
+	disc.top_radius = 0.38
+	disc.bottom_radius = 0.38
+	disc.height = 0.09
+	disc.radial_segments = 14
+	var areas: Array = [[Vector2(WEST + 6, -5.0), Vector2(EAST - 6, -2.6), 16], [Vector2(WEST + 6, 5.2), Vector2(EAST - 6, 6.2), 12],
+		[Vector2(-44, 9), Vector2(46, 33), 12], [Vector2(-145, FOREST_Z + 3), Vector2(185, FOREST_END - 3), 22],
+		[Vector2(WEST + 6, SEA_Z - 9), Vector2(EAST - 6, SEA_Z - 1.5), 10], [Vector2(WEST + 6, NORTH_Z + 3.6), Vector2(EAST - 6, NORTH_Z + 4.8), 8],
+		[Vector2(97, 15), Vector2(147, 41), 6]]
+	for area: Array in areas:
+		for k in int(area[2]):
+			var at := Vector3(spots.randf_range((area[0] as Vector2).x, (area[1] as Vector2).x), 0, spots.randf_range((area[0] as Vector2).y, (area[1] as Vector2).y))
+			var coin := MeshInstance3D.new()
+			coin.mesh = disc
+			coin.material_override = gold
+			coin.rotation.x = PI * 0.5
+			coin.position = at + Vector3(0, _ground_y(at.x, at.z) + 1.0, 0)
+			coin.visibility_range_end = 70.0
+			coin.set_meta("worth", 5)
+			add_child(coin)
+			coins.append(coin)
+	var jewel := SphereMesh.new()
+	jewel.radius = 0.36
+	jewel.height = 0.95
+	jewel.radial_segments = 4
+	jewel.rings = 2
+	for at: Vector3 in [Vector3(WEST + 3, 0, FOREST_END - 4), Vector3(EAST - 3, 0, FOREST_END - 6), Vector3(LAKE.x - 13, 0, LAKE.z + 16),
+			Vector3(EAST - 4, 0, SEA_Z - 8), Vector3(WEST + 4, 0, SEA_Z - 8), Vector3(122, HILL_H, 40.5), Vector3(183, 0, 31), Vector3(-3, 0, FOREST_END - 2)]:
+		var gem := MeshInstance3D.new()
+		gem.mesh = jewel
+		gem.material_override = _glow(Color(0.3, 0.75, 1.0), 1.2)
+		gem.position = at + Vector3(0, 1.1, 0)
+		gem.visibility_range_end = 90.0
+		gem.set_meta("worth", 40)
+		add_child(gem)
+		coins.append(gem)
+	# Five crosses on the ground mark buried treasure; they move every day.
+	var red := _mat(Color(0.85, 0.12, 0.1))
+	for k in 5:
+		var cross := Node3D.new()
+		for turn: float in [-0.78, 0.78]:
+			var arm := _box(Vector3(1.5, 0.05, 0.28), Vector3(0, 0.04, 0), red, cross)
+			arm.rotation.y = turn
+		add_child(cross)
+		digs.append(cross)
+	_fresh_treasure()
+	# Fishing spots on the lake shore and the sea front.
+	for at: Vector3 in [Vector3(LAKE.x + 6.0, 0, LAKE.z - 3.9), Vector3(34, 0, SEA_Z - 9.0)]:
+		_box(Vector3(1.8, 0.05, 1.3), at + Vector3(0, 0.05, 0), _mat(Color(0.3, 0.6, 0.95)))
+		_sign("דיג", at + Vector3(1.6, 2.3, 0.9), 64)
+		_box(Vector3(0.12, 2.0, 0.12), at + Vector3(1.6, 1.0, 0.9), _mat(Color(0.3, 0.2, 0.12)))
+		var p := Place.new()
+		p.key = "fish"
+		p.title = "דיג"
+		p.prompt = "להטיל חכה"
+		p.door = at
+		places.append(p)
+	bobber = Node3D.new()
+	_ball(0.16, Vector3.ZERO, _mat(Color(0.9, 0.15, 0.1)), bobber)
+	_ball(0.13, Vector3(0, 0.12, 0), _mat(Color(0.97, 0.97, 0.97)), bobber)
+	bobber.visible = false
+	add_child(bobber)
+	# The starting arch of the race round town.
+	for side: float in [-1.0, 1.0]:
+		_box(Vector3(0.3, 5.0, 0.3), race_gate + Vector3(0, 2.5, side * 4.2 - 1.0), _mat(Color(0.15, 0.15, 0.18)))
+	var banner := _box(Vector3(0.25, 1.0, 8.6), race_gate + Vector3(0, 5.0, -1.0), _mat(Color(0.9, 0.15, 0.12)))
+	banner.set_meta("keep", true)
+	_sign("מרוץ העיר — סעו דרך השער!", race_gate + Vector3(0, 6.3, -1.0), 64)
+
+
+## New coins, gems and buried treasure for a new day.
+func _fresh_treasure() -> void:
+	coins_left = 0
+	for coin in coins:
+		coin.visible = true
+		if int(coin.get_meta("worth")) == 5:
+			coins_left += 1
+	for cross in digs:
+		var beach := rng.randf() < 0.35
+		var at := Vector3(rng.randf_range(WEST + 8, EAST - 8), 0, rng.randf_range(SEA_Z - 8.5, SEA_Z - 2.0)) if beach \
+			else Vector3(rng.randf_range(-140, 80), 0, rng.randf_range(FOREST_Z + 5, FOREST_END - 4))
+		cross.position = at + Vector3(0, _ground_y(at.x, at.z), 0)
+		cross.visible = true
+
+
+func _reward(amount: int, star: bool, text: String) -> void:
+	money += amount
+	_play("win")
+	if star:
+		var was := _rank()
+		hero += 1
+		if _rank() != was:
+			text += "  עלית בדרגה: %s!" % _rank()
+	_toast(text)
+
+
+func _update_action(delta: float) -> void:
+	if inside:
+		mission_label.visible = false
+		return
+	mission_label.visible = true
+	var me_at := player.position
+	var flat := Vector3(me_at.x, 0, me_at.z)
+	# Coins and gems.
+	var grab := 2.4 if driving else 1.5
+	for coin in coins:
+		if not coin.visible:
+			continue
+		coin.rotation.y += delta * 3.0
+		if absf(coin.position.x - me_at.x) < grab and absf(coin.position.z - me_at.z) < grab:
+			coin.visible = false
+			var worth := int(coin.get_meta("worth"))
+			money += worth
+			_play("coin")
+			if worth > 5:
+				_toast("מצאת יהלום! +₪%d" % worth)
+			else:
+				coins_left -= 1
+				if coins_left == 0:
+					_reward(100, true, "אספת את כל המטבעות בעיר! בונוס ₪100.")
+	# Buried treasure: stand on a cross and you dig.
+	var digging := false
+	if not driving and not riding:
+		for cross in digs:
+			if cross.visible and cross.position.distance_to(flat) < 1.3:
+				digging = true
+				dig_t += delta
+				if int(dig_t * 3.0) != int((dig_t - delta) * 3.0):
+					_play("dig")
+				if dig_t > 1.6:
+					cross.visible = false
+					var luck := rng.randf()
+					if luck < 0.2:
+						_toast("חפרת... ומצאת נעל ישנה. אולי בפעם הבאה!")
+						_play("no")
+					elif luck < 0.85:
+						_reward(rng.randi_range(4, 12) * 10, false, "מצאת אוצר קבור!")
+					else:
+						_reward(200, true, "תיבת אוצר מלאה זהב! ₪200")
+	if not digging:
+		dig_t = 0.0
+	_update_fishing(delta, flat)
+	# Emergencies.
+	if mission.is_empty():
+		hose.emitting = false
+		mission_label.modulate = Color.WHITE
+		mission_label.text = _h("%s · %d כוכבים%s" % [_rank(), hero, ("  ·  חפירה..." if digging else "")])
+		if driving and flat.distance_to(race_gate) < 5.0 and absf(car_speed) > 4.0:
+			_start_mission("race")
+			return
+		if not _is_shabbat():
+			mission_wait -= delta
+		if mission_wait <= 0.0:
+			var kind: String = KINDS[rng.randi() % KINDS.size()]
+			if kind != last_kind:
+				_start_mission(kind)
+		return
+	mission["time"] = float(mission["time"]) - delta
+	var kind: String = mission["kind"]
+	var goal: Vector3 = mission["at"]
+	match kind:
+		"fire":
+			var alive := 0
+			var spraying := false
+			for flame: Node3D in mission["flames"]:
+				var life := float(flame.get_meta("life"))
+				if life <= 0.0:
+					continue
+				alive += 1
+				flame.scale = Vector3.ONE * (0.55 + 0.45 * life) * (1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02 + flame.position.x))
+				var d := Vector2(flame.position.x - me_at.x, flame.position.z - me_at.z).length()
+				if d < 4.6 and not driving and not spraying:
+					spraying = true
+					life -= delta / 1.5
+					flame.set_meta("life", life)
+					hose.position = me_at + Vector3(0, 1.3, 0)
+					hose.direction = (flame.position + Vector3(0, 0.8, 0) - hose.position).normalized()
+					me.root.rotation.y = atan2(flame.position.x - me_at.x, flame.position.z - me_at.z)
+					me.limbs[3].rotation.x = -1.5
+					if life <= 0.0:
+						flame.visible = false
+						_play("hiss")
+			hose.emitting = spraying
+			if alive == 0:
+				_end_mission(true, 120, "כיבית את השריפה! כל הרחוב מודה לך.")
+				return
+		"injured":
+			var hurt: Node3D = mission["who"]
+			if not bool(mission["got"]):
+				if hurt.position.distance_to(flat) < 2.0 and not driving:
+					mission["got"] = true
+					mission["at"] = Vector3(-40, 0, -4.7)
+					_toast("הרמת את הפצוע. מהר למרפאה!")
+					_play("pick")
+			else:
+				hurt.visible = not driving
+				hurt.position = me_at + Vector3(0, 1.75, 0)
+				hurt.rotation.y = me.root.rotation.y + PI * 0.5
+				if flat.distance_to(mission["at"]) < 3.2:
+					_end_mission(true, 100, "הפצוע הגיע למרפאה בזמן. הצלת חיים!")
+					return
+		"child":
+			var kid: Person = mission["who"]
+			var parent: Person = mission["parent"]
+			var kid_at := kid.root.position
+			if not bool(mission["got"]):
+				_animate(kid, false, delta)
+				if kid_at.distance_to(flat) < 2.2 and not driving:
+					mission["got"] = true
+					mission["at"] = parent.root.position
+					_say(kid, "קח אותי לאמא!", 4.0)
+					_play("pick")
+			else:
+				var gap := flat - kid_at
+				var moving := gap.length() > 1.7
+				if moving:
+					kid.root.position += gap.normalized() * minf(12.5 * delta, gap.length() - 1.6)
+					kid.root.rotation.y = atan2(gap.x, gap.z)
+				kid.root.position.y = _ground_y(kid.root.position.x, kid.root.position.z)
+				_animate(kid, moving, delta * 1.5)
+				if kid.root.position.distance_to(parent.root.position) < 3.2:
+					_say(parent, "מצאת אותו! תודה רבה!", 5.0)
+					_end_mission(true, 80, "הילד חזר לאמא שלו. איזו הקלה!")
+					return
+		"thief":
+			var crook: Person = mission["who"]
+			var at := crook.root.position
+			var away := signf(at.x - me_at.x)
+			if away == 0.0 or at.x > EAST - 6.0:
+				away = -1.0
+			if at.x < WEST + 6.0:
+				away = 1.0
+			if absf(at.x - me_at.x) > 30.0:
+				away *= 0.4                              # he slows to catch his breath when he thinks he lost you
+			crook.root.position.x += away * 7.6 * delta
+			crook.root.position.z = lerpf(at.z, -3.4 if int(at.x / 14.0) % 2 == 0 else 5.6, delta * 1.5)
+			crook.root.rotation.y = PI * 0.5 * signf(away)
+			_animate(crook, true, delta * 1.5)
+			mission["at"] = crook.root.position
+			if crook.root.position.distance_to(flat) < (3.0 if driving else 1.6):
+				_end_mission(true, 90, "תפסת את הגנב! התיק חזר לבעליו.")
+				return
+		"stranded":
+			if flat.distance_to(goal) < 3.6 and not driving:
+				if has_can:
+					has_can = false
+					_end_mission(true, 110, "מילאת לו דלק והוא ממשיך בדרך. כל הכבוד!")
+					return
+				elif not bool(mission["told"]):
+					mission["told"] = true
+					_toast("\"נגמר לי הדלק!\" — קנה ג'ריקן בתחנת הדלק והבא אותו.")
+		"sheep":
+			var left := 0
+			for ewe: Node3D in mission["flock"]:
+				if not ewe.visible:
+					continue
+				left += 1
+				var run := ewe.position - flat
+				if run.length() < 7.0 and run.length() > 0.01:
+					ewe.position += run.normalized() * 3.2 * delta      # it trots away, but slower than you
+					ewe.rotation.y = atan2(run.x, run.z)
+				ewe.position.x = clampf(ewe.position.x, WEST + 4, EAST - 4)
+				ewe.position.z = clampf(ewe.position.z, -5.0, 30.0)
+				ewe.position.y = absf(sin(Time.get_ticks_msec() * 0.012 + ewe.position.x)) * 0.12
+				if run.length() < 1.7 and not driving:
+					ewe.visible = false
+					left -= 1
+					money += 30
+					_play("baa")
+			if left > 0:
+				mission["at"] = _nearest_visible(mission["flock"], flat)
+			else:
+				_end_mission(true, 0, "כל הכבשים חזרו לחווה. +₪90")
+				return
+		"drowning":
+			var swimmer: Node3D = mission["who"]
+			swimmer.position.y = -0.25 + sin(Time.get_ticks_msec() * 0.006) * 0.18
+			swimmer.rotation.y += delta * 2.0
+			if absf(me_at.x - swimmer.position.x) < 4.0 and me_at.z < SEA_Z - 8.6:
+				_play("splash")
+				_end_mission(true, 130, "זרקת גלגל הצלה ומשכת אותו לחוף. הצלת אותו!")
+				return
+		"delivery":
+			if not bool(mission["got"]):
+				if flat.distance_to(goal) < 2.6:
+					mission["got"] = true
+					mission["at"] = mission["home"]
+					mission["time"] = 25.0 + flat.distance_to(mission["home"]) / 4.5
+					_toast("החבילה אצלך. מהר לבית שמסומן באור!")
+					_play("pick")
+			elif flat.distance_to(goal) < 3.0:
+				_end_mission(true, 70 + int(float(mission["time"])), "המשלוח הגיע חם! קיבלת גם טיפ על המהירות.")
+				return
+		"race":
+			if not driving:
+				_end_mission(false, 0, "יצאת מהרכב — המרוץ בוטל.")
+				return
+			if flat.distance_to(goal) < 7.0:
+				mission["step"] = int(mission["step"]) + 1
+				_play("coin")
+				if int(mission["step"]) >= RACE.size():
+					var took := 200.0 - float(mission["time"])
+					var prize := 150 if took < 55.0 else (100 if took < 75.0 else 50)
+					var record := best_race <= 0.0 or took < best_race
+					if record:
+						best_race = took
+					_end_mission(true, prize, "סיימת את המרוץ ב-%.1f שניות!%s" % [took, " שיא חדש!" if record else ""])
+					return
+				mission["at"] = RACE[int(mission["step"])]
+	if mission.is_empty():
+		return
+	goal = mission["at"]
+	call_light.position = Vector3(goal.x, _ground_y(goal.x, goal.z) + 13.0, goal.z)
+	var secs := int(ceil(float(mission["time"])))
+	mission_label.modulate = Color(1.0, 0.45, 0.4) if secs <= 15 and secs % 2 == 0 else Color.WHITE
+	mission_label.text = _h("%s  ·  %d מ'  ·  %d שניות" % [mission["title"], int(flat.distance_to(goal)), maxi(secs, 0)])
+	if float(mission["time"]) <= 0.0:
+		_end_mission(false, 0, String(mission["sad"]))
+
+
+func _nearest_visible(nodes: Array, from: Vector3) -> Vector3:
+	var best := from
+	var closest := 1e9
+	for n: Node3D in nodes:
+		if n.visible and n.position.distance_to(from) < closest:
+			closest = n.position.distance_to(from)
+			best = n.position
+	return best
+
+
+## A spot on the pavement some way from where you stand, for an emergency to happen at.
+func _street_spot(near_by: float, far: float) -> Vector3:
+	var side := 1.0 if rng.randf() < 0.5 else -1.0
+	var x := clampf(player.position.x + side * rng.randf_range(near_by, far), WEST + 10.0, EAST - 10.0)
+	return Vector3(x, 0, -3.3 if rng.randf() < 0.7 else 5.6)
+
+
+func _start_mission(kind: String) -> void:
+	var from := Vector3(player.position.x, 0, player.position.z)
+	var at := _street_spot(25.0, 70.0)
+	mission = {"kind": kind, "at": at, "got": false, "told": false, "title": "", "sad": ""}
+	match kind:
+		"fire":
+			var x: float = SHOP_FRONTS[rng.randi() % SHOP_FRONTS.size()]
+			at = Vector3(x, 0, -5.2)
+			var flames: Array = []
+			for k in 4:
+				var flame := Node3D.new()
+				flame.position = Vector3(x - 3.0 + k * 2.0, 0, -5.6)
+				add_child(flame)
+				for part in 3:
+					var tongue := CylinderMesh.new()
+					tongue.top_radius = 0.0
+					tongue.bottom_radius = 0.55 - part * 0.14
+					tongue.height = 1.5 + part * 0.5
+					tongue.radial_segments = 6
+					var mi := MeshInstance3D.new()
+					mi.mesh = tongue
+					mi.material_override = _glow([Color(1.0, 0.35, 0.05), Color(1.0, 0.6, 0.1), Color(1.0, 0.9, 0.3)][part], 2.5)
+					mi.position = Vector3((part - 1) * 0.3, tongue.height * 0.5, part * 0.1)
+					flame.add_child(mi)
+				var smoke := _smoke(Color(0.2, 0.2, 0.22), 2.6, 18)
+				smoke.position.y = 2.0
+				smoke.reparent(flame, false)
+				smoke.emitting = true
+				flame.set_meta("life", 1.0)
+				flames.append(flame)
+				actors.append(flame)
+			mission["flames"] = flames
+			mission["title"] = "שריפה! רוץ לכבות"
+			mission["sad"] = "לא הספקת... הכבאים הגיעו מאוחר והחנות ניזוקה."
+		"injured":
+			var hurt := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.85), Color(0.3, 0.3, 0.4))
+			hurt.root.position = at + Vector3(0, 0.3, 0)
+			hurt.root.rotation.x = -PI * 0.5
+			add_child(hurt.root)
+			actors.append(hurt.root)
+			mission["who"] = hurt.root
+			mission["title"] = "אדם נפצע! קח אותו למרפאה"
+			mission["sad"] = "האמבולנס פינה אותו לבד, מאוחר מדי. בפעם הבאה מהר יותר."
+		"child":
+			var kid := _make_person(Color(0.95, 0.75, 0.2), Color(0.25, 0.35, 0.6))
+			kid.root.scale = Vector3.ONE * 0.62
+			at = Vector3(rng.randf_range(-40, 44), 0, rng.randf_range(FOREST_Z + 4, FOREST_Z + 34))
+			kid.root.position = at
+			add_child(kid.root)
+			_bubble_for(kid, 2.3)
+			_say(kid, "אמא! איפה את?", 600.0)
+			var parent := _make_person(Color(0.75, 0.3, 0.45), Color(0.3, 0.25, 0.4))
+			parent.root.position = PLAYGROUND + Vector3(-6.0, 0, -6.2)
+			add_child(parent.root)
+			_bubble_for(parent, 2.6)
+			_say(parent, "הילד שלי הלך לאיבוד ביער!", 600.0)
+			actors.append(kid.root)
+			actors.append(parent.root)
+			mission["who"] = kid
+			mission["parent"] = parent
+			mission["title"] = "ילד אבוד ביער! מצא אותו"
+			mission["sad"] = "החיפוש נמשך יותר מדי. המשטרה מצאה את הילד, מפוחד ובוכה."
+		"thief":
+			var crook := _make_person(Color(0.12, 0.12, 0.14), Color(0.15, 0.15, 0.2))
+			_balaclava(crook.root)
+			at = _street_spot(13.0, 18.0)
+			crook.root.position = at
+			add_child(crook.root)
+			_box(Vector3(0.45, 0.4, 0.2), Vector3(0.3, 1.0, 0.25), _mat(Color(0.7, 0.45, 0.2)), crook.root)     # the stolen bag
+			actors.append(crook.root)
+			mission["who"] = crook
+			mission["title"] = "גנב חטף תיק! תפוס אותו"
+			mission["sad"] = "הגנב נעלם בין הסמטאות עם התיק."
+			_play("ouch")
+		"stranded":
+			at = Vector3(at.x, 0, 5.3)
+			var wreck := _make_car(Color(0.6, 0.6, 0.65), "sedan")
+			wreck.position = at
+			wreck.rotation.y = PI * 0.5
+			var fumes := _smoke(Color(0.85, 0.85, 0.88), 1.8, 14)
+			fumes.position = Vector3(0, 1.2, 1.9)
+			fumes.reparent(wreck, false)
+			fumes.emitting = true
+			actors.append(wreck)
+			var driver := _make_person(Color(0.3, 0.55, 0.75), Color(0.3, 0.3, 0.35))
+			driver.root.position = at + Vector3(2.6, 0, 1.2)
+			add_child(driver.root)
+			actors.append(driver.root)
+			mission["at"] = at + Vector3(2.6, 0, 1.2)
+			mission["title"] = "רכב תקוע בלי דלק! הבא ג'ריקן"
+			mission["sad"] = "הנהג התייאש וגרר את הרכב. חבל."
+		"sheep":
+			var flock: Array = []
+			for k in 3:
+				var ewe := Node3D.new()
+				_cap(0.42, 1.2, Vector3(0, 0.75, 0), _mat(Color(0.96, 0.95, 0.9)), ewe).rotation.x = PI * 0.5
+				_ball(0.24, Vector3(0, 0.95, 0.7), _mat(Color(0.18, 0.16, 0.16)), ewe)
+				for sx: float in [-0.22, 0.22]:
+					for sz: float in [-0.35, 0.35]:
+						_box(Vector3(0.1, 0.5, 0.1), Vector3(sx, 0.25, sz), _mat(Color(0.18, 0.16, 0.16)), ewe)
+				ewe.position = _street_spot(14.0, 40.0) + Vector3(0, 0, rng.randf_range(-1.0, 8.0))
+				add_child(ewe)
+				flock.append(ewe)
+				actors.append(ewe)
+			mission["flock"] = flock
+			mission["at"] = (flock[0] as Node3D).position
+			mission["title"] = "כבשים ברחו לרחוב! תפוס אותן"
+			mission["sad"] = "הכבשים התפזרו בכל העיר. הרועה יחפש אותן כל הלילה."
+			_play("baa")
+		"drowning":
+			var swimmer := Node3D.new()
+			_ball(0.26, Vector3(0, 0.3, 0), _mat(Color(0.95, 0.78, 0.62)), swimmer)
+			for sx: float in [-0.4, 0.4]:
+				_box(Vector3(0.12, 0.7, 0.12), Vector3(sx, 0.6, 0), _mat(Color(0.95, 0.78, 0.62)), swimmer).rotation.z = -sx
+			at = Vector3(clampf(player.position.x + rng.randf_range(-45, 45), WEST + 12, EAST - 12), 0, SEA_Z - 14.0)
+			swimmer.position = at
+			add_child(swimmer)
+			actors.append(swimmer)
+			mission["who"] = swimmer
+			mission["at"] = Vector3(at.x, 0, SEA_Z - 9.0)
+			mission["title"] = "מישהו טובע בים! רוץ לקו המים"
+			mission["sad"] = "המציל הגיע ברגע האחרון. זה היה קרוב מדי..."
+		"delivery":
+			mission["at"] = Vector3(-8, 0, -4.7)
+			mission["home"] = DOORSTEPS[rng.randi() % DOORSTEPS.size()]
+			mission["title"] = "משלוח דחוף! אסוף מהסופר"
+			mission["sad"] = "המשלוח התקרר והלקוח ביטל."
+		"race":
+			mission["step"] = 0
+			mission["at"] = RACE[0]
+			mission["title"] = "מרוץ העיר! עבור בכל שער אור"
+			mission["sad"] = "הזמן נגמר לפני קו הסיום."
+			_play("honk")
+	last_kind = kind
+	var goal: Vector3 = mission["at"]
+	# Enough time to get there on foot, with a little to spare; the race has its own clock.
+	mission["time"] = 200.0 if kind == "race" else 28.0 + from.distance_to(goal) / 4.2 + (60.0 if kind in ["stranded", "child", "injured", "sheep"] else 0.0)
+	call_light.visible = true
+	if kind != "race":
+		_play("alarm")
+		_toast("חירום! " + String(mission["title"]))
+
+
+func _end_mission(won: bool, prize: int, text: String) -> void:
+	var kind: String = mission.get("kind", "")
+	_clear_mission()
+	mission_wait = rng.randf_range(26.0, 48.0)
+	if won and kind != "race":
+		_quest_event("rescue")
+		_bless(3.0)
+	elif kind != "race":
+		_bless(-2.0)
+	if won:
+		if kind == "sheep":
+			_reward(0, true, text)
+		else:
+			_reward(prize, kind != "race", "%s  +₪%d" % [text, prize])
+	else:
+		_play("lose")
+		if kind != "race":
+			hero = maxi(hero - 1, 0)
+		_toast(text)
+
+
+func _clear_mission() -> void:
+	mission = {}
+	for thing in actors:
+		if is_instance_valid(thing):
+			thing.queue_free()
+	actors.clear()
+	if call_light != null:
+		call_light.visible = false
+	if hose != null:
+		hose.emitting = false
+
+
+## Fishing: cast, wait for the bite, then strike at once.
+func _fish(p: Place) -> void:
+	if _shabbat_block():
+		return
+	match fish_state:
+		0:
+			fish_state = 1
+			fish_t = rng.randf_range(1.6, 4.5)
+			fish_spot = p.door
+			var out := Vector3(0.6, 0, 4.0) if p.door.z > 0.0 else Vector3(0, 0, -4.2)
+			bobber.position = p.door + out + Vector3(0, 0.1, 0)
+			bobber.visible = true
+			_play("splash")
+			_toast("החכה במים... חכה לדג, ואז לחץ שוב מהר!")
+		1:
+			fish_state = 0
+			bobber.visible = false
+			_play("no")
+			_toast("מוקדם מדי! הדג ברח.")
+		2:
+			fish_state = 0
+			bobber.visible = false
+			var luck := rng.randf()
+			if luck < 0.08:
+				_play("no")
+				_toast("דגת... מגף ישן.")
+			elif luck < 0.6:
+				_reward(15, false, "דג קטן! מכרת אותו ב-₪15.")
+			elif luck < 0.9:
+				_reward(35, false, "דג יפה! +₪35")
+			else:
+				_reward(90, true, "דג ענק! כל החוף מוחא כפיים. +₪90")
+
+
+func _update_fishing(delta: float, flat: Vector3) -> void:
+	if fish_state == 0:
+		return
+	if flat.distance_to(fish_spot) > 3.0 or driving:
+		fish_state = 0
+		bobber.visible = false
+		return
+	fish_t -= delta
+	me.limbs[3].rotation.x = -1.2
+	if fish_state == 1:
+		bobber.position.y = 0.1 + sin(Time.get_ticks_msec() * 0.004) * 0.04
+		if fish_t <= 0.0:
+			fish_state = 2
+			fish_t = 0.95
+			_play("splash")
+			_toast("יש דג!! לחץ עכשיו!")
+	elif fish_state == 2:
+		bobber.position.y = -0.1 + sin(Time.get_ticks_msec() * 0.05) * 0.08
+		if fish_t <= 0.0:
+			fish_state = 0
+			bobber.visible = false
+			_play("no")
+			_toast("הדג השתחרר. נסה שוב!")
+
+
+# -------------------------------------------------------------- the story ----
+# One long adventure leads you round the town: you leave the parcel job, climb an empty hill, and build
+# a small place of your own there, a step at a time. Every step adds something you can see on the hill
+# and fills the redemption meter. The meter also fills with prayer, friendship and helping in an
+# emergency, and it drains when you let people down. Nothing is won by force.
+
+## The steps, in order. "do" says how a step is finished:
+##   go: walk up to "at"    stay: stand there for "secs"    pay: arrive with "cost" shekels
+##   hook: something happens "n" times elsewhere in the game ("ev")    escort: lead your followers there
+##   gather: step on every marked spot    guard: the night watch    find: no beam, only the distance
+##   full: the redemption meter reaches 100
+const QUEST: Array[Dictionary] = [
+	{"ch": "הקריאה", "do": "go", "at": "eliya", "t": "דבר עם הרועה אליה בחוות הגבעה", "pts": 2,
+		"say": [["הרועה אליה", "אח שלי! נמאס לסדר חבילות על מדף? יש גבעה ריקה במערב, מעבר לאגם. מי שעולה אליה - בונה אותה."], ["הרועה אליה", "אבל קודם תראה לי שאתה יודע לעבוד. לחץ על השלט כאן: לרעות את העדר או לבצור ענבים."]]},
+	{"do": "hook", "ev": "hillwork", "n": 1, "at": "hilljob", "t": "עזור בחוות הגבעה: רעה את העדר או בצור ענבים",
+		"say": [["הרועה אליה", "ידיים של עובד. קח יתד ודגל. הגבעה במערב מחכה כבר אלפיים שנה - עוד רבע שעה היא תסתדר."]]},
+	{"ch": "עולים לגבעה", "do": "stay", "secs": 2.5, "at": "top", "t": "טפס לגבעת השחר שביער ותקע את הדגל", "build": "camp", "pts": 5,
+		"say": [["גבעת השחר", "אוהל, מדורה ושמיים. בעיר יש מזגן - כאן יש רוח."], ["גבעת השחר", "\"קום התהלך בארץ לארכה ולרחבה\". עכשיו צריך מים."]]},
+	{"ch": "מים", "do": "stay", "secs": 2.0, "at": "lake", "t": "מלא ג'ריקנים במי האגם", "carry": ""},
+	{"do": "go", "at": "tank", "t": "סחוב את המים למעלה, לגבעה", "carry": "water", "build": "tank", "pts": 4,
+		"say": [["גבעת השחר", "מים! מי שסחב ג'ריקן במעלה גבעה יודע כמה שווה כוס תה."]]},
+	{"ch": "עבודה עברית", "do": "pay", "cost": 150, "at": "site", "t": "קנה קרשים באתר הבנייה (₪150)",
+		"say": [["הקבלן", "קרשים לגבעה? קח. ותזמין אותי לחנוכת הבית, אני מביא בורקס."]]},
+	{"do": "stay", "secs": 3.0, "at": "cabin", "t": "בנה את הצריף על הגבעה", "carry": "wood", "build": "cabin", "pts": 5,
+		"say": [["גבעת השחר", "צריף ראשון. קצת עקום - אבל שלך. \"ובנו בתים וישבו\"."]]},
+	{"ch": "העדר", "do": "go", "at": "eliya", "t": "חזור לאליה לקבל שלוש כבשים",
+		"say": [["הרועה אליה", "שלוש כבשים, מתנה. הן לא ממהרות לשום מקום, אז גם אתה לא. אם תרוץ - הן יישארו מאחור."]]},
+	{"do": "escort", "at": "pen", "who": "sheep", "t": "הובל את הכבשים לגבעה, בסבלנות", "build": "pen", "pts": 5,
+		"say": [["גבעת השחר", "רועה צאן - כמו אברהם, משה ודוד. מי שלמד לחכות לכבשה איטית יידע לחכות גם לגאולה."]]},
+	{"ch": "הפקח", "do": "go", "at": "insp", "insp": true, "t": "פקח הגיע לגבעה! לך לדבר איתו",
+		"say": [["הפקח", "שלום שלום. צריף יפה. היתר בנייה יש? אין."], ["הפקח", "אז ככה: טופס 17 בתחנת המשטרה, ואחר כך חתימה של המנהל ב'עבודה'. בלי זה - אני חוזר עם דחפור."]]},
+	{"do": "go", "at": "police", "insp": true, "t": "קח טופס 17 בתחנת המשטרה"},
+	{"do": "go", "at": "office", "insp": true, "carry": "form", "t": "החתם את המנהל, בבניין 'העבודה'",
+		"say": [["המנהל", "אתה? זה שעזב אותנו בשביל כבשים?... נו, תביא. חתמתי. שיהיה בהצלחה שם למעלה."]]},
+	{"do": "go", "at": "insp", "insp": true, "carry": "form", "t": "הראה לפקח את ההיתר החתום", "pts": 4,
+		"say": [["הפקח", "הכול כחוק. בינינו? גם אני גדלתי במושב. תשמרו על עצמכם - ועל הכבשים."], ["גבעת השחר", "דרך ארץ קדמה לתורה. מי שבונה בסבלנות - בונה לתמיד."]]},
+	{"ch": "הכרם", "do": "pay", "cost": 100, "at": "farm", "t": "קנה שתילי גפן אצל החוואי גדי (₪100)",
+		"say": [["החוואי גדי", "גפנים? ענבים יהיו רק בעוד ארבע שנים. מי שנוטע גפן - מאמין בעתיד."]]},
+	{"do": "gather", "n": 6, "at": "vines", "what": "hole", "carry": "plants", "t": "טע את הגפנים בכרם ({c}/6)", "build": "vines", "pts": 6,
+		"say": [["גבעת השחר", "\"ונטעו כרמים ושתו את יינם\". בינתיים שותים מים מהג'ריקן."]]},
+	{"ch": "אהבת חינם", "do": "go", "at": "rabbi", "t": "לך אל הרב, ליד בית הכנסת",
+		"say": [["הרב", "בנית יפה. אבל גבעה בלי אנשים היא ערימת קרשים עם נוף."], ["הרב", "הבית נחרב בשנאת חינם - וייבנה באהבת חינם. לך תכיר שלושה אנשים בעיר, ותעזור למי שבצרה."]]},
+	{"do": "hook", "ev": "talk", "n": 3, "t": "שוחח עם שלושה אנשים בעיר ({c}/3)"},
+	{"do": "hook", "ev": "rescue", "n": 2, "t": "עזור בשני מקרי חירום ({c}/2)", "pts": 6,
+		"say": [["גבעת השחר", "כל מי שעזרת לו - עוד אבן בבניין. את העולם מתקנים אדם אחד בכל פעם."]]},
+	{"ch": "ספר תורה", "do": "go", "at": "rabbi", "t": "חזור אל הרב",
+		"say": [["הרב", "יש לי ספר תורה קטן שמחכה למניין. קח אותו לגבעה - ברגל ובכבוד."], ["הרב", "ספר תורה לא מסיעים בטרקטורון. וכל מי שהכרת - ילך אחריך."]]},
+	{"do": "escort", "at": "shul", "who": "crowd", "carry": "torah", "t": "שא את ספר התורה לגבעה - בהליכה, בלי לרוץ", "build": "shul", "pts": 8,
+		"say": [["גבעת השחר", "\"שישו ושמחו בשמחת תורה\"! יש ספר, יש מניין, ויש בית כנסת קטן על גבעה גדולה."]]},
+	{"ch": "שמירה", "do": "stay", "secs": 1.5, "at": "tower", "t": "עלה לעמדת השמירה בקצה הגבעה",
+		"say": [["גבעת השחר", "לילה. התנים מריחים את הכבשים. לא יורים - רצים אליהם, והם בורחים."]]},
+	{"do": "guard", "n": 6, "at": "pen", "t": "גרש את התנים לפני שיגיעו לדיר ({c}/6)", "build": "tower", "pts": 6,
+		"say": [["גבעת השחר", "עלות השחר. \"שומר, מה מלילה?\" - \"אתא בוקר\"."], ["גבעת השחר", "את הלילה לא מנצחים בכוח, אלא בעיניים פקוחות. קיבלת מגדל שמירה - וכלב."]]},
+	{"ch": "המעיין", "do": "find", "at": "spring", "t": "מצא את המעיין הנסתר ביער (עקוב אחרי המרחק)"},
+	{"do": "gather", "n": 5, "at": "spring", "what": "trash", "t": "נקה את המעיין מהזבל ({c}/5)", "build": "spring", "pts": 6,
+		"say": [["המעיין", "המים צלולים. תיקון עולם מתחיל בפחית אחת."], ["המעיין", "טבילה קרה - והראש מתבהר. בגבעה אין מקלחת חמה, ואף אחד לא מתלונן. (כמעט.)"]]},
+	{"ch": "בית", "do": "pay", "cost": 400, "at": "site", "t": "הזמן חומרים לבית של קבע (₪400)",
+		"say": [["הקבלן", "בית של ממש? עם גג? הגבעה שלך מתחילה להיראות כמו יישוב."]]},
+	{"do": "stay", "secs": 4.0, "at": "house", "carry": "wood", "t": "בנה את הבית על הגבעה", "build": "house", "pts": 8,
+		"say": [["גבעת השחר", "בית, עם מזוזה ושולחן שבת ארוך. \"עוד יישמע... קול ששון וקול שמחה\"."]]},
+	{"ch": "חנוכת היישוב", "do": "go", "at": "music", "t": "הזמן נגנים בחנות המוזיקה",
+		"say": [["המוכר", "חתונות, בר מצוות וגבעות. באים! יש חשמל שם? לא? נביא גיטרות."]]},
+	{"do": "go", "at": "top", "t": "חזור לגבעה - כולם כבר שם", "build": "party", "pts": 8,
+		"say": [["גבעת השחר", "הפקח, הקבלן, המנהל והרועה רוקדים במעגל אחד. זאת כבר גאולה קטנה."]]},
+	{"ch": "קמעא קמעא", "do": "full", "t": "מלא את מד הגאולה: עזור, התפלל, התיידד",
+		"say": [["גבעת השחר", "הגאולה באה קמעא קמעא, כמו אור הבוקר: בהתחלה מעט, ואחר כך הולך ומאיר."]]},
+	{"do": "go", "at": "rabbi", "t": "הרב קורא לך",
+		"say": [["הרב", "קח את השופר. אל תדחק את הקץ - רק עלה לגבעה, וכשיאיר השחר, תקע."]]},
+	{"do": "stay", "secs": 3.0, "at": "top", "carry": "shofar", "t": "תקע בשופר בראש גבעת השחר", "build": "finale",
+		"say": [["גבעת השחר", "\"הנה מלכך יבוא לך... עני ורוכב על חמור\"."], ["גבעת השחר", "לא בכוח הבאת אותו. בנית, נטעת, שמרת ואהבת - והוא בא."], ["ימות המשיח", "מעכשיו אין שכר דירה. ממשיכים לבנות, לעזור ולרקוד."]]},
+]
+
+
+## Add to the redemption meter (or take from it).
+func _bless(points: float) -> void:
+	geula = clampf(geula + points, 0.0, 100.0)
+
+
+## Something happened elsewhere in the game that a step of the story may be waiting for.
+func _quest_event(what: String) -> void:
+	if quest < QUEST.size() and String(QUEST[quest].get("ev", "")) == what:
+		q_count += 1
+
+
+func _wrap(text: String, wide: int = 44) -> String:
+	var lines: Array[String] = []
+	var line := ""
+	for word in text.split(" "):
+		if line.length() + word.length() + 1 > wide and line != "":
+			lines.append(_h(line))
+			line = word
+		else:
+			line = word if line == "" else line + " " + word
+	lines.append(_h(line))
+	return "\n".join(lines)
+
+
+func _story(who: String, text: String) -> void:
+	story_queue.append(_h("— %s —" % who) + "\n" + _wrap(text))
+
+
+## A group of things on Dawn Hill that appears when you build it.
+func _site(key: String) -> Node3D:
+	var group := Node3D.new()
+	group.position = DAWN + Vector3(0, DAWN_H, 0)
+	group.visible = false
+	add_child(group)
+	sites[key] = group
+	return group
+
+
+func _site_solid(group: Node3D, size: Vector3, pos: Vector3) -> void:
+	var body := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	cs.shape = shape
+	body.add_child(cs)
+	body.position = pos + Vector3(0, size.y * 0.5, 0)
+	body.collision_layer = 0
+	group.add_child(body)
+
+
+func _site_kit(group: Node3D, path: String, high: float, pos: Vector3, yaw: float = 0.0, tint: Dictionary = {}) -> void:
+	var piece := _kit_node(path, high, tint, group)
+	if piece != null:
+		piece.position = pos
+		piece.rotation.y = yaw
+
+
+func _show_site(key: String, on: bool) -> void:
+	if not sites.has(key):
+		return
+	var group: Node3D = sites[key]
+	group.visible = on
+	for child in group.get_children():
+		if child is StaticBody3D:
+			(child as StaticBody3D).collision_layer = 1 if on else 0
+
+
+func _simple_sheep(parent: Node, pos: Vector3) -> Node3D:
+	var ewe := Node3D.new()
+	_cap(0.42, 1.2, Vector3(0, 0.75, 0), _mat(Color(0.96, 0.95, 0.9)), ewe).rotation.x = PI * 0.5
+	_ball(0.24, Vector3(0, 0.95, 0.7), _mat(Color(0.18, 0.16, 0.16)), ewe)
+	for sx: float in [-0.22, 0.22]:
+		for sz: float in [-0.35, 0.35]:
+			_box(Vector3(0.1, 0.5, 0.1), Vector3(sx, 0.25, sz), _mat(Color(0.18, 0.16, 0.16)), ewe)
+	ewe.position = pos
+	parent.add_child(ewe)
+	return ewe
+
+
+func _build_quest() -> void:
+	# --- Dawn Hill itself: a bare rise in the western forest.
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var cell := 1.5
+	var x := DAWN.x - 27.0
+	while x < DAWN.x + 27.0:
+		var z := DAWN.z - 27.0
+		while z < DAWN.z + 27.0:
+			var corners: Array[Vector3] = []
+			var top := 0.0
+			for c: Vector2 in [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]:
+				var h := _ground_y(x + c.x * cell, z + c.y * cell)
+				top = maxf(top, h)
+				corners.append(Vector3(x + c.x * cell, h if h > 0.01 else -0.06, z + c.y * cell))
+			if top > 0.01:
+				for k: int in [0, 1, 2, 0, 2, 3]:
+					st.add_vertex(corners[k])
+			z += cell
+		x += cell
+	st.generate_normals()
+	var mesh := st.commit()
+	mesh.surface_set_material(0, _tex("grass", Color(0.36, 0.5, 0.22), 0.11))
+	var land := MeshInstance3D.new()
+	land.mesh = mesh
+	add_child(land)
+	var body := StaticBody3D.new()
+	var shape := CollisionShape3D.new()
+	shape.shape = mesh.create_trimesh_shape()
+	body.add_child(shape)
+	add_child(body)
+	_sign("גבעת השחר", DAWN + Vector3(0, 3.0, -28.5), 72)
+	_box(Vector3(0.18, 2.6, 0.18), DAWN + Vector3(0, 1.3, -28.5), _mat(Color(0.45, 0.32, 0.2))).set_meta("keep", true)
+
+	# --- Everything that can be built on it, hidden until its day comes.
+	var wood := _mat(Color(0.5, 0.36, 0.22))
+	var camp := _site("camp")
+	_box(Vector3(0.12, 5.0, 0.12), Vector3(0, 2.5, 0), _mat(Color(0.85, 0.85, 0.85)), camp)
+	_box(Vector3(1.7, 1.1, 0.04), Vector3(0.9, 4.4, 0), _mat(Color(0.97, 0.97, 0.97)), camp)
+	for sy: float in [3.98, 4.82]:
+		_box(Vector3(1.7, 0.14, 0.05), Vector3(0.9, sy, 0), _mat(Color(0.1, 0.25, 0.75)), camp)
+	_box(Vector3(0.3, 0.3, 0.05), Vector3(0.9, 4.4, 0), _mat(Color(0.1, 0.25, 0.75)), camp).rotation.z = PI * 0.25
+	_site_kit(camp, "survival/tent-canvas", 2.6, Vector3(-4.2, 0, 3.2), 0.6)
+	_site_kit(camp, "survival/campfire-pit", 0.55, Vector3(2.6, 0, 2.8))
+	_site_kit(camp, "survival/tree-log", 0.5, Vector3(4.2, 0, 3.4), 0.4)
+	_site_kit(camp, "survival/tree-log", 0.5, Vector3(2.2, 0, 4.5), 1.8)
+	_box(Vector3(0.12, 0.34, 0.12), Vector3(2.6, 0.5, 2.8), shade_mat, camp)                # the fire
+	var tank := _site("tank")
+	_site_kit(tank, "industrial/water-tower", 6.0, Vector3(14.0, 0, 0))
+	_site_kit(tank, "survival/barrel", 1.1, Vector3(12.2, 0, 1.2))
+	_site_kit(tank, "survival/bucket", 0.45, Vector3(12.4, 0, -0.9))
+	_site_solid(tank, Vector3(2.2, 4.0, 2.2), Vector3(14.0, 0, 0))
+	var cabin := _site("cabin")
+	_site_kit(cabin, "suburban/building-type-h", 4.4, Vector3(8.5, 0, 6.5), -PI * 0.5, {"wall": Color(0.82, 0.64, 0.42), "green": Color(0.55, 0.3, 0.2)})
+	_site_solid(cabin, Vector3(5.0, 3.0, 7.0), Vector3(8.5, 0, 6.5))
+	var pen := _site("pen")
+	var rail := {"wood": Color(0.56, 0.4, 0.26), "woodDark": Color(0.42, 0.29, 0.18)}
+	for k in 3:
+		for sz: float in [3.2, 9.0]:
+			_site_kit(pen, "nature/fence_simple", 1.0, Vector3(-12.4 + k * 2.6, 0, sz), 0.0, rail)
+	for k in 2:
+		for sx: float in [-13.7, -6.3]:
+			_site_kit(pen, "nature/fence_simple", 1.0, Vector3(sx, 0, 4.6 + k * 2.9), PI * 0.5, rail)
+	for k in 3:
+		_simple_sheep(pen, Vector3(-11.6 + k * 1.7, 0, 5.2 + (k % 2) * 1.9)).rotation.y = k * 2.0
+	_box(Vector3(1.6, 0.4, 0.5), Vector3(-8.0, 0.2, 8.2), wood, pen)
+	var vines := _site("vines")
+	for row in 2:
+		for k in 6:
+			var at := Vector3(-5.0 + k * 2.0, 0, 11.4 + row * 2.2)
+			_box(Vector3(0.1, 1.5, 0.1), at + Vector3(0, 0.75, 0), wood, vines)
+			_site_kit(vines, "nature/plant_bush", 0.8, at + Vector3(0.9, 0.55, 0), k * 1.0, _wild(Color(0.3, 0.52, 0.22)))
+			_ball(0.13, at + Vector3(0.7, 0.7, 0.2), _mat(Color(0.4, 0.16, 0.48)), vines, Vector3(1.0, 1.5, 1.0))
+		_box(Vector3(11.0, 0.03, 0.03), Vector3(0, 1.35, 11.4 + row * 2.2), _mat(Color(0.6, 0.6, 0.6)), vines)
+	var shul := _site("shul")
+	_site_kit(shul, "suburban/building-type-m", 4.2, Vector3(-8.0, 0, -6.0), PI * 0.5, {"wall": Color(0.97, 0.96, 0.9), "green": Color(0.2, 0.32, 0.6)})
+	_site_solid(shul, Vector3(6.4, 3.0, 6.4), Vector3(-8.0, 0, -6.0))
+	_site_kit(shul, "holiday/hanukkah-menorah-candles", 1.4, Vector3(-3.9, 0, -4.0))
+	var tower := _site("tower")
+	for sx: float in [-0.9, 0.9]:
+		for sz: float in [-0.9, 0.9]:
+			_box(Vector3(0.16, 4.2, 0.16), Vector3(sx, 2.1, -14.0 + sz), wood, tower)
+	_box(Vector3(2.4, 0.15, 2.4), Vector3(0, 4.2, -14.0), wood, tower)
+	_box(Vector3(2.8, 0.14, 2.8), Vector3(0, 6.1, -14.0), _mat(Color(0.5, 0.2, 0.16)), tower)
+	for sx: float in [-1.1, 1.1]:
+		_box(Vector3(0.1, 1.9, 0.1), Vector3(sx, 5.15, -15.1), wood, tower)
+		_box(Vector3(0.1, 1.9, 0.1), Vector3(sx, 5.15, -12.9), wood, tower)
+	_site_solid(tower, Vector3(2.0, 4.0, 2.0), Vector3(0, 0, -14.0))
+	var dog := Node3D.new()                                                         # the guard dog
+	_cap(0.24, 0.9, Vector3(0, 0.5, 0), _mat(Color(0.75, 0.6, 0.4)), dog).rotation.x = PI * 0.5
+	_ball(0.2, Vector3(0, 0.75, 0.5), _mat(Color(0.75, 0.6, 0.4)), dog)
+	for sx: float in [-0.15, 0.15]:
+		for sz: float in [-0.25, 0.25]:
+			_box(Vector3(0.08, 0.4, 0.08), Vector3(sx, 0.2, sz), _mat(Color(0.6, 0.47, 0.3)), dog)
+	dog.position = Vector3(2.0, 0, -12.5)
+	dog.rotation.y = 2.4
+	tower.add_child(dog)
+	var house := _site("house")
+	_site_kit(house, "suburban/building-type-c", 6.0, Vector3(9.0, 0, -6.5), -PI * 0.5, {"wall": Color(0.95, 0.9, 0.78), "green": Color(0.72, 0.32, 0.22)})
+	_site_solid(house, Vector3(6.0, 4.0, 7.6), Vector3(9.0, 0, -6.5))
+	var table := Vector3(-1.5, 0, -5.5)
+	_site_kit(house, "furniture/table", 1.0, table, 0.0, {"wood": Color(0.55, 0.38, 0.24)})
+	_box(Vector3(2.0, 0.03, 0.8), table + Vector3(0, 1.01, 0), _mat(Color(0.97, 0.97, 0.95)), house)
+	for sx: float in [-0.2, 0.2]:
+		_box(Vector3(0.06, 0.3, 0.06), table + Vector3(sx, 1.17, 0), _mat(Color(0.82, 0.82, 0.86)), house)
+		_box(Vector3(0.05, 0.08, 0.05), table + Vector3(sx, 1.37, 0), shade_mat, house)
+	for sx: float in [-0.8, 0.8]:
+		for sz: float in [-0.95, 0.95]:
+			_site_kit(house, "furniture/chair", 1.3, table + Vector3(sx, 0, sz), 0.0 if sz > 0.0 else PI, {"wood": Color(0.45, 0.3, 0.2)})
+	for sx: float in [-2.0, 2.0]:                                                    # a pergola of branches over the table
+		for sz: float in [-1.5, 1.5]:
+			_box(Vector3(0.12, 2.6, 0.12), table + Vector3(sx, 1.3, sz), wood, house)
+	for k in 7:
+		_box(Vector3(4.4, 0.07, 0.16), table + Vector3(0, 2.63, -1.5 + k * 0.5), wood, house)
+	_site_solid(house, Vector3(2.4, 1.0, 1.0), table)
+	# The spring is out in the forest: muddy and littered until you clean it.
+	var spring := Node3D.new()
+	spring.position = SPRING
+	add_child(spring)
+	sites["spring_place"] = spring
+	var pool := CylinderMesh.new()
+	pool.top_radius = 2.4
+	pool.bottom_radius = 2.4
+	pool.height = 0.08
+	for clean in 2:
+		var water := MeshInstance3D.new()
+		water.mesh = pool
+		water.material_override = _water() if clean == 1 else _mat(Color(0.36, 0.33, 0.22))
+		water.position.y = 0.05
+		water.name = "clean" if clean == 1 else "mud"
+		water.visible = clean == 0
+		spring.add_child(water)
+	for k in 9:
+		var angle := k * TAU / 9.0
+		_site_kit(spring, "nature/rock_smallA" if k % 2 == 0 else "nature/rock_largeA", 0.7 + (k % 3) * 0.25, Vector3(cos(angle) * 2.8, 0, sin(angle) * 2.8), angle, _wild(Color(0.3, 0.5, 0.25)))
+	_site_kit(spring, "holiday/bench", 1.1, Vector3(0, 0, 4.4), PI)
+
+	# --- The people of the story.
+	rabbi = _make_person(Color(0.12, 0.12, 0.14), Color(0.1, 0.1, 0.12))
+	_box(Vector3(0.26, 0.3, 0.1), Vector3(0, 1.5, 0.2), _mat(Color(0.95, 0.95, 0.95)), rabbi.root)      # a white beard
+	_box(Vector3(0.5, 0.1, 0.5), Vector3(0, 1.98, 0), _mat(Color(0.08, 0.08, 0.1)), rabbi.root)         # and a black hat
+	_box(Vector3(0.32, 0.2, 0.32), Vector3(0, 2.1, 0), _mat(Color(0.08, 0.08, 0.1)), rabbi.root)
+	rabbi.root.position = Vector3(-87.6, 0, -4.4)
+	add_child(rabbi.root)
+	inspector = _make_person(Color(0.55, 0.7, 0.85), Color(0.2, 0.22, 0.3))
+	_box(Vector3(0.4, 0.12, 0.44), Vector3(0, 1.95, 0.03), _mat(Color(0.15, 0.2, 0.4)), inspector.root)  # a peaked cap
+	_box(Vector3(0.3, 0.4, 0.04), Vector3(0.3, 1.15, 0.2), _mat(Color(0.95, 0.93, 0.85)), inspector.root)   # and a clipboard
+	inspector.root.position = DAWN + Vector3(3.0, DAWN_H, -9.0)
+	inspector.root.visible = false
+	add_child(inspector.root)
+	for k in 9:
+		var guest := _make_person(Color.from_hsv(k * 0.11, 0.55, 0.9), Color.from_hsv(k * 0.07, 0.3, 0.4))
+		guest.root.visible = false
+		add_child(guest.root)
+		party.append(guest)
+
+	# --- What you carry, the beam and the "!" over where to go next, and the words on screen.
+	carry_node = Node3D.new()
+	me.root.add_child(carry_node)
+	quest_light = MeshInstance3D.new()
+	var shaft := CylinderMesh.new()
+	shaft.top_radius = 0.25
+	shaft.bottom_radius = 0.55
+	shaft.height = 22.0
+	shaft.radial_segments = 8
+	quest_light.mesh = shaft
+	var glow := _glow(Color(0.55, 0.85, 1.0), 2.0)
+	glow.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glow.albedo_color.a = 0.3
+	glow.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	quest_light.material_override = glow
+	quest_light.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(quest_light)
+	quest_mark = Label3D.new()
+	quest_mark.text = "!"
+	quest_mark.font = font
+	quest_mark.font_size = 220
+	quest_mark.pixel_size = 0.012
+	quest_mark.outline_size = 40
+	quest_mark.modulate = Color(1.0, 0.86, 0.2)
+	quest_mark.outline_modulate = Color(0.25, 0.15, 0.0)
+	quest_mark.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	quest_mark.no_depth_test = true
+	add_child(quest_mark)
+	quest_label = _label(27, Color(0.75, 0.92, 1.0))
+	quest_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 20)
+	quest_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	quest_label.position.y = 150.0
+	hud.add_child(quest_label)
+	story_card = _label(30, Color(1.0, 0.97, 0.88))
+	story_card.add_theme_stylebox_override("normal", _flat(Color(0.08, 0.1, 0.2, 0.88), 18, 22))
+	story_card.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE, 20)
+	story_card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	story_card.grow_vertical = Control.GROW_DIRECTION_BOTH
+	story_card.visible = false
+	hud.add_child(story_card)
+
+
+## Where a step of the story sends you.
+func _quest_goal(step: Dictionary) -> Vector3:
+	var top := DAWN + Vector3(0, DAWN_H, 0)
+	match String(step.get("at", "")):
+		"eliya":
+			for n in npcs:
+				if n.name == "הרועה אליה":
+					return n.root.position + Vector3(1.4, 0, 0.6)
+			return Vector3(113.5, HILL_H, 18.5)
+		"hilljob":
+			return Vector3(120, HILL_H, 16.4)
+		"top":
+			return top + Vector3(0.8, 0, 1.6)
+		"lake":
+			return Vector3(LAKE.x + 8.3, 0, LAKE.z + 14.6)
+		"tank":
+			return top + Vector3(12.0, 0, 2.4)
+		"site":
+			return Vector3(72, 0, -4.7)
+		"cabin":
+			return top + Vector3(4.6, 0, 6.5)
+		"pen":
+			return top + Vector3(-10.0, 0, 6.0)
+		"insp":
+			return inspector.root.position + Vector3(0, 0, 1.6)
+		"police":
+			return Vector3(0, 0, NORTH_Z - 4.7)
+		"office":
+			return Vector3(24, 0, -4.7)
+		"farm":
+			return FARM + Vector3(-4.5, 0, -2.2)
+		"vines":
+			return top + Vector3(0, 0, 12.5)
+		"rabbi":
+			return rabbi.root.position + Vector3(0.6, 0, 1.6)
+		"shul":
+			return top + Vector3(-3.6, 0, -4.4)
+		"tower":
+			return top + Vector3(0, 0, -11.6)
+		"spring":
+			return (sites["spring_place"] as Node3D).position
+		"house":
+			return top + Vector3(4.8, 0, -6.5)
+		"music":
+			return Vector3(-74, 0, -4.7)
+	return Vector3.INF
+
+
+## Put the world in the state that goes with where the story stands: called when a game starts or is loaded.
+func _quest_restore() -> void:
+	for key: String in sites:
+		if key != "spring_place":
+			_show_site(key, false)
+	var cleaned := false
+	for k in mini(quest, QUEST.size()):
+		var made := String(QUEST[k].get("build", ""))
+		_show_site(made, true)
+		if made == "spring":
+			cleaned = true
+	var spring: Node3D = sites["spring_place"]
+	(spring.get_node("clean") as Node3D).visible = cleaned
+	(spring.get_node("mud") as Node3D).visible = not cleaned
+	story_queue.clear()
+	story_card.visible = false
+	party_t = 0.0
+	_quest_enter()
+
+
+## Begin the current step: whoever follows you, whatever you carry, whatever must be found.
+func _quest_enter() -> void:
+	q_t = 0.0
+	q_count = 0
+	q_told = 0.0
+	q_spawned = 0
+	for thing in q_things:
+		if is_instance_valid(thing):
+			thing.queue_free()
+	q_things.clear()
+	q_follow.clear()
+	for child in carry_node.get_children():
+		child.queue_free()
+	var step: Dictionary = QUEST[quest] if quest < QUEST.size() else {}
+	inspector.root.visible = bool(step.get("insp", false))
+	var show_party := redeemed or party_t > 0.0
+	for k in party.size():
+		party[k].root.visible = show_party
+	if step.is_empty():
+		return
+	match String(step.get("carry", "")):
+		"water":
+			for sx: float in [-0.42, 0.42]:
+				_box(Vector3(0.22, 0.42, 0.3), Vector3(sx, 0.75, 0.05), _mat(Color(0.2, 0.45, 0.85)), carry_node)
+		"wood":
+			for k in 3:
+				_box(Vector3(0.16, 0.08, 1.9), Vector3(0.32, 1.48 + k * 0.09, 0), _mat(Color(0.72, 0.55, 0.34)), carry_node)
+		"form":
+			_box(Vector3(0.3, 0.4, 0.03), Vector3(0.3, 1.1, 0.32), _mat(Color(0.97, 0.96, 0.9)), carry_node)
+		"plants":
+			_box(Vector3(0.4, 0.25, 0.3), Vector3(0, 1.0, 0.36), _mat(Color(0.45, 0.3, 0.2)), carry_node)
+			_ball(0.2, Vector3(0, 1.25, 0.36), _mat(Color(0.3, 0.55, 0.25)), carry_node)
+		"torah":
+			_cap(0.17, 0.8, Vector3(0, 1.3, 0.36), _mat(Color(0.15, 0.2, 0.55)), carry_node)
+			for sy: float in [0.82, 1.78]:
+				_box(Vector3(0.07, 0.16, 0.07), Vector3(0, sy, 0.36), _mat(Color(0.85, 0.7, 0.3)), carry_node)
+			_box(Vector3(0.2, 0.2, 0.02), Vector3(0, 1.35, 0.54), _mat(Color(0.9, 0.78, 0.35)), carry_node)
+		"shofar":
+			_cap(0.06, 0.5, Vector3(0.28, 1.5, 0.3), _mat(Color(0.75, 0.62, 0.4)), carry_node).rotation.x = 1.0
+	var goal := _quest_goal(step)
+	match String(step.get("who", "")):
+		"sheep":
+			for k in 3:
+				var ewe := _simple_sheep(self, player.position + Vector3(1.5 + k * 1.2, 0, 1.5))
+				q_things.append(ewe)
+				q_follow.append([ewe, null])
+		"crowd":
+			for k in 5:
+				var friend := _make_person(Color.from_hsv(k * 0.19, 0.55, 0.9), Color.from_hsv(k * 0.13, 0.3, 0.4))
+				friend.root.position = player.position + Vector3(-1.5 - k * 1.3, 0, 1.2)
+				add_child(friend.root)
+				q_things.append(friend.root)
+				q_follow.append([friend.root, friend])
+	match String(step.get("what", "")):
+		"hole":
+			for k in 6:
+				var hole := _box(Vector3(0.9, 0.06, 0.9), DAWN + Vector3(-5.0 + k * 2.0, DAWN_H + 0.04, 11.4 + (k % 2) * 2.2), _mat(Color(0.35, 0.25, 0.15)))
+				q_things.append(hole)
+		"trash":
+			for k in 5:
+				var angle := k * 1.3 + 0.4
+				var junk := _box(Vector3(0.3, 0.42, 0.3), goal + Vector3(cos(angle) * (3.6 + k * 0.9), 0.21, sin(angle) * (3.6 + k * 0.9)), _mat([Color(0.85, 0.2, 0.2), Color(0.3, 0.5, 0.9), Color(0.9, 0.9, 0.9), Color(0.2, 0.2, 0.22), Color(0.95, 0.75, 0.2)][k]))
+				junk.rotation = Vector3(0.6 * k, k, 1.2)
+				q_things.append(junk)
+	if String(step.get("do", "")) == "guard":
+		clock = 22.5
+		_apply_daylight()
+
+
+func _quest_done() -> void:
+	var step: Dictionary = QUEST[quest]
+	var made := String(step.get("build", ""))
+	match made:
+		"spring":
+			var spring: Node3D = sites["spring_place"]
+			(spring.get_node("clean") as Node3D).visible = true
+			(spring.get_node("mud") as Node3D).visible = false
+			energy = 100.0
+		"tower":
+			clock = 5.6
+			day += 1
+			_new_day()
+			_apply_daylight()
+		"party":
+			party_t = 90.0
+		"finale":
+			redeemed = true
+			rent_owed = 0
+			clock = 5.7
+			_apply_daylight()
+			_play("shofar")
+			_finale()
+	_show_site(made, true)
+	_bless(float(step.get("pts", 0)))
+	for line: Array in step.get("say", []):
+		_story(line[0], line[1])
+	if made != "finale":
+		_play("win")
+	quest += 1
+	if quest < QUEST.size() and QUEST[quest].has("ch"):
+		story_queue.append(_h("פרק חדש") + "\n" + _h(String(QUEST[quest]["ch"])))
+	_quest_enter()
+	_save()
+
+
+## He comes up the hill at first light, quietly, on a white donkey.
+func _finale() -> void:
+	var mount := Node3D.new()
+	var white := _mat(Color(0.97, 0.97, 0.95))
+	_cap(0.4, 1.5, Vector3(0, 1.0, 0), white, mount).rotation.x = PI * 0.5
+	_ball(0.26, Vector3(0, 1.45, 0.9), white, mount, Vector3(0.8, 0.9, 1.4))
+	for sx: float in [-0.12, 0.12]:
+		_box(Vector3(0.07, 0.4, 0.07), Vector3(sx, 1.85, 0.8), white, mount)
+		for sz: float in [-0.5, 0.5]:
+			_box(Vector3(0.12, 0.8, 0.12), Vector3(sx * 2.0, 0.4, sz), white, mount)
+	var rider := _make_person(Color(0.98, 0.98, 0.96), Color(0.98, 0.98, 0.96))
+	rider.root.position = Vector3(0, 0.75, -0.1)
+	mount.add_child(rider.root)
+	var halo := OmniLight3D.new()
+	halo.light_color = Color(1.0, 0.92, 0.7)
+	halo.light_energy = 3.0
+	halo.omni_range = 16.0
+	halo.position.y = 3.0
+	mount.add_child(halo)
+	mount.position = DAWN + Vector3(0, 0, -30.0)
+	add_child(mount)
+	var way := create_tween()
+	way.tween_method(func(t: float) -> void:
+		var at := DAWN + Vector3(sin(t * 3.0) * 1.5, 0, lerpf(-30.0, -4.0, t))
+		mount.position = Vector3(at.x, _ground_y(at.x, at.z), at.z), 0.0, 1.0, 16.0)
+
+
+func _update_quest(delta: float) -> void:
+	# The story cards, one after another.
+	story_t -= delta
+	if story_t <= 0.0:
+		story_card.visible = not story_queue.is_empty()
+		if not story_queue.is_empty():
+			story_card.text = story_queue.pop_front()
+			story_t = 5.2
+	party_t = maxf(party_t - delta, 0.0)
+	if redeemed or party_t > 0.0:                    # the circle dance round the flag
+		var spin := Time.get_ticks_msec() * 0.0006
+		for k in party.size():
+			var angle := spin + k * TAU / party.size()
+			var guest := party[k]
+			guest.root.visible = true
+			guest.root.position = DAWN + Vector3(cos(angle) * 4.6, DAWN_H, sin(angle) * 4.6)
+			guest.root.rotation.y = -angle
+			_animate(guest, true, delta)
+	elif party[0].root.visible:
+		for guest in party:
+			guest.root.visible = false
+	quest_label.visible = not inside
+	quest_light.visible = false
+	quest_mark.visible = false
+	var built := 0
+	for key: String in sites:
+		if key != "spring_place" and (sites[key] as Node3D).visible:
+			built += 1
+	var tail := "  ·  גאולה %d%%  ·  יישוב %d/8" % [int(geula), built]
+	if quest >= QUEST.size():
+		quest_label.text = _h("ימות המשיח" + tail)
+		return
+	if inside:
+		return
+	var step: Dictionary = QUEST[quest]
+	var goal := _quest_goal(step)
+	var flat := Vector3(player.position.x, 0, player.position.z)
+	var away := 0.0
+	var how := String(step["do"])
+	var done := false
+	var on_foot := not driving
+	q_told = maxf(q_told - delta, 0.0)
+	match how:
+		"go":
+			done = on_foot and Vector2(goal.x - flat.x, goal.z - flat.z).length() < 2.6
+		"stay":
+			if on_foot and Vector2(goal.x - flat.x, goal.z - flat.z).length() < 2.4:
+				q_t += delta
+				if int(q_t * 2.5) != int((q_t - delta) * 2.5):
+					_play("dig")
+				me.limbs[3].rotation.x = -1.4 + sin(q_t * 14.0) * 0.5
+				done = q_t >= float(step["secs"])
+			else:
+				q_t = 0.0
+		"pay":
+			if on_foot and Vector2(goal.x - flat.x, goal.z - flat.z).length() < 2.6:
+				if money >= int(step["cost"]):
+					money -= int(step["cost"])
+					_play("pay")
+					done = true
+				elif q_told <= 0.0:
+					q_told = 12.0
+					_toast("חסרים לך ₪%d. עזור במקרי חירום, דוג, חפור אוצרות או עבוד - וחזור." % (int(step["cost"]) - money))
+		"hook":
+			done = q_count >= int(step["n"])
+		"find":
+			done = on_foot and Vector2(goal.x - flat.x, goal.z - flat.z).length() < 4.0
+		"full":
+			done = geula >= 100.0
+		"escort":
+			var solemn := String(step.get("who", "")) == "crowd"
+			var held := solemn and (running or driving or riding)
+			if held and q_told <= 0.0:
+				q_told = 6.0
+				_toast("לאט! ספר תורה מלווים בהליכה, ברגל.")
+			var lead := flat
+			var last := flat
+			for k in q_follow.size():
+				var node: Node3D = q_follow[k][0]
+				var at := Vector3(node.position.x, 0, node.position.z)
+				var gap := lead - at
+				var lost := not solemn and at.distance_to(flat) > 17.0
+				var moving := gap.length() > 1.9 and not held and not lost
+				if moving:
+					at += gap.normalized() * minf((6.4 if solemn else 5.6) * delta, gap.length() - 1.8)
+					node.rotation.y = atan2(gap.x, gap.z)
+				if lost and q_told <= 0.0:
+					q_told = 7.0
+					_play("baa")
+					_toast("הכבשים נשארו מאחור! חזור אליהן ולך לאט יותר.")
+				node.position = Vector3(at.x, _ground_y(at.x, at.z) + (absf(sin(Time.get_ticks_msec() * 0.01 + k)) * 0.18 if solemn and moving else 0.0), at.z)
+				if q_follow[k][1] != null:
+					_animate(q_follow[k][1], moving, delta)
+				lead = at
+				last = at
+			done = on_foot and not held and Vector2(goal.x - flat.x, goal.z - flat.z).length() < 4.0 and last.distance_to(Vector3(goal.x, 0, goal.z)) < 10.0
+		"gather":
+			var left := 0
+			var closest := 1e9
+			for thing in q_things:
+				var spot := thing as Node3D
+				if not spot.visible:
+					continue
+				var d := Vector2(spot.position.x - flat.x, spot.position.z - flat.z).length()
+				if d < 1.3 and on_foot:
+					spot.visible = false
+					_play("dig" if String(step.get("what", "")) == "hole" else "pick")
+					continue
+				left += 1
+				if d < closest:
+					closest = d
+					goal = spot.position
+			q_count = int(step["n"]) - left
+			done = left == 0
+		"guard":
+			var pen_at := DAWN + Vector3(-10.0, 0, 6.0)
+			q_t -= delta
+			if q_t <= 0.0 and q_spawned < int(step["n"]):
+				q_t = 3.4
+				q_spawned += 1
+				var jackal := Node3D.new()
+				var fur := _mat(Color(0.62, 0.5, 0.32))
+				_cap(0.2, 0.9, Vector3(0, 0.45, 0), fur, jackal).rotation.x = PI * 0.5
+				_ball(0.17, Vector3(0, 0.6, 0.5), fur, jackal, Vector3(0.9, 0.9, 1.4))
+				for sx: float in [-0.1, 0.1]:
+					_box(Vector3(0.06, 0.2, 0.04), Vector3(sx, 0.82, 0.45), fur, jackal)
+					_box(Vector3(0.05, 0.05, 0.02), Vector3(sx, 0.65, 0.72), shade_mat, jackal)      # eyes that shine in the dark
+				var from := rng.randf() * TAU
+				jackal.position = DAWN + Vector3(cos(from) * 25.0, 0, sin(from) * 25.0)
+				jackal.set_meta("flee", 0.0)
+				add_child(jackal)
+				q_things.append(jackal)
+			var failed := false
+			for thing in q_things:
+				var jackal := thing as Node3D
+				if not jackal.visible:
+					continue
+				var at := Vector3(jackal.position.x, 0, jackal.position.z)
+				var flee := float(jackal.get_meta("flee"))
+				if flee > 0.0:
+					var off := (at - flat).normalized()
+					at += off * 10.0 * delta
+					jackal.rotation.y = atan2(off.x, off.z)
+					jackal.set_meta("flee", flee - delta)
+					if flee - delta <= 0.0:
+						jackal.visible = false
+				else:
+					var to_pen := pen_at - at
+					at += to_pen.normalized() * 4.3 * delta
+					jackal.rotation.y = atan2(to_pen.x, to_pen.z)
+					if at.distance_to(flat) < 2.3 and on_foot:
+						jackal.set_meta("flee", 1.6)
+						q_count += 1
+						_play("woof")
+					elif to_pen.length() < 2.0:
+						failed = true
+					goal = jackal.position
+				jackal.position = Vector3(at.x, _ground_y(at.x, at.z), at.z)
+			if failed:
+				_play("lose")
+				_toast("תן חטף טלה! המשמרת מתחילה מחדש - רוץ אל התנים לפני שיגיעו לדיר.")
+				_quest_enter()
+				return
+			done = q_count >= int(step["n"])
+	if done:
+		_quest_done()
+		return
+	away = Vector2(goal.x - flat.x, goal.z - flat.z).length() if goal != Vector3.INF else 0.0
+	var text := String(step["t"]).replace("{c}", str(q_count))
+	if goal != Vector3.INF:
+		text += "  ·  %d מ'" % int(away)
+		if how != "find":
+			var floor_y := _ground_y(goal.x, goal.z)
+			quest_light.visible = true
+			quest_light.position = Vector3(goal.x, floor_y + 11.0, goal.z)
+			quest_mark.visible = away < 60.0
+			quest_mark.position = Vector3(goal.x, floor_y + 3.6 + sin(Time.get_ticks_msec() * 0.005) * 0.25, goal.z)
+	quest_label.text = _h(text) + "\n" + _h(tail.strip_edges().trim_prefix("·").strip_edges())
