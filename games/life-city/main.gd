@@ -343,6 +343,25 @@ var kit_cache := {}                  # kit models already read, ready to be stam
 var kit_meshes := {}
 var kit_groups := {}                 # stretch of town -> the scenery mesh being put together there
 var palettes := {}
+# --- action: emergencies, treasure, fishing, the race
+var hero := 0                        # stars earned by helping; they give you a rank in town
+var best_race := 0.0
+var mission := {}                    # the emergency under way ("kind", "time", ...); empty when all is calm
+var mission_wait := 22.0             # seconds until the next one
+var last_kind := ""
+var mission_label: Label
+var call_light: MeshInstance3D       # a column of light over the place where you are needed
+var actors: Array[Node] = []         # whatever belongs to the emergency; cleared away when it ends
+var coins: Array[Node3D] = []
+var coins_left := 0
+var digs: Array[Node3D] = []
+var dig_t := 0.0
+var hose: CPUParticles3D
+var fish_state := 0                  # 0 not fishing, 1 waiting for a bite, 2 a fish is on the hook
+var fish_t := 0.0
+var fish_spot := Vector3.ZERO
+var bobber: Node3D
+var race_gate := Vector3(-70, 0, 2.5)
 var room_lights := {}                # room -> its ceiling lamps; only the room you are in is lit
 var shade_mat: StandardMaterial3D    # lampshades that always glow
 var pane_mat: StandardMaterial3D     # daylight in an indoor window
@@ -439,6 +458,7 @@ func _ready() -> void:
 	_build_donkey()
 	_merge_static()
 	_finish_scenery()
+	_build_action()
 	var gfx := ConfigFile.new()
 	if gfx.load("user://life-city-gfx.cfg") == OK:
 		quality = clampi(int(gfx.get_value("gfx", "quality", 2)), 0, 2)     # what this device managed last time
@@ -1021,6 +1041,7 @@ func _new_day() -> void:
 		_play("alarm")
 	_family_day()
 	_reset_props()
+	_fresh_treasure()
 	_save()
 
 
@@ -1464,6 +1485,7 @@ func _physics_process(delta: float) -> void:
 			_toast("המים כאן כבר עמוקים. שוחים רק ליד המציל." if player.position.z <= NORTH_LIMIT + 0.05 else "כאן נגמרת העיר. הגדר סוגרת את הדרך.")
 	_update_focus()
 	_update_forest(delta)
+	_update_action(delta)
 	_update_hud()
 
 
@@ -1599,6 +1621,8 @@ func _new_game() -> void:
 	if herding:
 		_stop_herd(false)
 	owned.assign([true, false, false, false, false])
+	hero = 0
+	best_race = 0.0
 	hill_me = false
 	hill_gear.visible = false
 	day = 1
@@ -1662,6 +1686,8 @@ func _continue_game() -> void:
 	has_rifle = bool(cfg.get_value("life", "rifle", false))
 	has_can = bool(cfg.get_value("life", "can", false))
 	hill_me = bool(cfg.get_value("life", "hill_me", false))
+	hero = int(cfg.get_value("life", "hero", 0))
+	best_race = float(cfg.get_value("life", "best_race", 0.0))
 	var had: Array = cfg.get_value("life", "owned", [])
 	for k in owned.size():
 		owned[k] = k == 0 or (k < had.size() and bool(had[k]))
@@ -1693,6 +1719,9 @@ func _continue_game() -> void:
 
 
 func _begin() -> void:
+	_clear_mission()
+	mission_wait = 22.0
+	_fresh_treasure()
 	state = State.PLAY
 	busy = false
 	near = null
@@ -1714,7 +1743,8 @@ func _save() -> void:
 			["rifle", has_rifle], ["ammo", ammo], ["fuel", fuel], ["parcels", parcels], ["rent_owed", rent_owed],
 			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["family", family_joy], ["candles", candles_day], ["kiddush", kiddush_day],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading], ["car_damage", car_damage],
-			["can", has_can], ["car_model", car_model], ["hill_me", hill_me], ["owned", owned]]:
+			["can", has_can], ["car_model", car_model], ["hill_me", hill_me], ["owned", owned],
+			["hero", hero], ["best_race", best_race]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
 
@@ -2098,6 +2128,12 @@ func _build_sounds() -> void:
 		"skid": _tone(950, 700, 0.35, 0.22, 0.9),
 		"honk": _tone(430, 430, 0.4, 0.35),
 		"step": _tone(110, 70, 0.05, 0.035, 0.35),      # a soft pad, barely there
+		"coin": _tone(1250, 1900, 0.13, 0.2),
+		"win": _tone(620, 1320, 0.55, 0.3),
+		"lose": _tone(330, 110, 0.75, 0.3),
+		"splash": _tone(520, 180, 0.3, 0.3, 0.8),
+		"hiss": _tone(900, 600, 0.25, 0.12, 0.95),
+		"dig": _tone(160, 90, 0.18, 0.4, 0.7),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -2321,6 +2357,8 @@ func _interact(p: Place) -> void:
 			_take_parcel()
 		"parcel_out":
 			_drop_parcel()
+		"fish":
+			_fish(p)
 		_:
 			_open_panel(p)
 
@@ -7788,3 +7826,635 @@ func _hang_sign(pos: Vector3, text: String, color: Color) -> void:
 	l.outline_modulate = color.darkened(0.5)
 	l.position = pos + Vector3(0, 0, 0.06)
 	add_child(l)
+
+
+# ------------------------------------------------------------- action ----
+# There is always something going on: emergencies that need you right now, coins and gems lying about,
+# treasure to dig up, fish to catch and a race round the town. Helping earns money and hero stars.
+
+const RANKS: Array[String] = ["תושב חדש", "שכן טוב", "מתנדב מסור", "גיבור השכונה", "אגדת העיר"]
+const RANK_AT: Array[int] = [0, 3, 8, 15, 25]
+const KINDS: Array[String] = ["fire", "injured", "child", "thief", "stranded", "sheep", "drowning", "delivery"]
+const SHOP_FRONTS: Array[float] = [-91.0, -74.0, -58.0, -40.0, -24.0, -8.0, 8.0, 24.0, 40.0, 56.0, 72.0]
+const DOORSTEPS: Array[Vector3] = [Vector3(91.8, 0, -5.0), Vector3(102.8, 0, -5.0), Vector3(113.8, 0, -5.0), Vector3(-112, 0, -5.0),
+	Vector3(-126, 0, -5.0), Vector3(148, 0, -5.0), Vector3(53.6, 0, 9.6), Vector3(72.6, 0, 9.6)]
+const RACE: Array[Vector3] = [Vector3(-20, 0, 2.5), Vector3(40, 0, 2.5), Vector3(82, 0, -6), Vector3(82, 0, -40), Vector3(30, 0, -44),
+	Vector3(-47.75, 0, -40), Vector3(-47.75, 0, -6), Vector3(-70, 0, 2.5)]
+
+
+func _rank() -> String:
+	var at := 0
+	for k in RANK_AT.size():
+		if hero >= RANK_AT[k]:
+			at = k
+	return RANKS[at]
+
+
+func _glow(color: Color, energy: float = 1.5) -> StandardMaterial3D:
+	var m := _mat(color)
+	m.emission_enabled = true
+	m.emission = color
+	m.emission_energy_multiplier = energy
+	return m
+
+
+func _build_action() -> void:
+	mission_label = _label(30, Color(1.0, 0.93, 0.6))
+	mission_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 20)
+	mission_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	mission_label.position.y = 132.0
+	hud.add_child(mission_label)
+	# The call_light: a tall shaft of light that shows where to run.
+	var shaft := CylinderMesh.new()
+	shaft.top_radius = 0.5
+	shaft.bottom_radius = 0.9
+	shaft.height = 26.0
+	shaft.radial_segments = 8
+	call_light = MeshInstance3D.new()
+	call_light.mesh = shaft
+	var light := _glow(Color(1.0, 0.85, 0.2), 2.2)
+	light.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	light.albedo_color.a = 0.32
+	light.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	call_light.material_override = light
+	call_light.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	call_light.visible = false
+	add_child(call_light)
+	# Water from the fire hose.
+	hose = _smoke(Color(0.55, 0.8, 1.0), 0.45, 40)
+	hose.gravity = Vector3(0, -6.0, 0)
+	hose.initial_velocity_min = 9.0
+	hose.initial_velocity_max = 11.0
+	hose.spread = 8.0
+	hose.emitting = false
+	# Coins all over town and gems in its far corners. They come back every morning.
+	var spots := RandomNumberGenerator.new()
+	spots.seed = 20240614
+	var gold := _glow(Color(1.0, 0.8, 0.15), 0.7)
+	gold.metallic = 0.8
+	gold.roughness = 0.3
+	var disc := CylinderMesh.new()
+	disc.top_radius = 0.38
+	disc.bottom_radius = 0.38
+	disc.height = 0.09
+	disc.radial_segments = 14
+	var areas: Array = [[Vector2(WEST + 6, -5.0), Vector2(EAST - 6, -2.6), 16], [Vector2(WEST + 6, 5.2), Vector2(EAST - 6, 6.2), 12],
+		[Vector2(-44, 9), Vector2(46, 33), 12], [Vector2(-165, FOREST_Z + 3), Vector2(205, FOREST_END + 18), 22],
+		[Vector2(WEST + 6, SEA_Z - 9), Vector2(EAST - 6, SEA_Z - 1.5), 10], [Vector2(WEST + 6, NORTH_Z + 3.6), Vector2(EAST - 6, NORTH_Z + 4.8), 8],
+		[Vector2(97, 15), Vector2(147, 41), 6]]
+	for area: Array in areas:
+		for k in int(area[2]):
+			var at := Vector3(spots.randf_range((area[0] as Vector2).x, (area[1] as Vector2).x), 0, spots.randf_range((area[0] as Vector2).y, (area[1] as Vector2).y))
+			var coin := MeshInstance3D.new()
+			coin.mesh = disc
+			coin.material_override = gold
+			coin.rotation.x = PI * 0.5
+			coin.position = at + Vector3(0, _ground_y(at.x, at.z) + 1.0, 0)
+			coin.visibility_range_end = 70.0
+			coin.set_meta("worth", 5)
+			add_child(coin)
+			coins.append(coin)
+	var jewel := SphereMesh.new()
+	jewel.radius = 0.36
+	jewel.height = 0.95
+	jewel.radial_segments = 4
+	jewel.rings = 2
+	for at: Vector3 in [Vector3(WEST + 3, 0, FOREST_END - 4), Vector3(EAST - 3, 0, FOREST_END - 6), Vector3(LAKE.x - 13, 0, LAKE.z + 16),
+			Vector3(EAST - 4, 0, SEA_Z - 8), Vector3(WEST + 4, 0, SEA_Z - 8), Vector3(122, HILL_H, 40.5), Vector3(183, 0, 31), Vector3(-3, 0, FOREST_END + 20)]:
+		var gem := MeshInstance3D.new()
+		gem.mesh = jewel
+		gem.material_override = _glow(Color(0.3, 0.75, 1.0), 1.2)
+		gem.position = at + Vector3(0, 1.1, 0)
+		gem.visibility_range_end = 90.0
+		gem.set_meta("worth", 40)
+		add_child(gem)
+		coins.append(gem)
+	# Five crosses on the ground mark buried treasure; they move every day.
+	var red := _mat(Color(0.85, 0.12, 0.1))
+	for k in 5:
+		var cross := Node3D.new()
+		for turn: float in [-0.78, 0.78]:
+			var arm := _box(Vector3(1.5, 0.05, 0.28), Vector3(0, 0.04, 0), red, cross)
+			arm.rotation.y = turn
+		add_child(cross)
+		digs.append(cross)
+	_fresh_treasure()
+	# Fishing spots on the lake shore and the sea front.
+	for at: Vector3 in [Vector3(LAKE.x + 6.0, 0, LAKE.z - 3.9), Vector3(34, 0, SEA_Z - 9.0)]:
+		_box(Vector3(1.8, 0.05, 1.3), at + Vector3(0, 0.05, 0), _mat(Color(0.3, 0.6, 0.95)))
+		_sign("דיג", at + Vector3(1.6, 2.3, 0.9), 64)
+		_box(Vector3(0.12, 2.0, 0.12), at + Vector3(1.6, 1.0, 0.9), _mat(Color(0.3, 0.2, 0.12)))
+		var p := Place.new()
+		p.key = "fish"
+		p.title = "דיג"
+		p.prompt = "להטיל חכה"
+		p.door = at
+		places.append(p)
+	bobber = Node3D.new()
+	_ball(0.16, Vector3.ZERO, _mat(Color(0.9, 0.15, 0.1)), bobber)
+	_ball(0.13, Vector3(0, 0.12, 0), _mat(Color(0.97, 0.97, 0.97)), bobber)
+	bobber.visible = false
+	add_child(bobber)
+	# The starting arch of the race round town.
+	for side: float in [-1.0, 1.0]:
+		_box(Vector3(0.3, 5.0, 0.3), race_gate + Vector3(0, 2.5, side * 4.2 - 1.0), _mat(Color(0.15, 0.15, 0.18)))
+	var banner := _box(Vector3(0.25, 1.0, 8.6), race_gate + Vector3(0, 5.0, -1.0), _mat(Color(0.9, 0.15, 0.12)))
+	banner.set_meta("keep", true)
+	_sign("מרוץ העיר — סעו דרך השער!", race_gate + Vector3(0, 6.3, -1.0), 64)
+
+
+## New coins, gems and buried treasure for a new day.
+func _fresh_treasure() -> void:
+	coins_left = 0
+	for coin in coins:
+		coin.visible = true
+		if int(coin.get_meta("worth")) == 5:
+			coins_left += 1
+	for cross in digs:
+		var beach := rng.randf() < 0.35
+		var at := Vector3(rng.randf_range(WEST + 8, EAST - 8), 0, rng.randf_range(SEA_Z - 8.5, SEA_Z - 2.0)) if beach \
+			else Vector3(rng.randf_range(-160, 80), 0, rng.randf_range(FOREST_Z + 5, FOREST_END + 15))
+		cross.position = at
+		cross.visible = true
+
+
+func _reward(amount: int, star: bool, text: String) -> void:
+	money += amount
+	_play("win")
+	if star:
+		var was := _rank()
+		hero += 1
+		if _rank() != was:
+			text += "  עלית בדרגה: %s!" % _rank()
+	_toast(text)
+
+
+func _update_action(delta: float) -> void:
+	if inside:
+		mission_label.visible = false
+		return
+	mission_label.visible = true
+	var me_at := player.position
+	var flat := Vector3(me_at.x, 0, me_at.z)
+	# Coins and gems.
+	var grab := 2.4 if driving else 1.5
+	for coin in coins:
+		if not coin.visible:
+			continue
+		coin.rotation.y += delta * 3.0
+		if absf(coin.position.x - me_at.x) < grab and absf(coin.position.z - me_at.z) < grab:
+			coin.visible = false
+			var worth := int(coin.get_meta("worth"))
+			money += worth
+			_play("coin")
+			if worth > 5:
+				_toast("מצאת יהלום! +₪%d" % worth)
+			else:
+				coins_left -= 1
+				if coins_left == 0:
+					_reward(100, true, "אספת את כל המטבעות בעיר! בונוס ₪100.")
+	# Buried treasure: stand on a cross and you dig.
+	var digging := false
+	if not driving and not riding:
+		for cross in digs:
+			if cross.visible and cross.position.distance_to(flat) < 1.3:
+				digging = true
+				dig_t += delta
+				if int(dig_t * 3.0) != int((dig_t - delta) * 3.0):
+					_play("dig")
+				if dig_t > 1.6:
+					cross.visible = false
+					var luck := rng.randf()
+					if luck < 0.2:
+						_toast("חפרת... ומצאת נעל ישנה. אולי בפעם הבאה!")
+						_play("no")
+					elif luck < 0.85:
+						_reward(rng.randi_range(4, 12) * 10, false, "מצאת אוצר קבור!")
+					else:
+						_reward(200, true, "תיבת אוצר מלאה זהב! ₪200")
+	if not digging:
+		dig_t = 0.0
+	_update_fishing(delta, flat)
+	# Emergencies.
+	if mission.is_empty():
+		hose.emitting = false
+		mission_label.modulate = Color.WHITE
+		mission_label.text = _h("%s · %d כוכבים%s" % [_rank(), hero, ("  ·  חפירה..." if digging else "")])
+		if driving and flat.distance_to(race_gate) < 5.0 and absf(car_speed) > 4.0:
+			_start_mission("race")
+			return
+		if not _is_shabbat():
+			mission_wait -= delta
+		if mission_wait <= 0.0:
+			var kind: String = KINDS[rng.randi() % KINDS.size()]
+			if kind != last_kind:
+				_start_mission(kind)
+		return
+	mission["time"] = float(mission["time"]) - delta
+	var kind: String = mission["kind"]
+	var goal: Vector3 = mission["at"]
+	match kind:
+		"fire":
+			var alive := 0
+			var spraying := false
+			for flame: Node3D in mission["flames"]:
+				var life := float(flame.get_meta("life"))
+				if life <= 0.0:
+					continue
+				alive += 1
+				flame.scale = Vector3.ONE * (0.55 + 0.45 * life) * (1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02 + flame.position.x))
+				var d := Vector2(flame.position.x - me_at.x, flame.position.z - me_at.z).length()
+				if d < 4.6 and not driving and not spraying:
+					spraying = true
+					life -= delta / 1.5
+					flame.set_meta("life", life)
+					hose.position = me_at + Vector3(0, 1.3, 0)
+					hose.direction = (flame.position + Vector3(0, 0.8, 0) - hose.position).normalized()
+					me.root.rotation.y = atan2(flame.position.x - me_at.x, flame.position.z - me_at.z)
+					me.limbs[3].rotation.x = -1.5
+					if life <= 0.0:
+						flame.visible = false
+						_play("hiss")
+			hose.emitting = spraying
+			if alive == 0:
+				_end_mission(true, 120, "כיבית את השריפה! כל הרחוב מודה לך.")
+				return
+		"injured":
+			var hurt: Node3D = mission["who"]
+			if not bool(mission["got"]):
+				if hurt.position.distance_to(flat) < 2.0 and not driving:
+					mission["got"] = true
+					mission["at"] = Vector3(-40, 0, -4.7)
+					_toast("הרמת את הפצוע. מהר למרפאה!")
+					_play("pick")
+			else:
+				hurt.visible = not driving
+				hurt.position = me_at + Vector3(0, 1.75, 0)
+				hurt.rotation.y = me.root.rotation.y + PI * 0.5
+				if flat.distance_to(mission["at"]) < 3.2:
+					_end_mission(true, 100, "הפצוע הגיע למרפאה בזמן. הצלת חיים!")
+					return
+		"child":
+			var kid: Person = mission["who"]
+			var parent: Person = mission["parent"]
+			var kid_at := kid.root.position
+			if not bool(mission["got"]):
+				_animate(kid, false, delta)
+				if kid_at.distance_to(flat) < 2.2 and not driving:
+					mission["got"] = true
+					mission["at"] = parent.root.position
+					_say(kid, "קח אותי לאמא!", 4.0)
+					_play("pick")
+			else:
+				var gap := flat - kid_at
+				var moving := gap.length() > 1.7
+				if moving:
+					kid.root.position += gap.normalized() * minf(12.5 * delta, gap.length() - 1.6)
+					kid.root.rotation.y = atan2(gap.x, gap.z)
+				kid.root.position.y = _ground_y(kid.root.position.x, kid.root.position.z)
+				_animate(kid, moving, delta * 1.5)
+				if kid.root.position.distance_to(parent.root.position) < 3.2:
+					_say(parent, "מצאת אותו! תודה רבה!", 5.0)
+					_end_mission(true, 80, "הילד חזר לאמא שלו. איזו הקלה!")
+					return
+		"thief":
+			var crook: Person = mission["who"]
+			var at := crook.root.position
+			var away := signf(at.x - me_at.x)
+			if away == 0.0 or at.x > EAST - 6.0:
+				away = -1.0
+			if at.x < WEST + 6.0:
+				away = 1.0
+			if absf(at.x - me_at.x) > 30.0:
+				away *= 0.4                              # he slows to catch his breath when he thinks he lost you
+			crook.root.position.x += away * 7.6 * delta
+			crook.root.position.z = lerpf(at.z, -3.4 if int(at.x / 14.0) % 2 == 0 else 5.6, delta * 1.5)
+			crook.root.rotation.y = PI * 0.5 * signf(away)
+			_animate(crook, true, delta * 1.5)
+			mission["at"] = crook.root.position
+			if crook.root.position.distance_to(flat) < (3.0 if driving else 1.6):
+				_end_mission(true, 90, "תפסת את הגנב! התיק חזר לבעליו.")
+				return
+		"stranded":
+			if flat.distance_to(goal) < 3.6 and not driving:
+				if has_can:
+					has_can = false
+					_end_mission(true, 110, "מילאת לו דלק והוא ממשיך בדרך. כל הכבוד!")
+					return
+				elif not bool(mission["told"]):
+					mission["told"] = true
+					_toast("\"נגמר לי הדלק!\" — קנה ג'ריקן בתחנת הדלק והבא אותו.")
+		"sheep":
+			var left := 0
+			for ewe: Node3D in mission["flock"]:
+				if not ewe.visible:
+					continue
+				left += 1
+				var run := ewe.position - flat
+				if run.length() < 7.0 and run.length() > 0.01:
+					ewe.position += run.normalized() * 3.2 * delta      # it trots away, but slower than you
+					ewe.rotation.y = atan2(run.x, run.z)
+				ewe.position.x = clampf(ewe.position.x, WEST + 4, EAST - 4)
+				ewe.position.z = clampf(ewe.position.z, -5.0, 30.0)
+				ewe.position.y = absf(sin(Time.get_ticks_msec() * 0.012 + ewe.position.x)) * 0.12
+				if run.length() < 1.7 and not driving:
+					ewe.visible = false
+					left -= 1
+					money += 30
+					_play("baa")
+			if left > 0:
+				mission["at"] = _nearest_visible(mission["flock"], flat)
+			else:
+				_end_mission(true, 0, "כל הכבשים חזרו לחווה. +₪90")
+				return
+		"drowning":
+			var swimmer: Node3D = mission["who"]
+			swimmer.position.y = -0.25 + sin(Time.get_ticks_msec() * 0.006) * 0.18
+			swimmer.rotation.y += delta * 2.0
+			if absf(me_at.x - swimmer.position.x) < 4.0 and me_at.z < SEA_Z - 8.6:
+				_play("splash")
+				_end_mission(true, 130, "זרקת גלגל הצלה ומשכת אותו לחוף. הצלת אותו!")
+				return
+		"delivery":
+			if not bool(mission["got"]):
+				if flat.distance_to(goal) < 2.6:
+					mission["got"] = true
+					mission["at"] = mission["home"]
+					mission["time"] = 25.0 + flat.distance_to(mission["home"]) / 4.5
+					_toast("החבילה אצלך. מהר לבית שמסומן באור!")
+					_play("pick")
+			elif flat.distance_to(goal) < 3.0:
+				_end_mission(true, 70 + int(float(mission["time"])), "המשלוח הגיע חם! קיבלת גם טיפ על המהירות.")
+				return
+		"race":
+			if not driving:
+				_end_mission(false, 0, "יצאת מהרכב — המרוץ בוטל.")
+				return
+			if flat.distance_to(goal) < 7.0:
+				mission["step"] = int(mission["step"]) + 1
+				_play("coin")
+				if int(mission["step"]) >= RACE.size():
+					var took := 200.0 - float(mission["time"])
+					var prize := 150 if took < 55.0 else (100 if took < 75.0 else 50)
+					var record := best_race <= 0.0 or took < best_race
+					if record:
+						best_race = took
+					_end_mission(true, prize, "סיימת את המרוץ ב-%.1f שניות!%s" % [took, " שיא חדש!" if record else ""])
+					return
+				mission["at"] = RACE[int(mission["step"])]
+	if mission.is_empty():
+		return
+	goal = mission["at"]
+	call_light.position = Vector3(goal.x, _ground_y(goal.x, goal.z) + 13.0, goal.z)
+	var secs := int(ceil(float(mission["time"])))
+	mission_label.modulate = Color(1.0, 0.45, 0.4) if secs <= 15 and secs % 2 == 0 else Color.WHITE
+	mission_label.text = _h("%s  ·  %d מ'  ·  %d שניות" % [mission["title"], int(flat.distance_to(goal)), maxi(secs, 0)])
+	if float(mission["time"]) <= 0.0:
+		_end_mission(false, 0, String(mission["sad"]))
+
+
+func _nearest_visible(nodes: Array, from: Vector3) -> Vector3:
+	var best := from
+	var closest := 1e9
+	for n: Node3D in nodes:
+		if n.visible and n.position.distance_to(from) < closest:
+			closest = n.position.distance_to(from)
+			best = n.position
+	return best
+
+
+## A spot on the pavement some way from where you stand, for an emergency to happen at.
+func _street_spot(near_by: float, far: float) -> Vector3:
+	var side := 1.0 if rng.randf() < 0.5 else -1.0
+	var x := clampf(player.position.x + side * rng.randf_range(near_by, far), WEST + 10.0, EAST - 10.0)
+	return Vector3(x, 0, -3.3 if rng.randf() < 0.7 else 5.6)
+
+
+func _start_mission(kind: String) -> void:
+	var from := Vector3(player.position.x, 0, player.position.z)
+	var at := _street_spot(25.0, 70.0)
+	mission = {"kind": kind, "at": at, "got": false, "told": false, "title": "", "sad": ""}
+	match kind:
+		"fire":
+			var x: float = SHOP_FRONTS[rng.randi() % SHOP_FRONTS.size()]
+			at = Vector3(x, 0, -5.2)
+			var flames: Array = []
+			for k in 4:
+				var flame := Node3D.new()
+				flame.position = Vector3(x - 3.0 + k * 2.0, 0, -5.6)
+				add_child(flame)
+				for part in 3:
+					var tongue := CylinderMesh.new()
+					tongue.top_radius = 0.0
+					tongue.bottom_radius = 0.55 - part * 0.14
+					tongue.height = 1.5 + part * 0.5
+					tongue.radial_segments = 6
+					var mi := MeshInstance3D.new()
+					mi.mesh = tongue
+					mi.material_override = _glow([Color(1.0, 0.35, 0.05), Color(1.0, 0.6, 0.1), Color(1.0, 0.9, 0.3)][part], 2.5)
+					mi.position = Vector3((part - 1) * 0.3, tongue.height * 0.5, part * 0.1)
+					flame.add_child(mi)
+				var smoke := _smoke(Color(0.2, 0.2, 0.22), 2.6, 18)
+				smoke.position.y = 2.0
+				smoke.reparent(flame, false)
+				smoke.emitting = true
+				flame.set_meta("life", 1.0)
+				flames.append(flame)
+				actors.append(flame)
+			mission["flames"] = flames
+			mission["title"] = "שריפה! רוץ לכבות"
+			mission["sad"] = "לא הספקת... הכבאים הגיעו מאוחר והחנות ניזוקה."
+		"injured":
+			var hurt := _make_person(Color.from_hsv(rng.randf(), 0.5, 0.85), Color(0.3, 0.3, 0.4))
+			hurt.root.position = at + Vector3(0, 0.3, 0)
+			hurt.root.rotation.x = -PI * 0.5
+			add_child(hurt.root)
+			actors.append(hurt.root)
+			mission["who"] = hurt.root
+			mission["title"] = "אדם נפצע! קח אותו למרפאה"
+			mission["sad"] = "האמבולנס פינה אותו לבד, מאוחר מדי. בפעם הבאה מהר יותר."
+		"child":
+			var kid := _make_person(Color(0.95, 0.75, 0.2), Color(0.25, 0.35, 0.6))
+			kid.root.scale = Vector3.ONE * 0.62
+			at = Vector3(rng.randf_range(-40, 44), 0, rng.randf_range(FOREST_Z + 4, FOREST_Z + 34))
+			kid.root.position = at
+			add_child(kid.root)
+			_bubble_for(kid, 2.3)
+			_say(kid, "אמא! איפה את?", 600.0)
+			var parent := _make_person(Color(0.75, 0.3, 0.45), Color(0.3, 0.25, 0.4))
+			parent.root.position = PLAYGROUND + Vector3(-6.0, 0, -6.2)
+			add_child(parent.root)
+			_bubble_for(parent, 2.6)
+			_say(parent, "הילד שלי הלך לאיבוד ביער!", 600.0)
+			actors.append(kid.root)
+			actors.append(parent.root)
+			mission["who"] = kid
+			mission["parent"] = parent
+			mission["title"] = "ילד אבוד ביער! מצא אותו"
+			mission["sad"] = "החיפוש נמשך יותר מדי. המשטרה מצאה את הילד, מפוחד ובוכה."
+		"thief":
+			var crook := _make_person(Color(0.12, 0.12, 0.14), Color(0.15, 0.15, 0.2))
+			_balaclava(crook.root)
+			at = _street_spot(13.0, 18.0)
+			crook.root.position = at
+			add_child(crook.root)
+			_box(Vector3(0.45, 0.4, 0.2), Vector3(0.3, 1.0, 0.25), _mat(Color(0.7, 0.45, 0.2)), crook.root)     # the stolen bag
+			actors.append(crook.root)
+			mission["who"] = crook
+			mission["title"] = "גנב חטף תיק! תפוס אותו"
+			mission["sad"] = "הגנב נעלם בין הסמטאות עם התיק."
+			_play("ouch")
+		"stranded":
+			at = Vector3(at.x, 0, 5.3)
+			var wreck := _make_car(Color(0.6, 0.6, 0.65), "sedan")
+			wreck.position = at
+			wreck.rotation.y = PI * 0.5
+			var fumes := _smoke(Color(0.85, 0.85, 0.88), 1.8, 14)
+			fumes.position = Vector3(0, 1.2, 1.9)
+			fumes.reparent(wreck, false)
+			fumes.emitting = true
+			actors.append(wreck)
+			var driver := _make_person(Color(0.3, 0.55, 0.75), Color(0.3, 0.3, 0.35))
+			driver.root.position = at + Vector3(2.6, 0, 1.2)
+			add_child(driver.root)
+			actors.append(driver.root)
+			mission["at"] = at + Vector3(2.6, 0, 1.2)
+			mission["title"] = "רכב תקוע בלי דלק! הבא ג'ריקן"
+			mission["sad"] = "הנהג התייאש וגרר את הרכב. חבל."
+		"sheep":
+			var flock: Array = []
+			for k in 3:
+				var ewe := Node3D.new()
+				_cap(0.42, 1.2, Vector3(0, 0.75, 0), _mat(Color(0.96, 0.95, 0.9)), ewe).rotation.x = PI * 0.5
+				_ball(0.24, Vector3(0, 0.95, 0.7), _mat(Color(0.18, 0.16, 0.16)), ewe)
+				for sx: float in [-0.22, 0.22]:
+					for sz: float in [-0.35, 0.35]:
+						_box(Vector3(0.1, 0.5, 0.1), Vector3(sx, 0.25, sz), _mat(Color(0.18, 0.16, 0.16)), ewe)
+				ewe.position = _street_spot(14.0, 40.0) + Vector3(0, 0, rng.randf_range(-1.0, 8.0))
+				add_child(ewe)
+				flock.append(ewe)
+				actors.append(ewe)
+			mission["flock"] = flock
+			mission["at"] = (flock[0] as Node3D).position
+			mission["title"] = "כבשים ברחו לרחוב! תפוס אותן"
+			mission["sad"] = "הכבשים התפזרו בכל העיר. הרועה יחפש אותן כל הלילה."
+			_play("baa")
+		"drowning":
+			var swimmer := Node3D.new()
+			_ball(0.26, Vector3(0, 0.3, 0), _mat(Color(0.95, 0.78, 0.62)), swimmer)
+			for sx: float in [-0.4, 0.4]:
+				_box(Vector3(0.12, 0.7, 0.12), Vector3(sx, 0.6, 0), _mat(Color(0.95, 0.78, 0.62)), swimmer).rotation.z = -sx
+			at = Vector3(clampf(player.position.x + rng.randf_range(-45, 45), WEST + 12, EAST - 12), 0, SEA_Z - 14.0)
+			swimmer.position = at
+			add_child(swimmer)
+			actors.append(swimmer)
+			mission["who"] = swimmer
+			mission["at"] = Vector3(at.x, 0, SEA_Z - 9.0)
+			mission["title"] = "מישהו טובע בים! רוץ לקו המים"
+			mission["sad"] = "המציל הגיע ברגע האחרון. זה היה קרוב מדי..."
+		"delivery":
+			mission["at"] = Vector3(-8, 0, -4.7)
+			mission["home"] = DOORSTEPS[rng.randi() % DOORSTEPS.size()]
+			mission["title"] = "משלוח דחוף! אסוף מהסופר"
+			mission["sad"] = "המשלוח התקרר והלקוח ביטל."
+		"race":
+			mission["step"] = 0
+			mission["at"] = RACE[0]
+			mission["title"] = "מרוץ העיר! עבור בכל שער אור"
+			mission["sad"] = "הזמן נגמר לפני קו הסיום."
+			_play("honk")
+	last_kind = kind
+	var goal: Vector3 = mission["at"]
+	# Enough time to get there on foot, with a little to spare; the race has its own clock.
+	mission["time"] = 200.0 if kind == "race" else 28.0 + from.distance_to(goal) / 4.2 + (60.0 if kind in ["stranded", "child", "injured", "sheep"] else 0.0)
+	call_light.visible = true
+	if kind != "race":
+		_play("alarm")
+		_toast("חירום! " + String(mission["title"]))
+
+
+func _end_mission(won: bool, prize: int, text: String) -> void:
+	var kind: String = mission.get("kind", "")
+	_clear_mission()
+	mission_wait = rng.randf_range(26.0, 48.0)
+	if won:
+		if kind == "sheep":
+			_reward(0, true, text)
+		else:
+			_reward(prize, kind != "race", "%s  +₪%d" % [text, prize])
+	else:
+		_play("lose")
+		if kind != "race":
+			hero = maxi(hero - 1, 0)
+		_toast(text)
+
+
+func _clear_mission() -> void:
+	mission = {}
+	for thing in actors:
+		if is_instance_valid(thing):
+			thing.queue_free()
+	actors.clear()
+	if call_light != null:
+		call_light.visible = false
+	if hose != null:
+		hose.emitting = false
+
+
+## Fishing: cast, wait for the bite, then strike at once.
+func _fish(p: Place) -> void:
+	if _shabbat_block():
+		return
+	match fish_state:
+		0:
+			fish_state = 1
+			fish_t = rng.randf_range(1.6, 4.5)
+			fish_spot = p.door
+			var out := Vector3(0.6, 0, 4.0) if p.door.z > 0.0 else Vector3(0, 0, -4.2)
+			bobber.position = p.door + out + Vector3(0, 0.1, 0)
+			bobber.visible = true
+			_play("splash")
+			_toast("החכה במים... חכה לדג, ואז לחץ שוב מהר!")
+		1:
+			fish_state = 0
+			bobber.visible = false
+			_play("no")
+			_toast("מוקדם מדי! הדג ברח.")
+		2:
+			fish_state = 0
+			bobber.visible = false
+			var luck := rng.randf()
+			if luck < 0.08:
+				_play("no")
+				_toast("דגת... מגף ישן.")
+			elif luck < 0.6:
+				_reward(15, false, "דג קטן! מכרת אותו ב-₪15.")
+			elif luck < 0.9:
+				_reward(35, false, "דג יפה! +₪35")
+			else:
+				_reward(90, true, "דג ענק! כל החוף מוחא כפיים. +₪90")
+
+
+func _update_fishing(delta: float, flat: Vector3) -> void:
+	if fish_state == 0:
+		return
+	if flat.distance_to(fish_spot) > 3.0 or driving:
+		fish_state = 0
+		bobber.visible = false
+		return
+	fish_t -= delta
+	me.limbs[3].rotation.x = -1.2
+	if fish_state == 1:
+		bobber.position.y = 0.1 + sin(Time.get_ticks_msec() * 0.004) * 0.04
+		if fish_t <= 0.0:
+			fish_state = 2
+			fish_t = 0.95
+			_play("splash")
+			_toast("יש דג!! לחץ עכשיו!")
+	elif fish_state == 2:
+		bobber.position.y = -0.1 + sin(Time.get_ticks_msec() * 0.05) * 0.08
+		if fish_t <= 0.0:
+			fish_state = 0
+			bobber.visible = false
+			_play("no")
+			_toast("הדג השתחרר. נסה שוב!")
