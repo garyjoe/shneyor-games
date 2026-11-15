@@ -2668,8 +2668,9 @@ func _build_forest() -> void:
 	for k in 20:
 		_make_animal(k < 9)
 	for k in 6:
-		# Robbers dress like anyone else, so you only know them by what they do.
+		# Robbers wear ordinary clothes; the black stocking cap is how you know them.
 		var t := _make_person(Color.from_hsv(rng.randf(), rng.randf_range(0.25, 0.6), rng.randf_range(0.5, 0.85)), Color.from_hsv(rng.randf_range(0.55, 0.7), rng.randf_range(0.1, 0.5), rng.randf_range(0.2, 0.45)))
+		_balaclava(t.root)
 		t.town = k >= 3
 		add_child(t.root)
 		thugs.append(t)
@@ -6587,8 +6588,9 @@ func _build_hill_farm() -> void:
 	_build_hill()
 	# Sheep thieves in red lurk round the hill. Shoot at them, run, or phone the police.
 	for k in 5:
-		# Robbers dress like anyone else, so you only know them by what they do.
+		# Robbers wear ordinary clothes; the black stocking cap is how you know them.
 		var t := _make_person(Color.from_hsv(rng.randf(), rng.randf_range(0.25, 0.6), rng.randf_range(0.5, 0.85)), Color.from_hsv(rng.randf_range(0.55, 0.7), rng.randf_range(0.1, 0.5), rng.randf_range(0.2, 0.45)))
+		_balaclava(t.root)
 		t.hill = true
 		t.name = "גנב כבשים"
 		add_child(t.root)
@@ -8460,6 +8462,7 @@ func _start_mission(kind: String) -> void:
 			mission["sad"] = "החיפוש נמשך יותר מדי. המשטרה מצאה את הילד, מפוחד ובוכה."
 		"thief":
 			var crook := _make_person(Color.from_hsv(rng.randf(), rng.randf_range(0.25, 0.6), rng.randf_range(0.5, 0.85)), Color.from_hsv(rng.randf_range(0.55, 0.7), rng.randf_range(0.1, 0.5), rng.randf_range(0.2, 0.45)))
+			_balaclava(crook.root)
 			at = _street_spot(13.0, 18.0)
 			crook.root.position = at
 			add_child(crook.root)
@@ -9356,3 +9359,14 @@ func _update_quest(delta: float) -> void:
 			quest_mark.visible = away < 60.0
 			quest_mark.position = Vector3(goal.x, floor_y + 3.6 + sin(Time.get_ticks_msec() * 0.005) * 0.25, goal.z)
 	quest_label.text = _h(text) + "\n" + _h(tail.strip_edges().trim_prefix("·").strip_edges())
+
+
+## A robber's black stocking cap: it covers the whole head and leaves only a slit for the eyes.
+func _balaclava(root: Node3D) -> void:
+	var wool := _mat(Color(0.07, 0.07, 0.08))
+	_ball(0.212, Vector3(0, 1.75, -0.005), wool, root, Vector3(0.98, 1.14, 1.03))
+	_cap(0.075, 0.16, Vector3(0, 1.57, 0), wool, root)                                   # down over the neck
+	_box(Vector3(0.21, 0.05, 0.03), Vector3(0, 1.765, 0.2), _mat(Color(0.9, 0.72, 0.56)), root)   # the eye slit
+	for sx: float in [-0.055, 0.055]:
+		_ball(0.014, Vector3(sx, 1.765, 0.216), _mat(Color(0.1, 0.08, 0.07)), root, Vector3(1.0, 1.0, 0.4))
+	_limit(root, 70.0)
