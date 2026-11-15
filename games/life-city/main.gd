@@ -80,7 +80,7 @@ const LESSON_PRICE := 40
 const NAMES: Array[String] = ["דני", "מיכל", "יוסי", "נועה", "אבי", "תמר", "רון", "שירה", "איתי", "מאיה", "עומר", "יעל",
 	"גיל", "ליאת", "אורי", "הדס", "נדב", "רותי", "אלון", "דנה", "משה", "ענת", "בועז", "קרן", "עידו", "טל"]
 const CHATS: Array[String] = ["שלום! איזה יום יפה.", "מה שלומך? טוב לראות אותך.", "שמעת? במסעדה מחפשים עובדים.", "ביער יש הרבה צבאים השנה.",
-	"בלילה עדיף להיזהר מהאנשים באדום.", "אני אוהב לשבת בפארק ליד האגם.", "הרופאה במרפאה ממש נחמדה.", "באולם ההופעות יש מופעים כל ערב.",
+	"בלילה עדיף להיזהר משודדים.", "אני אוהב לשבת בפארק ליד האגם.", "הרופאה במרפאה ממש נחמדה.", "באולם ההופעות יש מופעים כל ערב.",
 	"שיהיה לך יום נהדר!", "אם תופיע באולם, אני אבוא לראות."]
 const CAN_PRICE := 15
 const CAN_FUEL := 25.0
@@ -1813,7 +1813,7 @@ func _show_menu() -> void:
 		"תנועה: חיצים או WASD · כניסה לבניין: E",
 		"בטלפון: גוררים אצבע על המסך כדי ללכת",
 		"נכנסים לכל בניין, ובפנים לוחצים על דברים כדי להשתמש בהם",
-		"ביער שמדרום: צדים עם רובה מחנות הנשק, ובורחים מהאנשים באדום",
+		"ביער שמדרום: צדים עם רובה מחנות הנשק, ובורחים מהשודדים",
 		"הרכב שלך חונה ליד הבית: נכנסים עם E ונוסעים עם החיצים",
 		"המצלמה הולכת מאחוריך. C או הכפתור משמאל למטה מחליפים למבט מלמעלה",
 	]), buttons)
@@ -2668,8 +2668,8 @@ func _build_forest() -> void:
 	for k in 20:
 		_make_animal(k < 9)
 	for k in 6:
-		var t := _make_person(Color(0.85, 0.08, 0.08), Color(0.6, 0.05, 0.05))
-		_balaclava(t.root)
+		# Robbers dress like anyone else, so you only know them by what they do.
+		var t := _make_person(Color.from_hsv(rng.randf(), rng.randf_range(0.25, 0.6), rng.randf_range(0.5, 0.85)), Color.from_hsv(rng.randf_range(0.55, 0.7), rng.randf_range(0.1, 0.5), rng.randf_range(0.2, 0.45)))
 		t.town = k >= 3
 		add_child(t.root)
 		thugs.append(t)
@@ -2772,9 +2772,9 @@ func _update_forest(delta: float) -> void:
 		elif not t.chasing and in_reach and dist < (9.0 if t.town else 13.0) and rob_cool <= 0.0:
 			t.chasing = true
 			if t.hill:
-				_toast("גנב כבשים באדום רודף אחריך! התקשר למשטרה (כפתור הטלפון) או ברח!")
+				_toast("גנב כבשים רודף אחריך! התקשר למשטרה (כפתור הטלפון) או ברח!")
 			else:
-				_toast("אדם רע באדום רודף אחריך! היכנס לבניין או לרכב!" if t.town else "אדם רע באדום רודף אחריך! ברח מהיער!")
+				_toast("שודד רודף אחריך! היכנס לבניין או לרכב!" if t.town else "שודד רודף אחריך! ברח מהיער!")
 			_play("alarm")
 		var step := Vector3.ZERO
 		if t.chasing:
@@ -5872,7 +5872,7 @@ func _start_duty() -> void:
 	duty_cap.visible = true
 	_close_panel()
 	_play("pay")
-	_toast("התחלת משמרת! לך אל העמוד הכחול המהבהב, ועצור אנשים רעים באדום: פשוט תיגע בהם.")
+	_toast("התחלת משמרת! לך אל העמוד הכחול המהבהב, ועצור שודדים שרודפים אחרי אנשים: פשוט תיגע בהם.")
 	_place_marker()
 
 
@@ -6587,8 +6587,8 @@ func _build_hill_farm() -> void:
 	_build_hill()
 	# Sheep thieves in red lurk round the hill. Shoot at them, run, or phone the police.
 	for k in 5:
-		var t := _make_person(Color(0.85, 0.08, 0.08), Color(0.6, 0.05, 0.05))
-		_balaclava(t.root)
+		# Robbers dress like anyone else, so you only know them by what they do.
+		var t := _make_person(Color.from_hsv(rng.randf(), rng.randf_range(0.25, 0.6), rng.randf_range(0.5, 0.85)), Color.from_hsv(rng.randf_range(0.55, 0.7), rng.randf_range(0.1, 0.5), rng.randf_range(0.2, 0.45)))
 		t.hill = true
 		t.name = "גנב כבשים"
 		add_child(t.root)
@@ -7320,16 +7320,6 @@ func _stop_herd(done: bool) -> void:
 		_toast("המרעה הופסק. הכבשים חזרו לדיר.")
 	_update_hud()
 
-
-## A robber's black stocking cap: it covers the whole head and leaves only a slit for the eyes.
-func _balaclava(root: Node3D) -> void:
-	var wool := _mat(Color(0.07, 0.07, 0.08))
-	_ball(0.212, Vector3(0, 1.75, -0.005), wool, root, Vector3(0.98, 1.14, 1.03))
-	_cap(0.075, 0.16, Vector3(0, 1.57, 0), wool, root)                                   # down over the neck
-	_box(Vector3(0.21, 0.05, 0.03), Vector3(0, 1.765, 0.2), _mat(Color(0.9, 0.72, 0.56)), root)   # the eye slit
-	for sx: float in [-0.055, 0.055]:
-		_ball(0.014, Vector3(sx, 1.765, 0.216), _mat(Color(0.1, 0.08, 0.07)), root, Vector3(1.0, 1.0, 0.4))
-	_limit(root, 70.0)
 
 
 # --------------------------------------------------- ready-made scenery ----
@@ -8469,8 +8459,7 @@ func _start_mission(kind: String) -> void:
 			mission["title"] = "ילד אבוד ביער! מצא אותו"
 			mission["sad"] = "החיפוש נמשך יותר מדי. המשטרה מצאה את הילד, מפוחד ובוכה."
 		"thief":
-			var crook := _make_person(Color(0.12, 0.12, 0.14), Color(0.15, 0.15, 0.2))
-			_balaclava(crook.root)
+			var crook := _make_person(Color.from_hsv(rng.randf(), rng.randf_range(0.25, 0.6), rng.randf_range(0.5, 0.85)), Color.from_hsv(rng.randf_range(0.55, 0.7), rng.randf_range(0.1, 0.5), rng.randf_range(0.2, 0.45)))
 			at = _street_spot(13.0, 18.0)
 			crook.root.position = at
 			add_child(crook.root)
