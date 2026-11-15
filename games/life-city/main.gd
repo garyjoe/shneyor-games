@@ -6276,22 +6276,7 @@ func _make_beast(kind: String) -> Roamer:
 			r.speed = 6.0
 		_:  # donkey or mule
 			var mule := kind == "mule"
-			var coat := _mat(Color(0.42, 0.3, 0.22) if mule else Color(0.6, 0.57, 0.53))
-			var pale := _mat(Color(0.88, 0.85, 0.8))
-			_cap(0.3, 1.35, Vector3(0, 1.0, 0), coat, n).rotation.x = PI * 0.5
-			_cap(0.16, 0.6, Vector3(0, 1.28, 0.62), coat, n).rotation.x = 0.8          # neck
-			_ball(0.19, Vector3(0, 1.5, 0.88), coat, n, Vector3(0.85, 0.9, 1.5))            # head
-			_ball(0.12, Vector3(0, 1.44, 1.1), pale, n, Vector3(0.9, 0.85, 1.0))            # pale muzzle
-			_ball(0.3, Vector3(0, 0.84, 0), pale, n, Vector3(0.75, 0.3, 1.6))               # pale belly
-			for sx: float in [-0.1, 0.1]:
-				_cap(0.045, 0.36, Vector3(sx, 1.78, 0.8), coat, n).rotation.z = -sx * 2.0   # long ears
-				_ball(0.03, Vector3(sx * 1.4, 1.55, 1.0), _mat(Color(0.08, 0.07, 0.07)), n)
-				for sz: float in [-0.48, 0.48]:
-					_leg(n, Vector3(sx * 1.9, 0.78, sz), 0.78, 0.11, coat, r.legs)
-			_cap(0.04, 0.5, Vector3(0, 0.85, -0.72), _mat(Color(0.2, 0.17, 0.15)), n)       # tail
-			# A woven saddle blanket.
-			_box(Vector3(0.66, 0.05, 0.7), Vector3(0, 1.31, -0.05), _mat(Color(0.7, 0.2, 0.18)), n)
-			_box(Vector3(0.67, 0.052, 0.14), Vector3(0, 1.311, -0.05), _mat(Color(0.95, 0.85, 0.5)), n)
+			_donkey_body(n, Color(0.43, 0.31, 0.23) if mule else Color(0.63, 0.58, 0.52), r.legs)
 			if mule:
 				n.scale = Vector3.ONE * 1.12
 			r.label = "פרד" if mule else "חמור"
@@ -6301,6 +6286,95 @@ func _make_beast(kind: String) -> Roamer:
 	add_child(n)
 	roamers.append(r)
 	return r
+
+
+## A donkey built from rounded parts: a barrel body with a pale belly, a long head with a soft
+## pale muzzle and big eyes, tall ears, a short upright mane, a dark stripe down the back, slim legs
+## with hooves and a tufted tail. `saddle` is the colour of its woven blanket and saddlebags.
+func _donkey_body(n: Node3D, coat_color: Color, legs: Array[Node3D], saddle: Color = Color(0.72, 0.2, 0.18)) -> void:
+	var coat := _mat(coat_color)
+	var pale := _mat(coat_color.lerp(Color(0.96, 0.93, 0.87), 0.82))
+	var dark := _mat(coat_color.darkened(0.62))
+	var hoof := _mat(Color(0.13, 0.11, 0.1))
+	var black := _mat(Color(0.06, 0.05, 0.05))
+	# Body: chest, belly and rump round out the barrel.
+	_cap(0.3, 1.3, Vector3(0, 1.0, -0.02), coat, n).rotation.x = PI * 0.5
+	_ball(0.34, Vector3(0, 0.96, 0.04), coat, n, Vector3(1.0, 1.0, 1.3))
+	_ball(0.33, Vector3(0, 1.03, -0.44), coat, n, Vector3(0.98, 1.0, 1.0))
+	_ball(0.3, Vector3(0, 1.05, 0.46), coat, n, Vector3(0.95, 1.08, 1.0))
+	_ball(0.3, Vector3(0, 0.79, 0.02), pale, n, Vector3(0.8, 0.45, 1.75))
+	_box(Vector3(0.07, 0.03, 0.42), Vector3(0, 1.335, -0.6), dark, n)                 # the stripe down the spine
+	_box(Vector3(0.07, 0.03, 0.2), Vector3(0, 1.33, 0.42), dark, n)
+	# Neck and head hang on a pivot, so the head can nod as it walks.
+	var neck := Node3D.new()
+	neck.position = Vector3(0, 1.12, 0.5)
+	n.add_child(neck)
+	n.set_meta("neck", neck)
+	var along := Vector3(0, 0.73, 0.68)                                              # the way the neck points
+	var back := Vector3(0, 0.68, -0.73)
+	_cap(0.17, 0.74, along * 0.3, coat, neck).rotation.x = 0.75
+	_ball(0.2, along * 0.02, coat, neck)
+	for k in 6:                                                                       # a short mane standing up
+		_box(Vector3(0.06, 0.15, 0.11), along * (0.1 + k * 0.09) + back * 0.19, dark, neck).rotation.x = 0.75
+	var head := Node3D.new()
+	head.position = along * 0.62
+	head.rotation.x = 0.42
+	neck.add_child(head)
+	_ball(0.2, Vector3(0, 0, 0.1), coat, head, Vector3(0.86, 0.96, 1.3))                # skull
+	_ball(0.15, Vector3(0, -0.02, 0.36), coat, head, Vector3(0.82, 0.86, 1.25))         # long nose
+	_ball(0.135, Vector3(0, -0.04, 0.52), pale, head, Vector3(0.98, 0.95, 1.0))         # soft pale muzzle
+	_box(Vector3(0.15, 0.014, 0.02), Vector3(0, -0.11, 0.62), dark, head)              # mouth
+	_ball(0.075, Vector3(0, 0.2, 0.06), dark, head, Vector3(1.0, 0.7, 1.4))             # forelock
+	for sx: float in [-1.0, 1.0]:
+		_ball(0.016, Vector3(sx * 0.05, -0.015, 0.642), black, head)                  # nostril
+		_ball(0.062, Vector3(sx * 0.145, 0.05, 0.17), pale, head, Vector3(0.55, 1.0, 1.1))    # pale ring round the eye
+		_ball(0.043, Vector3(sx * 0.165, 0.05, 0.18), black, head, Vector3(0.6, 1.0, 1.0))
+		_ball(0.014, Vector3(sx * 0.19, 0.07, 0.195), _mat(Color.WHITE), head)          # a glint
+		var ear := Node3D.new()
+		ear.position = Vector3(sx * 0.1, 0.15, -0.02)
+		ear.rotation = Vector3(-0.25, 0, -sx * 0.3)
+		head.add_child(ear)
+		_cap(0.052, 0.46, Vector3(0, 0.22, 0), coat, ear, Vector3(1.0, 1.0, 0.6))
+		_cap(0.03, 0.32, Vector3(0, 0.22, 0.022), pale, ear, Vector3(1.0, 1.0, 0.5))
+		_ball(0.045, Vector3(0, 0.43, 0), dark, ear, Vector3(1.0, 1.2, 0.6))
+		_fuse(ear)
+	_fuse(head)
+	_fuse(neck)
+	# Legs: in the same order as before, so the walk keeps its rhythm.
+	for sx: float in [-0.19, 0.19]:
+		for sz: float in [-0.46, 0.46]:
+			var hip := Node3D.new()
+			hip.position = Vector3(sx, 0.82, sz)
+			n.add_child(hip)
+			_cap(0.09, 0.48, Vector3(0, -0.2, 0), coat, hip)
+			_ball(0.075, Vector3(0, -0.41, 0.01), coat, hip)                           # knee
+			_cap(0.058, 0.4, Vector3(0, -0.56, 0), coat, hip)
+			_box(Vector3(0.13, 0.1, 0.15), Vector3(0, -0.77, 0.012), hoof, hip)
+			_fuse(hip)
+			legs.append(hip)
+	# The tail swings from its own pivot.
+	var tail := Node3D.new()
+	tail.position = Vector3(0, 1.14, -0.72)
+	tail.rotation.x = 0.3
+	n.add_child(tail)
+	n.set_meta("tail", tail)
+	_cap(0.035, 0.5, Vector3(0, -0.25, 0), coat, tail)
+	_ball(0.075, Vector3(0, -0.56, 0), dark, tail, Vector3(1.0, 1.7, 1.0))
+	_fuse(tail)
+	# A woven blanket that drapes down both flanks, and a pair of saddlebags.
+	var cloth := _mat(saddle)
+	var cream := _mat(Color(0.96, 0.87, 0.55))
+	var blue := _mat(Color(0.18, 0.3, 0.6))
+	_box(Vector3(0.64, 0.05, 0.76), Vector3(0, 1.325, -0.05), cloth, n)
+	for sz: float in [-0.3, 0.2]:
+		_box(Vector3(0.65, 0.054, 0.09), Vector3(0, 1.326, sz), cream, n)
+	_box(Vector3(0.652, 0.056, 0.05), Vector3(0, 1.327, -0.05), blue, n)
+	for sx: float in [-1.0, 1.0]:
+		_box(Vector3(0.05, 0.32, 0.76), Vector3(sx * 0.335, 1.17, -0.05), cloth, n).rotation.z = sx * 0.12
+		_box(Vector3(0.056, 0.06, 0.77), Vector3(sx * 0.356, 1.03, -0.05), cream, n).rotation.z = sx * 0.12
+		_box(Vector3(0.14, 0.22, 0.32), Vector3(sx * 0.43, 1.02, -0.32), _mat(Color(0.5, 0.34, 0.2)), n)      # saddlebag
+		_box(Vector3(0.15, 0.08, 0.33), Vector3(sx * 0.432, 1.1, -0.32), _mat(Color(0.4, 0.26, 0.15)), n)
+	_fuse(n)
 
 
 func _atv_body(n: Node3D, color: Color) -> void:
@@ -6481,7 +6555,7 @@ func _build_hill_farm() -> void:
 	hill.door += lift
 	# Wild flowers and grass on the hilltop, and barrels by the caravans.
 	_scatter(["nature/flower_redA", "nature/flower_yellowA", "nature/flower_purpleA", "nature/grass_large", "nature/grass", "nature/plant_bushSmall"], 110,
-		Vector2(96, 15), Vector2(148, 41), 0.5, 0.9, 60.0)
+		Vector2(96, 15), Vector2(148, 41), 0.35, 0.6, 60.0)
 	for k in 3:
 		_put("survival/barrel", Vector3(127.2 + k * 0.9, HILL_H, 28.0 + (k % 2) * 0.5), 1.1)
 	_put("survival/bucket", Vector3(102.4, HILL_H, 18.6), 0.45)
@@ -7131,6 +7205,9 @@ func _ride_tick(moving: bool, delta: float) -> void:
 	d.rotation.y = me.root.rotation.y
 	if moving:
 		my_donkey.phase += delta * 13.0
+	if d.has_meta("neck"):
+		(d.get_meta("neck") as Node3D).rotation.x = sin(my_donkey.phase) * 0.07 if moving else 0.0
+		(d.get_meta("tail") as Node3D).rotation.z = sin(my_donkey.phase * 0.5) * 0.3
 	for k in my_donkey.legs.size():
 		var swing := sin(my_donkey.phase + (0.0 if k % 3 == 0 else PI)) * 0.55 if moving else 0.0
 		my_donkey.legs[k].rotation.x = lerp_angle(my_donkey.legs[k].rotation.x, swing, 10.0 * delta)
@@ -9038,15 +9115,11 @@ func _quest_done() -> void:
 ## He comes up the hill at first light, quietly, on a white donkey.
 func _finale() -> void:
 	var mount := Node3D.new()
-	var white := _mat(Color(0.97, 0.97, 0.95))
-	_cap(0.4, 1.5, Vector3(0, 1.0, 0), white, mount).rotation.x = PI * 0.5
-	_ball(0.26, Vector3(0, 1.45, 0.9), white, mount, Vector3(0.8, 0.9, 1.4))
-	for sx: float in [-0.12, 0.12]:
-		_box(Vector3(0.07, 0.4, 0.07), Vector3(sx, 1.85, 0.8), white, mount)
-		for sz: float in [-0.5, 0.5]:
-			_box(Vector3(0.12, 0.8, 0.12), Vector3(sx * 2.0, 0.4, sz), white, mount)
+	var hooves: Array[Node3D] = []
+	_donkey_body(mount, Color(0.97, 0.97, 0.95), hooves, Color(0.2, 0.32, 0.62))
 	var rider := _make_person(Color(0.98, 0.98, 0.96), Color(0.98, 0.98, 0.96))
-	rider.root.position = Vector3(0, 0.75, -0.1)
+	rider.root.position = Vector3(0, 0.44, -0.05)
+	_sit_astride(rider)
 	mount.add_child(rider.root)
 	var halo := OmniLight3D.new()
 	halo.light_color = Color(1.0, 0.92, 0.7)
@@ -9059,7 +9132,9 @@ func _finale() -> void:
 	var way := create_tween()
 	way.tween_method(func(t: float) -> void:
 		var at := DAWN + Vector3(sin(t * 3.0) * 1.5, 0, lerpf(-30.0, -4.0, t))
-		mount.position = Vector3(at.x, _ground_y(at.x, at.z), at.z), 0.0, 1.0, 16.0)
+		mount.position = Vector3(at.x, _ground_y(at.x, at.z), at.z)
+		for k in hooves.size():
+			hooves[k].rotation.x = sin(t * 60.0 + (0.0 if k % 3 == 0 else PI)) * 0.45, 0.0, 1.0, 16.0)
 
 
 func _update_quest(delta: float) -> void:
