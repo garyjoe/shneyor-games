@@ -310,6 +310,8 @@ var fov_kick := 0.0
 const ATV := 4
 const PEN := Vector3(107, 5, 24.5)       # the sheep's pasture on the hill
 const MEADOW := Vector3(118, 0, 58)      # where they graze in the forest, south of the hill
+var galloping := false                   # the donkey is at full stretch
+var gallop_dust: CPUParticles3D
 var riding := false                      # you are on your donkey
 var my_donkey: Roamer
 var near_donkey := false
@@ -1442,7 +1444,12 @@ func _physics_process(delta: float) -> void:
 	else:
 		var go := _stick_world(input)
 		if riding:
-			speed = 9.5
+			# Hold Shift, or switch on the run button, and the donkey breaks into a gallop.
+			var was := galloping
+			galloping = input.length_squared() > 0.01 and (run_on or Input.is_physical_key_pressed(KEY_SHIFT))
+			speed = 16.5 if galloping else 8.5
+			if galloping and not was:
+				_play("bray")
 		player.velocity = Vector3(go.x * speed, -4.0, go.z * speed)
 		player.move_and_slide()
 	_update_traffic(delta)
@@ -2168,6 +2175,7 @@ func _build_sounds() -> void:
 		"hiss": _tone(900, 600, 0.25, 0.12, 0.95),
 		"dig": _tone(160, 90, 0.18, 0.4, 0.7),
 		"shofar": _tone(300, 455, 1.9, 0.4),
+		"hoof": _tone(170, 85, 0.07, 0.2, 0.55),
 	}
 	for key: String in defs:
 		var p := AudioStreamPlayer.new()
@@ -6297,56 +6305,63 @@ func _donkey_body(n: Node3D, coat_color: Color, legs: Array[Node3D], saddle: Col
 	var dark := _mat(coat_color.darkened(0.62))
 	var hoof := _mat(Color(0.13, 0.11, 0.1))
 	var black := _mat(Color(0.06, 0.05, 0.05))
-	# Body: chest, belly and rump round out the barrel.
-	_cap(0.3, 1.3, Vector3(0, 1.0, -0.02), coat, n).rotation.x = PI * 0.5
-	_ball(0.34, Vector3(0, 0.96, 0.04), coat, n, Vector3(1.0, 1.0, 1.3))
-	_ball(0.33, Vector3(0, 1.03, -0.44), coat, n, Vector3(0.98, 1.0, 1.0))
-	_ball(0.3, Vector3(0, 1.05, 0.46), coat, n, Vector3(0.95, 1.08, 1.0))
-	_ball(0.3, Vector3(0, 0.79, 0.02), pale, n, Vector3(0.8, 0.45, 1.75))
-	_box(Vector3(0.07, 0.03, 0.42), Vector3(0, 1.335, -0.6), dark, n)                 # the stripe down the spine
-	_box(Vector3(0.07, 0.03, 0.2), Vector3(0, 1.33, 0.42), dark, n)
-	# Neck and head hang on a pivot, so the head can nod as it walks.
+	# Body: long and deep, with a round belly, a strong chest and a sloping rump.
+	_cap(0.31, 1.5, Vector3(0, 1.0, -0.04), coat, n).rotation.x = PI * 0.5
+	_ball(0.36, Vector3(0, 0.93, 0.0), coat, n, Vector3(1.0, 1.0, 1.4))
+	_ball(0.33, Vector3(0, 1.02, -0.5), coat, n, Vector3(0.98, 0.98, 1.05))
+	_ball(0.31, Vector3(0, 1.03, 0.52), coat, n, Vector3(0.95, 1.1, 1.0))
+	_ball(0.3, Vector3(0, 0.76, 0.0), pale, n, Vector3(0.8, 0.42, 1.9))
+	_box(Vector3(0.07, 0.03, 0.44), Vector3(0, 1.332, -0.66), dark, n)                # the stripe down the spine
+	_box(Vector3(0.07, 0.03, 0.22), Vector3(0, 1.33, 0.46), dark, n)
+	_box(Vector3(0.5, 0.03, 0.07), Vector3(0, 1.325, 0.5), dark, n)                   # and across the shoulders
+	# Neck and head hang on a pivot, so the head can nod as it walks. A donkey carries its head low
+	# and forward: the neck leans well out and the long face slopes down.
 	var neck := Node3D.new()
-	neck.position = Vector3(0, 1.12, 0.5)
+	neck.position = Vector3(0, 1.08, 0.56)
 	n.add_child(neck)
 	n.set_meta("neck", neck)
-	var along := Vector3(0, 0.73, 0.68)                                              # the way the neck points
-	var back := Vector3(0, 0.68, -0.73)
-	_cap(0.17, 0.74, along * 0.3, coat, neck).rotation.x = 0.75
-	_ball(0.2, along * 0.02, coat, neck)
-	for k in 6:                                                                       # a short mane standing up
-		_box(Vector3(0.06, 0.15, 0.11), along * (0.1 + k * 0.09) + back * 0.19, dark, neck).rotation.x = 0.75
+	var along := Vector3(0, 0.68, 0.73)                                              # the way the neck points
+	var back := Vector3(0, 0.73, -0.68)
+	_cap(0.19, 0.5, along * 0.14, coat, neck).rotation.x = 0.82                        # thick where it leaves the chest
+	_cap(0.155, 0.62, along * 0.4, coat, neck).rotation.x = 0.82
+	for k in 7:                                                                       # a short mane standing up
+		_box(Vector3(0.055, 0.14, 0.11), along * (0.06 + k * 0.09) + back * 0.18, dark, neck).rotation.x = 0.82
 	var head := Node3D.new()
-	head.position = along * 0.62
-	head.rotation.x = 0.42
+	head.position = along * 0.72
+	head.rotation.x = 0.6
 	neck.add_child(head)
-	_ball(0.2, Vector3(0, 0, 0.1), coat, head, Vector3(0.86, 0.96, 1.3))                # skull
-	_ball(0.15, Vector3(0, -0.02, 0.36), coat, head, Vector3(0.82, 0.86, 1.25))         # long nose
-	_ball(0.135, Vector3(0, -0.04, 0.52), pale, head, Vector3(0.98, 0.95, 1.0))         # soft pale muzzle
-	_box(Vector3(0.15, 0.014, 0.02), Vector3(0, -0.11, 0.62), dark, head)              # mouth
-	_ball(0.075, Vector3(0, 0.2, 0.06), dark, head, Vector3(1.0, 0.7, 1.4))             # forelock
+	_ball(0.185, Vector3(0, 0.0, 0.06), coat, head, Vector3(0.92, 1.0, 1.15))            # skull
+	_ball(0.15, Vector3(0, -0.07, 0.2), coat, head, Vector3(0.78, 0.95, 1.5))            # deep cheek and jaw
+	_ball(0.135, Vector3(0, 0.0, 0.4), coat, head, Vector3(0.78, 0.85, 1.7))             # the long straight face
+	_ball(0.125, Vector3(0, -0.02, 0.66), pale, head, Vector3(0.95, 0.92, 0.85))         # a square, pale muzzle
+	_box(Vector3(0.17, 0.14, 0.1), Vector3(0, -0.03, 0.7), pale, head)
+	_box(Vector3(0.15, 0.014, 0.02), Vector3(0, -0.1, 0.755), dark, head)               # mouth
+	_ball(0.07, Vector3(0, 0.17, 0.1), dark, head, Vector3(1.0, 0.6, 1.5))               # forelock
+	var ears: Array[Node3D] = []
 	for sx: float in [-1.0, 1.0]:
-		_ball(0.016, Vector3(sx * 0.05, -0.015, 0.642), black, head)                  # nostril
-		_ball(0.062, Vector3(sx * 0.145, 0.05, 0.17), pale, head, Vector3(0.55, 1.0, 1.1))    # pale ring round the eye
-		_ball(0.043, Vector3(sx * 0.165, 0.05, 0.18), black, head, Vector3(0.6, 1.0, 1.0))
-		_ball(0.014, Vector3(sx * 0.19, 0.07, 0.195), _mat(Color.WHITE), head)          # a glint
+		_ball(0.014, Vector3(sx * 0.05, 0.03, 0.755), black, head)                     # nostril
+		_ball(0.036, Vector3(sx * 0.16, 0.03, 0.12), pale, head, Vector3(0.5, 1.0, 1.2))     # a light ring round a small dark eye
+		_ball(0.026, Vector3(sx * 0.172, 0.03, 0.125), black, head, Vector3(0.6, 1.0, 1.0))
+		# The ears are a donkey's flag: long, broad as a leaf, and held out to the sides in a wide V.
 		var ear := Node3D.new()
-		ear.position = Vector3(sx * 0.1, 0.15, -0.02)
-		ear.rotation = Vector3(-0.25, 0, -sx * 0.3)
+		ear.position = Vector3(sx * 0.13, 0.12, -0.03)
+		ear.rotation = Vector3(-0.5, 0, -sx * 0.72)
 		head.add_child(ear)
-		_cap(0.052, 0.46, Vector3(0, 0.22, 0), coat, ear, Vector3(1.0, 1.0, 0.6))
-		_cap(0.03, 0.32, Vector3(0, 0.22, 0.022), pale, ear, Vector3(1.0, 1.0, 0.5))
-		_ball(0.045, Vector3(0, 0.43, 0), dark, ear, Vector3(1.0, 1.2, 0.6))
+		_ball(0.1, Vector3(0, 0.2, 0), coat, ear, Vector3(0.78, 2.05, 0.34))
+		_ball(0.07, Vector3(0, 0.2, 0.022), pale, ear, Vector3(0.7, 2.0, 0.3))
+		_ball(0.05, Vector3(0, 0.38, 0), dark, ear, Vector3(0.7, 1.0, 0.36))
 		_fuse(ear)
+		ears.append(ear)
+	n.set_meta("ears", ears)
 	_fuse(head)
 	_fuse(neck)
 	# Legs: in the same order as before, so the walk keeps its rhythm.
 	for sx: float in [-0.19, 0.19]:
-		for sz: float in [-0.46, 0.46]:
+		for sz: float in [-0.54, 0.54]:
 			var hip := Node3D.new()
 			hip.position = Vector3(sx, 0.82, sz)
 			n.add_child(hip)
-			_cap(0.09, 0.48, Vector3(0, -0.2, 0), coat, hip)
+			_cap(0.1, 0.5, Vector3(0, -0.2, 0), coat, hip)
 			_ball(0.075, Vector3(0, -0.41, 0.01), coat, hip)                           # knee
 			_cap(0.058, 0.4, Vector3(0, -0.56, 0), coat, hip)
 			_box(Vector3(0.13, 0.1, 0.15), Vector3(0, -0.77, 0.012), hoof, hip)
@@ -6354,12 +6369,12 @@ func _donkey_body(n: Node3D, coat_color: Color, legs: Array[Node3D], saddle: Col
 			legs.append(hip)
 	# The tail swings from its own pivot.
 	var tail := Node3D.new()
-	tail.position = Vector3(0, 1.14, -0.72)
+	tail.position = Vector3(0, 1.16, -0.82)
 	tail.rotation.x = 0.3
 	n.add_child(tail)
 	n.set_meta("tail", tail)
-	_cap(0.035, 0.5, Vector3(0, -0.25, 0), coat, tail)
-	_ball(0.075, Vector3(0, -0.56, 0), dark, tail, Vector3(1.0, 1.7, 1.0))
+	_cap(0.036, 0.62, Vector3(0, -0.31, 0), coat, tail)
+	_ball(0.08, Vector3(0, -0.7, 0), dark, tail, Vector3(1.0, 2.0, 1.0))
 	_fuse(tail)
 	# A woven blanket that drapes down both flanks, and a pair of saddlebags.
 	var cloth := _mat(saddle)
@@ -7156,6 +7171,11 @@ func _build_donkey() -> void:
 	my_donkey.label = "החמור שלך"
 	my_donkey.node.position = Vector3(123.5, HILL_H, 19.0)
 	my_donkey.node.rotation.y = -1.2
+	gallop_dust = _smoke(Color(0.8, 0.72, 0.58, 0.55), 0.55, 16)
+	gallop_dust.scale_amount_min = 0.2
+	gallop_dust.scale_amount_max = 0.55
+	gallop_dust.gravity = Vector3(0, 0.4, 0)
+	gallop_dust.emitting = false
 	_tag("החמור שלי", my_donkey.node.position + Vector3(0, 2.6, 0), 40)
 	beacon = _box(Vector3(0.5, 12.0, 0.5), MEADOW + Vector3(0, 6.0, 0), _mat(Color(0.3, 0.95, 0.4)))
 	var glow := beacon.material_override as StandardMaterial3D
@@ -7182,11 +7202,16 @@ func _mount() -> void:
 	me.root.position = Vector3(0, 0.52, -0.05)
 	_sit_astride(me)
 	_play("bray")
-	_toast("אתה רוכב על החמור! מכוונים כמו בהליכה. לרדת: אותו כפתור.")
+	_toast("אתה רוכב על החמור! לדהור: כפתור הריצה או Shift. לרדת: אותו כפתור.")
 
 
 func _dismount() -> void:
 	riding = false
+	galloping = false
+	if gallop_dust != null:
+		gallop_dust.emitting = false
+	me.root.rotation.x = 0.0
+	my_donkey.node.rotation.x = 0.0
 	me.root.position = Vector3.ZERO
 	for limb in me.limbs:
 		limb.rotation = Vector3.ZERO
@@ -7201,16 +7226,43 @@ func _dismount() -> void:
 ## While you ride, the donkey is under you and its legs do the walking.
 func _ride_tick(moving: bool, delta: float) -> void:
 	var d := my_donkey.node
-	d.position = player.position
-	d.rotation.y = me.root.rotation.y
+	var fast := galloping and moving
+	var before := my_donkey.phase
 	if moving:
-		my_donkey.phase += delta * 13.0
+		my_donkey.phase += delta * (15.0 if fast else 12.0)
+	var beat := my_donkey.phase
+	# A gallop is a string of leaps: the donkey leaves the ground, rocks nose-up then nose-down, and
+	# lands with a thud. At a walk it only bobs a little.
+	var hop := maxf(sin(beat), 0.0) * 0.3 if fast else (absf(sin(beat)) * 0.04 if moving else 0.0)
+	d.position = player.position + Vector3(0, hop, 0)
+	d.rotation = Vector3(lerp_angle(d.rotation.x, -cos(beat) * 0.12 if fast else 0.0, 10.0 * delta), me.root.rotation.y, 0)
+	me.root.position.y = 0.52 + hop
+	me.root.rotation.x = lerp_angle(me.root.rotation.x, 0.28 if fast else 0.0, 6.0 * delta)      # you lean into it
+	var every := TAU if fast else PI
+	if moving and int(beat / every) != int(before / every):
+		_play("hoof")
+	if fast:
+		fov_kick = maxf(fov_kick, 0.6)
+	if gallop_dust != null:
+		gallop_dust.emitting = fast
+		gallop_dust.position = player.position + Vector3(-sin(me.root.rotation.y) * 0.8, 0.15, -cos(me.root.rotation.y) * 0.8)
 	if d.has_meta("neck"):
-		(d.get_meta("neck") as Node3D).rotation.x = sin(my_donkey.phase) * 0.07 if moving else 0.0
-		(d.get_meta("tail") as Node3D).rotation.z = sin(my_donkey.phase * 0.5) * 0.3
+		# Neck stretched forward, ears laid back and tail streaming behind at a gallop.
+		var neck := d.get_meta("neck") as Node3D
+		var tail := d.get_meta("tail") as Node3D
+		neck.rotation.x = lerp_angle(neck.rotation.x, (0.3 + sin(beat) * 0.1) if fast else (sin(beat) * 0.07 if moving else 0.0), 8.0 * delta)
+		tail.rotation.x = lerp_angle(tail.rotation.x, 1.3 if fast else 0.3, 6.0 * delta)
+		tail.rotation.z = sin(beat * (1.0 if fast else 0.5)) * (0.12 if fast else 0.3)
+		for ear: Node3D in d.get_meta("ears"):
+			ear.rotation.x = lerp_angle(ear.rotation.x, -1.25 if fast else -0.5, 8.0 * delta)
 	for k in my_donkey.legs.size():
-		var swing := sin(my_donkey.phase + (0.0 if k % 3 == 0 else PI)) * 0.55 if moving else 0.0
-		my_donkey.legs[k].rotation.x = lerp_angle(my_donkey.legs[k].rotation.x, swing, 10.0 * delta)
+		var swing := 0.0
+		if fast:
+			# Front legs reach out together, hind legs gather and push together.
+			swing = sin(beat + (0.6 if k % 2 == 1 else 2.9)) * 0.95
+		elif moving:
+			swing = sin(beat + (0.0 if k % 3 == 0 else PI)) * 0.55
+		my_donkey.legs[k].rotation.x = lerp_angle(my_donkey.legs[k].rotation.x, swing, 14.0 * delta)
 
 
 ## Real shepherding: lead the flock down to the forest meadow, let them graze, and bring them home.
