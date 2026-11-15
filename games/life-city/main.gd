@@ -6331,15 +6331,15 @@ func _donkey_body(n: Node3D, coat_color: Color, legs: Array[Node3D], saddle: Col
 	head.rotation.x = 0.6
 	neck.add_child(head)
 	_ball(0.185, Vector3(0, 0.0, 0.06), coat, head, Vector3(0.92, 1.0, 1.15))            # skull
-	_ball(0.15, Vector3(0, -0.07, 0.2), coat, head, Vector3(0.78, 0.95, 1.5))            # deep cheek and jaw
-	_ball(0.135, Vector3(0, 0.0, 0.4), coat, head, Vector3(0.78, 0.85, 1.7))             # the long straight face
-	_ball(0.125, Vector3(0, -0.02, 0.66), pale, head, Vector3(0.95, 0.92, 0.85))         # a square, pale muzzle
-	_box(Vector3(0.17, 0.14, 0.1), Vector3(0, -0.03, 0.7), pale, head)
-	_box(Vector3(0.15, 0.014, 0.02), Vector3(0, -0.1, 0.755), dark, head)               # mouth
+	_ball(0.15, Vector3(0, -0.07, 0.16), coat, head, Vector3(0.8, 0.95, 1.25))           # deep cheek and jaw
+	_ball(0.14, Vector3(0, -0.01, 0.29), coat, head, Vector3(0.8, 0.88, 1.2))            # the straight face
+	_ball(0.125, Vector3(0, -0.02, 0.44), pale, head, Vector3(0.95, 0.92, 0.85))         # a square, pale muzzle
+	_box(Vector3(0.17, 0.14, 0.1), Vector3(0, -0.03, 0.48), pale, head)
+	_box(Vector3(0.15, 0.014, 0.02), Vector3(0, -0.1, 0.535), dark, head)               # mouth
 	_ball(0.07, Vector3(0, 0.17, 0.1), dark, head, Vector3(1.0, 0.6, 1.5))               # forelock
 	var ears: Array[Node3D] = []
 	for sx: float in [-1.0, 1.0]:
-		_ball(0.014, Vector3(sx * 0.05, 0.03, 0.755), black, head)                     # nostril
+		_ball(0.014, Vector3(sx * 0.05, 0.03, 0.535), black, head)                     # nostril
 		_ball(0.036, Vector3(sx * 0.16, 0.03, 0.12), pale, head, Vector3(0.5, 1.0, 1.2))     # a light ring round a small dark eye
 		_ball(0.026, Vector3(sx * 0.172, 0.03, 0.125), black, head, Vector3(0.6, 1.0, 1.0))
 		# The ears are a donkey's flag: long, broad as a leaf, and held out to the sides in a wide V.
