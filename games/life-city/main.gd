@@ -121,6 +121,14 @@ const FOODS := {0: ["food/loaf", 0.34], 1: ["food/cheese", 0.2], 2: ["food/carto
 const DAWN := Vector3(-70, 0, 84)     # Dawn Hill: the empty hill in the western forest where you found your own place
 const DAWN_H := 4.0
 const SPRING := Vector3(-22, 0, 93)      # the hidden spring in the forest
+## The hills you can settle: [middle, how far out the slope reaches, how wide the slope is, height].
+## The first is Dawn Hill; the others wait in the forest for the outposts you found later.
+const HILLS: Array = [[DAWN, 26.0, 9.0, DAWN_H], [Vector3(40, 0, 78), 23.0, 8.0, 3.5], [Vector3(-125, 0, 72), 23.0, 8.0, 3.5], [Vector3(165, 0, 78), 23.0, 8.0, 3.5]]
+const OUTPOSTS: Array[Dictionary] = [
+	{"name": "גבעת הרוח", "crop": "almond", "plant": "טע שקדיות", "giver": "eliya", "cost": 200, "jackals": 6},
+	{"name": "מצפה האגם", "crop": "wheat", "plant": "זרע חיטה", "giver": "rabbi", "cost": 300, "jackals": 7},
+	{"name": "נווה זית", "crop": "olive", "plant": "טע עצי זית", "giver": "insp", "cost": 400, "jackals": 8},
+]
 const SAVE_PATH := "user://life-city.cfg"
 
 enum State { MENU, PLAY, OVER }
@@ -349,7 +357,7 @@ var kit_meshes := {}
 var kit_groups := {}                 # stretch of town -> the scenery mesh being put together there
 var palettes := {}
 # --- action: emergencies, treasure, fishing, the race
-var quest := 0                       # how far along the story you are (an index into QUEST)
+var quest := 0                       # how far along the story you are (an index into `story`)
 var geula := 0.0                     # the redemption meter, 0..100: it fills with building and kindness
 var redeemed := false
 var q_t := 0.0
@@ -359,6 +367,8 @@ var q_spawned := 0
 var q_things: Array[Node] = []       # what the current step put in the world
 var q_follow: Array = []             # whoever is walking behind you: [node, person or null]
 var sites := {}                      # each thing you build on Dawn Hill, hidden until it is built
+var story: Array[Dictionary] = []     # every step of the adventure, in order: the opening, the outposts, the ending
+var hill_home: Place                 # the door of your own house on Dawn Hill, once it is built
 var quest_label: Label
 var quest_light: MeshInstance3D
 var quest_mark: Label3D
@@ -976,6 +986,8 @@ func _reset_position() -> void:
 	_return_all()
 	_reset_forest()
 	player.position = places[0].door + Vector3(0, 0, 1.2)
+	if _hill_home_on():
+		player.position = hill_home.door + Vector3(0, 0.2, -1.2)     # home is on Dawn Hill now
 	player.velocity = Vector3.ZERO
 	me.root.rotation.y = 0.0
 	cam_focus = player.position
@@ -1062,7 +1074,7 @@ func _skip(hours: float, mode: String) -> void:
 
 
 func _new_day() -> void:
-	if (day - 1) % RENT_DAYS == 0 and not redeemed:
+	if (day - 1) % RENT_DAYS == 0 and not redeemed and not _hill_home_on():
 		rent_owed += RENT
 		_toast("הגיע הזמן לחדש שכר דירה: ₪%d. משלמים בדלת של הבית." % rent_owed)
 		_play("alarm")
@@ -1723,7 +1735,10 @@ func _continue_game() -> void:
 	has_can = bool(cfg.get_value("life", "can", false))
 	hill_me = bool(cfg.get_value("life", "hill_me", false))
 	hero = int(cfg.get_value("life", "hero", 0))
-	quest = clampi(int(cfg.get_value("life", "quest", 0)), 0, QUEST.size())
+	quest = int(cfg.get_value("life", "quest", 0))
+	if int(cfg.get_value("life", "story_ver", 1)) < 2 and quest >= 28:
+		quest = 28                         # an older save: the outposts were added before the ending
+	quest = clampi(quest, 0, story.size())
 	geula = float(cfg.get_value("life", "geula", 0.0))
 	redeemed = bool(cfg.get_value("life", "redeemed", false))
 	best_race = float(cfg.get_value("life", "best_race", 0.0))
@@ -1784,7 +1799,7 @@ func _save() -> void:
 			["guitar", has_guitar], ["skill", skill], ["last_show", last_show_day], ["known", _known_levels()], ["bladder", bladder], ["family", family_joy], ["candles", candles_day], ["kiddush", kiddush_day],
 			["car_x", car.position.x], ["car_z", car.position.z], ["car_rot", car_heading], ["car_damage", car_damage],
 			["can", has_can], ["car_model", car_model], ["hill_me", hill_me], ["owned", owned],
-			["hero", hero], ["best_race", best_race], ["quest", quest], ["geula", geula], ["redeemed", redeemed]]:
+			["hero", hero], ["best_race", best_race], ["quest", quest], ["geula", geula], ["redeemed", redeemed], ["story_ver", 2]]:
 		cfg.set_value("life", pair[0], pair[1])
 	cfg.save(SAVE_PATH)
 
@@ -2067,7 +2082,7 @@ func _update_hud() -> void:
 		_h("%s · %s" % [WEEKDAYS[_weekday()], _time_text(clock)]) + ("  " + _h("שבת שלום!") if _is_shabbat() else ""),
 		_h("כסף: ₪%d" % money),
 		_h("אוכל בבית: %d" % fridge.size()),
-		_h("שכר דירה: %s" % (("לשלם ₪%d!" % rent_owed) if rent_owed > 0 else rent_when)),
+		_h("הבית שלך בגבעת השחר") if (_hill_home_on() or redeemed) else _h("שכר דירה: %s" % (("לשלם ₪%d!" % rent_owed) if rent_owed > 0 else rent_when)),
 		_h("בסל: %d מוצרים · ₪%d" % [basket.size(), _basket_total()]) if room == "market" else "",
 		_h("כדורים: %d" % ammo) if has_rifle and not inside else "",
 		_h("דלק: %d%%" % int(fuel)) if driving else "",
@@ -2443,8 +2458,9 @@ func _leave_room() -> void:
 	for place in places:
 		if place.key == room and place.room == "":
 			player.position = place.door + Vector3(0, 0, 1.2)
-	if room == "home" and entered_from.y > 1.0:
-		player.position = entered_from + Vector3(0, 0.2, -1.2)       # you came in through the caravan on the hill
+	if room == "home":
+		# You leave by the door you came in through: the flat in town, the caravan, or your house on Dawn Hill.
+		player.position = entered_from + (Vector3(0, 0.2, -1.2) if entered_from.y > 1.0 else Vector3(0, 0, 1.2))
 	inside = false
 	room = ""
 	carrying = false
@@ -2662,7 +2678,7 @@ func _build_forest() -> void:
 			continue                       # the hill stands here
 		if pos.distance_to(SPRING) < 6.5:
 			continue
-		if pos.distance_to(DAWN) < 27.5:
+		if _on_hills(pos):
 			continue                       # and Dawn Hill is bare, waiting for you
 		_pine(pos)
 	for k in 20:
@@ -6849,10 +6865,11 @@ func _merge_static() -> void:
 
 ## Height of the ground. Flat everywhere except the hill: a flat top with steep sides and one road up from the west.
 func _ground_y(x: float, z: float) -> float:
-	var out := Vector2(x - DAWN.x, z - DAWN.z).length()
-	if out < 26.0:
-		var rise := clampf((26.0 - out) / 9.0, 0.0, 1.0)
-		return DAWN_H * rise * rise * (3.0 - 2.0 * rise)
+	for hill: Array in HILLS:
+		var out := Vector2(x - (hill[0] as Vector3).x, z - (hill[0] as Vector3).z).length()
+		if out < float(hill[1]):
+			var rise := clampf((float(hill[1]) - out) / float(hill[2]), 0.0, 1.0)
+			return float(hill[3]) * rise * rise * (3.0 - 2.0 * rise)
 	if x < 76.0 or x > 157.0 or z < 5.0 or z > 46.5:
 		return 0.0
 	var dx := maxf(maxf(94.0 - x, x - 150.0), 0.0)
@@ -6923,19 +6940,27 @@ func _build_hill() -> void:
 
 
 ## People and animals near the hill stand on it, not inside it.
+## Is this spot on (or right beside) one of the settlement hills?
+func _on_hills(at: Vector3) -> bool:
+	for hill: Array in HILLS:
+		if Vector2(at.x - (hill[0] as Vector3).x, at.z - (hill[0] as Vector3).z).length() < float(hill[1]) + 3.0:
+			return true
+	return false
+
+
 func _follow_ground() -> void:
 	for list: Array in [npcs, thugs, cops, family]:
 		for n: Person in list:
 			if n.root == null or n.air or n.lying > 0.0:
 				continue
 			var at := n.root.position
-			if (at.x > 76.0 and at.x < 157.0 and at.z > 5.0 and at.z < 46.5) or at.distance_to(DAWN) < 30.0:
+			if (at.x > 76.0 and at.x < 157.0 and at.z > 5.0 and at.z < 46.5) or _on_hills(at):
 				n.root.position.y = _ground_y(at.x, at.z)
 			elif at.y > 0.0 and at.y < HILL_H + 0.5 and at.z > -100.0:
 				n.root.position.y = 0.0
 	for a in animals:
 		var at := a.node.position
-		if (at.x > 76.0 and at.x < 157.0 and at.z < 46.5) or Vector3(at.x, 0, at.z).distance_to(DAWN) < 30.0:
+		if (at.x > 76.0 and at.x < 157.0 and at.z < 46.5) or _on_hills(at):
 			a.node.position.y = _ground_y(at.x, at.z)
 
 
@@ -7675,7 +7700,9 @@ func _dress_town() -> void:
 		_put(flowers[k % flowers.size()], Vector3(4 + cos(angle) * 5.7, 0, 14 + sin(angle) * 5.7), 0.7, angle, leaf, 70.0)
 
 	# --- The forest floor: logs, stumps, mushrooms, stones and undergrowth, and a camp by the picnic corner.
-	var glade: Array = [[DAWN, 27.0], [SPRING, 6.0], [PICNIC, 6.5], [Vector3(122, 0, 26), 40.0], [Vector3(0, 0, FOREST_Z + 4.0), 5.0]]
+	var glade: Array = [[SPRING, 6.0], [PICNIC, 6.5], [Vector3(122, 0, 26), 40.0], [Vector3(0, 0, FOREST_Z + 4.0), 5.0]]
+	for hill: Array in HILLS:
+		glade.append([hill[0], float(hill[1]) + 1.0])
 	_scatter(["nature/log", "nature/log_large", "nature/stump_round", "nature/stump_old", "nature/log_stack"], 70, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 1.3, 2.4, 70.0, glade)
 	_scatter(["nature/mushroom_red", "nature/mushroom_redGroup", "nature/mushroom_tan", "nature/mushroom_tanGroup"], 110, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.35, 0.6, 45.0, glade)
 	_scatter(stones, 70, Vector2(-170, FOREST_Z + 1.0), Vector2(210, FOREST_END + 22.0), 0.8, 2.4, 90.0, glade)
@@ -8652,7 +8679,7 @@ func _update_fishing(delta: float, flat: Vector3) -> void:
 ##   hook: something happens "n" times elsewhere in the game ("ev")    escort: lead your followers there
 ##   gather: step on every marked spot    guard: the night watch    find: no beam, only the distance
 ##   full: the redemption meter reaches 100
-const QUEST: Array[Dictionary] = [
+const STORY: Array[Dictionary] = [
 	{"ch": "הקריאה", "do": "go", "at": "eliya", "t": "דבר עם הרועה אליה בחוות הגבעה", "pts": 2,
 		"say": [["הרועה אליה", "אח שלי! נמאס לסדר חבילות על מדף? יש גבעה ריקה במערב, מעבר לאגם. מי שעולה אליה - בונה אותה."], ["הרועה אליה", "אבל קודם תראה לי שאתה יודע לעבוד. לחץ על השלט כאן: לרעות את העדר או לבצור ענבים."]]},
 	{"do": "hook", "ev": "hillwork", "n": 1, "at": "hilljob", "t": "עזור בחוות הגבעה: רעה את העדר או בצור ענבים",
@@ -8700,7 +8727,7 @@ const QUEST: Array[Dictionary] = [
 	{"ch": "בית", "do": "pay", "cost": 400, "at": "site", "t": "הזמן חומרים לבית של קבע (₪400)",
 		"say": [["הקבלן", "בית של ממש? עם גג? הגבעה שלך מתחילה להיראות כמו יישוב."]]},
 	{"do": "stay", "secs": 4.0, "at": "house", "carry": "wood", "t": "בנה את הבית על הגבעה", "build": "house", "pts": 8,
-		"say": [["גבעת השחר", "בית, עם מזוזה ושולחן שבת ארוך. \"עוד יישמע... קול ששון וקול שמחה\"."]]},
+		"say": [["גבעת השחר", "בית, עם מזוזה ושולחן שבת ארוך. \"עוד יישמע... קול ששון וקול שמחה\"."], ["גבעת השחר", "מעכשיו זה הבית שלך: המשפחה עברה לגבעה, כאן ישנים וכאן מתעוררים - ואין יותר שכר דירה."]]},
 	{"ch": "חנוכת היישוב", "do": "go", "at": "music", "t": "הזמן נגנים בחנות המוזיקה",
 		"say": [["המוכר", "חתונות, בר מצוות וגבעות. באים! יש חשמל שם? לא? נביא גיטרות."]]},
 	{"do": "go", "at": "top", "t": "חזור לגבעה - כולם כבר שם", "build": "party", "pts": 8,
@@ -8721,7 +8748,7 @@ func _bless(points: float) -> void:
 
 ## Something happened elsewhere in the game that a step of the story may be waiting for.
 func _quest_event(what: String) -> void:
-	if quest < QUEST.size() and String(QUEST[quest].get("ev", "")) == what:
+	if quest < story.size() and String(story[quest].get("ev", "")) == what:
 		q_count += 1
 
 
@@ -8743,9 +8770,9 @@ func _story(who: String, text: String) -> void:
 
 
 ## A group of things on Dawn Hill that appears when you build it.
-func _site(key: String) -> Node3D:
+func _site(key: String, at: Vector3 = DAWN + Vector3(0, DAWN_H, 0)) -> Node3D:
 	var group := Node3D.new()
-	group.position = DAWN + Vector3(0, DAWN_H, 0)
+	group.position = at
 	group.visible = false
 	add_child(group)
 	sites[key] = group
@@ -8794,52 +8821,56 @@ func _simple_sheep(parent: Node, pos: Vector3) -> Node3D:
 
 
 func _build_quest() -> void:
-	# --- Dawn Hill itself: a bare rise in the western forest.
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var cell := 1.5
-	var x := DAWN.x - 27.0
-	while x < DAWN.x + 27.0:
-		var z := DAWN.z - 27.0
-		while z < DAWN.z + 27.0:
-			var corners: Array[Vector3] = []
-			var top := 0.0
-			for c: Vector2 in [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]:
-				var h := _ground_y(x + c.x * cell, z + c.y * cell)
-				top = maxf(top, h)
-				corners.append(Vector3(x + c.x * cell, h if h > 0.01 else -0.06, z + c.y * cell))
-			if top > 0.01:
-				for k: int in [0, 1, 2, 0, 2, 3]:
-					st.add_vertex(corners[k])
-			z += cell
-		x += cell
-	st.generate_normals()
-	var mesh := st.commit()
-	mesh.surface_set_material(0, _tex("grass", Color(0.36, 0.5, 0.22), 0.11))
-	var land := MeshInstance3D.new()
-	land.mesh = mesh
-	add_child(land)
-	var body := StaticBody3D.new()
-	var shape := CollisionShape3D.new()
-	shape.shape = mesh.create_trimesh_shape()
-	body.add_child(shape)
-	add_child(body)
-	_sign("גבעת השחר", DAWN + Vector3(0, 3.0, -28.5), 72)
-	_box(Vector3(0.18, 2.6, 0.18), DAWN + Vector3(0, 1.3, -28.5), _mat(Color(0.45, 0.32, 0.2))).set_meta("keep", true)
+	# --- The story: the opening chapters, then an outpost on each further hill, then the ending.
+	story.assign(STORY.slice(0, 28))
+	for k in OUTPOSTS.size():
+		story.append_array(_outpost_steps(k))
+	story.append_array(STORY.slice(28))
+	# --- The hills themselves: bare rises in the forest, each with its name at the foot.
+	var names: Array[String] = ["גבעת השחר"]
+	for post in OUTPOSTS:
+		names.append(String(post["name"]))
+	for k in HILLS.size():
+		var middle: Vector3 = HILLS[k][0]
+		var reach := float(HILLS[k][1]) + 1.0
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var cell := 1.5
+		var x := middle.x - reach
+		while x < middle.x + reach:
+			var z := middle.z - reach
+			while z < middle.z + reach:
+				var corners: Array[Vector3] = []
+				var top := 0.0
+				for c: Vector2 in [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]:
+					var h := _ground_y(x + c.x * cell, z + c.y * cell)
+					top = maxf(top, h)
+					corners.append(Vector3(x + c.x * cell, h if h > 0.01 else -0.06, z + c.y * cell))
+				if top > 0.01:
+					for j: int in [0, 1, 2, 0, 2, 3]:
+						st.add_vertex(corners[j])
+				z += cell
+			x += cell
+		st.generate_normals()
+		var mesh := st.commit()
+		mesh.surface_set_material(0, _tex("grass", Color(0.36, 0.5, 0.22), 0.11))
+		var land := MeshInstance3D.new()
+		land.mesh = mesh
+		add_child(land)
+		var body := StaticBody3D.new()
+		var shape := CollisionShape3D.new()
+		shape.shape = mesh.create_trimesh_shape()
+		body.add_child(shape)
+		add_child(body)
+		_sign(names[k], middle + Vector3(0, 3.0, -reach - 1.5), 72)
+		_box(Vector3(0.18, 2.6, 0.18), middle + Vector3(0, 1.3, -reach - 1.5), _mat(Color(0.45, 0.32, 0.2))).set_meta("keep", true)
+	for k in OUTPOSTS.size():
+		_build_outpost(k)
 
 	# --- Everything that can be built on it, hidden until its day comes.
 	var wood := _mat(Color(0.5, 0.36, 0.22))
 	var camp := _site("camp")
-	_box(Vector3(0.12, 5.0, 0.12), Vector3(0, 2.5, 0), _mat(Color(0.85, 0.85, 0.85)), camp)
-	_box(Vector3(1.7, 1.1, 0.04), Vector3(0.9, 4.4, 0), _mat(Color(0.97, 0.97, 0.97)), camp)
-	for sy: float in [3.98, 4.82]:
-		_box(Vector3(1.7, 0.14, 0.05), Vector3(0.9, sy, 0), _mat(Color(0.1, 0.25, 0.75)), camp)
-	_box(Vector3(0.3, 0.3, 0.05), Vector3(0.9, 4.4, 0), _mat(Color(0.1, 0.25, 0.75)), camp).rotation.z = PI * 0.25
-	_site_kit(camp, "survival/tent-canvas", 2.6, Vector3(-4.2, 0, 3.2), 0.6)
-	_site_kit(camp, "survival/campfire-pit", 0.55, Vector3(2.6, 0, 2.8))
-	_site_kit(camp, "survival/tree-log", 0.5, Vector3(4.2, 0, 3.4), 0.4)
-	_site_kit(camp, "survival/tree-log", 0.5, Vector3(2.2, 0, 4.5), 1.8)
-	_box(Vector3(0.12, 0.34, 0.12), Vector3(2.6, 0.5, 2.8), shade_mat, camp)                # the fire
+	_camp_parts(camp)
 	var tank := _site("tank")
 	_site_kit(tank, "industrial/water-tower", 6.0, Vector3(14.0, 0, 0))
 	_site_kit(tank, "survival/barrel", 1.1, Vector3(12.2, 0, 1.2))
@@ -8872,15 +8903,7 @@ func _build_quest() -> void:
 	_site_solid(shul, Vector3(6.4, 3.0, 6.4), Vector3(-8.0, 0, -6.0))
 	_site_kit(shul, "holiday/hanukkah-menorah-candles", 1.4, Vector3(-3.9, 0, -4.0))
 	var tower := _site("tower")
-	for sx: float in [-0.9, 0.9]:
-		for sz: float in [-0.9, 0.9]:
-			_box(Vector3(0.16, 4.2, 0.16), Vector3(sx, 2.1, -14.0 + sz), wood, tower)
-	_box(Vector3(2.4, 0.15, 2.4), Vector3(0, 4.2, -14.0), wood, tower)
-	_box(Vector3(2.8, 0.14, 2.8), Vector3(0, 6.1, -14.0), _mat(Color(0.5, 0.2, 0.16)), tower)
-	for sx: float in [-1.1, 1.1]:
-		_box(Vector3(0.1, 1.9, 0.1), Vector3(sx, 5.15, -15.1), wood, tower)
-		_box(Vector3(0.1, 1.9, 0.1), Vector3(sx, 5.15, -12.9), wood, tower)
-	_site_solid(tower, Vector3(2.0, 4.0, 2.0), Vector3(0, 0, -14.0))
+	_tower_parts(tower, -14.0)
 	var dog := Node3D.new()                                                         # the guard dog
 	_cap(0.24, 0.9, Vector3(0, 0.5, 0), _mat(Color(0.75, 0.6, 0.4)), dog).rotation.x = PI * 0.5
 	_ball(0.2, Vector3(0, 0.75, 0.5), _mat(Color(0.75, 0.6, 0.4)), dog)
@@ -8893,6 +8916,25 @@ func _build_quest() -> void:
 	var house := _site("house")
 	_site_kit(house, "suburban/building-type-c", 6.0, Vector3(9.0, 0, -6.5), -PI * 0.5, {"wall": Color(0.95, 0.9, 0.78), "green": Color(0.72, 0.32, 0.22)})
 	_site_solid(house, Vector3(6.0, 4.0, 7.6), Vector3(9.0, 0, -6.5))
+	_box(Vector3(1.6, 0.05, 2.4), Vector3(4.8, 0.04, -6.5), _mat(Color(0.8, 0.45, 0.3)), house)       # the doormat of your own home
+	var mine := Label3D.new()
+	mine.text = _h("הבית שלי")
+	mine.font = font
+	mine.font_size = 64
+	mine.pixel_size = 0.01
+	mine.outline_size = 16
+	mine.outline_modulate = Color(0.05, 0.08, 0.15)
+	mine.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	mine.position = Vector3(5.6, 6.6, -6.5)
+	house.add_child(mine)
+	hill_home = Place.new()
+	hill_home.key = "home"
+	hill_home.title = "הבית שלי"
+	hill_home.prompt = "להיכנס הביתה"
+	hill_home.open_from = 0
+	hill_home.open_to = 24
+	hill_home.door = Vector3(0, -500, 0)
+	places.append(hill_home)
 	var table := Vector3(-1.5, 0, -5.5)
 	_site_kit(house, "furniture/table", 1.0, table, 0.0, {"wood": Color(0.55, 0.38, 0.24)})
 	_box(Vector3(2.0, 0.03, 0.8), table + Vector3(0, 1.01, 0), _mat(Color(0.97, 0.97, 0.95)), house)
@@ -8993,6 +9035,8 @@ func _build_quest() -> void:
 
 ## Where a step of the story sends you.
 func _quest_goal(step: Dictionary) -> Vector3:
+	if typeof(step.get("at")) == TYPE_VECTOR3:
+		return step["at"]
 	var top := DAWN + Vector3(0, DAWN_H, 0)
 	match String(step.get("at", "")):
 		"eliya":
@@ -9036,6 +9080,8 @@ func _quest_goal(step: Dictionary) -> Vector3:
 			return top + Vector3(4.8, 0, -6.5)
 		"music":
 			return Vector3(-74, 0, -4.7)
+		"bus":
+			return Vector3(29.2, 0, 5.6)
 	return Vector3.INF
 
 
@@ -9045,8 +9091,8 @@ func _quest_restore() -> void:
 		if key != "spring_place":
 			_show_site(key, false)
 	var cleaned := false
-	for k in mini(quest, QUEST.size()):
-		var made := String(QUEST[k].get("build", ""))
+	for k in mini(quest, story.size()):
+		var made := String(story[k].get("build", ""))
 		_show_site(made, true)
 		if made == "spring":
 			cleaned = true
@@ -9056,6 +9102,7 @@ func _quest_restore() -> void:
 	story_queue.clear()
 	story_card.visible = false
 	party_t = 0.0
+	_sync_home()
 	_quest_enter()
 
 
@@ -9072,7 +9119,7 @@ func _quest_enter() -> void:
 	q_follow.clear()
 	for child in carry_node.get_children():
 		child.queue_free()
-	var step: Dictionary = QUEST[quest] if quest < QUEST.size() else {}
+	var step: Dictionary = story[quest] if quest < story.size() else {}
 	inspector.root.visible = bool(step.get("insp", false))
 	var show_party := redeemed or party_t > 0.0
 	for k in party.size():
@@ -9105,6 +9152,15 @@ func _quest_enter() -> void:
 				var ewe := _simple_sheep(self, player.position + Vector3(1.5 + k * 1.2, 0, 1.5))
 				q_things.append(ewe)
 				q_follow.append([ewe, null])
+		"family":
+			for k in 4:
+				var kin := _make_person(Color.from_hsv(k * 0.23 + 0.05, 0.5, 0.88), Color.from_hsv(k * 0.17, 0.3, 0.42))
+				if k >= 2:
+					kin.root.scale = Vector3.ONE * 0.64
+				kin.root.position = player.position + Vector3(1.4 + k * 1.1, 0, 1.0)
+				add_child(kin.root)
+				q_things.append(kin.root)
+				q_follow.append([kin.root, kin])
 		"crowd":
 			for k in 5:
 				var friend := _make_person(Color.from_hsv(k * 0.19, 0.55, 0.9), Color.from_hsv(k * 0.13, 0.3, 0.4))
@@ -9114,8 +9170,10 @@ func _quest_enter() -> void:
 				q_follow.append([friend.root, friend])
 	match String(step.get("what", "")):
 		"hole":
+			var spots: Array = step.get("spots", [])
 			for k in 6:
-				var hole := _box(Vector3(0.9, 0.06, 0.9), DAWN + Vector3(-5.0 + k * 2.0, DAWN_H + 0.04, 11.4 + (k % 2) * 2.2), _mat(Color(0.35, 0.25, 0.15)))
+				var dug: Vector3 = spots[k] if k < spots.size() else DAWN + Vector3(-5.0 + k * 2.0, DAWN_H, 11.4 + (k % 2) * 2.2)
+				var hole := _box(Vector3(0.9, 0.06, 0.9), dug + Vector3(0, 0.04, 0), _mat(Color(0.35, 0.25, 0.15)))
 				q_things.append(hole)
 		"trash":
 			for k in 5:
@@ -9129,7 +9187,7 @@ func _quest_enter() -> void:
 
 
 func _quest_done() -> void:
-	var step: Dictionary = QUEST[quest]
+	var step: Dictionary = story[quest]
 	var made := String(step.get("build", ""))
 	match made:
 		"spring":
@@ -9137,11 +9195,8 @@ func _quest_done() -> void:
 			(spring.get_node("clean") as Node3D).visible = true
 			(spring.get_node("mud") as Node3D).visible = false
 			energy = 100.0
-		"tower":
-			clock = 5.6
-			day += 1
-			_new_day()
-			_apply_daylight()
+		"house":
+			rent_owed = 0
 		"party":
 			party_t = 90.0
 		"finale":
@@ -9151,15 +9206,21 @@ func _quest_done() -> void:
 			_apply_daylight()
 			_play("shofar")
 			_finale()
+	if String(step["do"]) == "guard":             # the watch ends at first light
+		clock = 5.6
+		day += 1
+		_new_day()
+		_apply_daylight()
 	_show_site(made, true)
+	_sync_home()
 	_bless(float(step.get("pts", 0)))
 	for line: Array in step.get("say", []):
 		_story(line[0], line[1])
 	if made != "finale":
 		_play("win")
 	quest += 1
-	if quest < QUEST.size() and QUEST[quest].has("ch"):
-		story_queue.append(_h("פרק חדש") + "\n" + _h(String(QUEST[quest]["ch"])))
+	if quest < story.size() and story[quest].has("ch"):
+		story_queue.append(_h("פרק חדש") + "\n" + _h(String(story[quest]["ch"])))
 	_quest_enter()
 	_save()
 
@@ -9214,16 +9275,16 @@ func _update_quest(delta: float) -> void:
 	quest_light.visible = false
 	quest_mark.visible = false
 	var built := 0
-	for key: String in sites:
-		if key != "spring_place" and (sites[key] as Node3D).visible:
+	for key: String in ["house", "o0_homes", "o1_homes", "o2_homes"]:
+		if sites.has(key) and (sites[key] as Node3D).visible:
 			built += 1
-	var tail := "  ·  גאולה %d%%  ·  יישוב %d/8" % [int(geula), built]
-	if quest >= QUEST.size():
+	var tail := "  ·  גאולה %d%%  ·  יישובים %d/4" % [int(geula), built]
+	if quest >= story.size():
 		quest_label.text = _h("ימות המשיח" + tail)
 		return
 	if inside:
 		return
-	var step: Dictionary = QUEST[quest]
+	var step: Dictionary = story[quest]
 	var goal := _quest_goal(step)
 	var flat := Vector3(player.position.x, 0, player.position.z)
 	var away := 0.0
@@ -9260,6 +9321,7 @@ func _update_quest(delta: float) -> void:
 			done = geula >= 100.0
 		"escort":
 			var solemn := String(step.get("who", "")) == "crowd"
+			var folk := String(step.get("who", "")) == "family"
 			var held := solemn and (running or driving or riding)
 			if held and q_told <= 0.0:
 				q_told = 6.0
@@ -9277,8 +9339,8 @@ func _update_quest(delta: float) -> void:
 					node.rotation.y = atan2(gap.x, gap.z)
 				if lost and q_told <= 0.0:
 					q_told = 7.0
-					_play("baa")
-					_toast("הכבשים נשארו מאחור! חזור אליהן ולך לאט יותר.")
+					_play("pick" if folk else "baa")
+					_toast("המשפחות נשארו מאחור! חזור אליהן, הן הולכות ברגל." if folk else "הכבשים נשארו מאחור! חזור אליהן ולך לאט יותר.")
 				node.position = Vector3(at.x, _ground_y(at.x, at.z) + (absf(sin(Time.get_ticks_msec() * 0.01 + k)) * 0.18 if solemn and moving else 0.0), at.z)
 				if q_follow[k][1] != null:
 					_animate(q_follow[k][1], moving, delta)
@@ -9304,7 +9366,9 @@ func _update_quest(delta: float) -> void:
 			q_count = int(step["n"]) - left
 			done = left == 0
 		"guard":
-			var pen_at := DAWN + Vector3(-10.0, 0, 6.0)
+			var pen_goal: Vector3 = step.get("pen", DAWN + Vector3(-10.0, 0, 6.0))
+			var pen_at := Vector3(pen_goal.x, 0, pen_goal.z)
+			var ring: Vector3 = step.get("ring", DAWN)
 			q_t -= delta
 			if q_t <= 0.0 and q_spawned < int(step["n"]):
 				q_t = 3.4
@@ -9317,7 +9381,7 @@ func _update_quest(delta: float) -> void:
 					_box(Vector3(0.06, 0.2, 0.04), Vector3(sx, 0.82, 0.45), fur, jackal)
 					_box(Vector3(0.05, 0.05, 0.02), Vector3(sx, 0.65, 0.72), shade_mat, jackal)      # eyes that shine in the dark
 				var from := rng.randf() * TAU
-				jackal.position = DAWN + Vector3(cos(from) * 25.0, 0, sin(from) * 25.0)
+				jackal.position = ring + Vector3(cos(from) * 24.0, 0, sin(from) * 24.0)
 				jackal.set_meta("flee", 0.0)
 				add_child(jackal)
 				q_things.append(jackal)
@@ -9367,3 +9431,146 @@ func _update_quest(delta: float) -> void:
 			quest_mark.visible = away < 60.0
 			quest_mark.position = Vector3(goal.x, floor_y + 3.6 + sin(Time.get_ticks_msec() * 0.005) * 0.25, goal.z)
 	quest_label.text = _h(text) + "\n" + _h(tail.strip_edges().trim_prefix("·").strip_edges())
+
+
+# ------------------------------------------------------------ outposts ----
+# After Dawn Hill you can found a new place on each of the other hills. Every outpost is built the
+# same way, in the same order, but each has its own crop, its own price and a longer night watch.
+
+func _hill_home_on() -> bool:
+	return sites.has("house") and (sites["house"] as Node3D).visible
+
+
+## The door of the hill house only works once the house stands.
+func _sync_home() -> void:
+	if hill_home != null:
+		hill_home.door = DAWN + Vector3(4.8, DAWN_H, -6.5) if _hill_home_on() else Vector3(0, -500, 0)
+
+
+## A flag on a pole, a tent, and a fire with two logs to sit on.
+func _camp_parts(camp: Node3D) -> void:
+	_box(Vector3(0.12, 5.0, 0.12), Vector3(0, 2.5, 0), _mat(Color(0.85, 0.85, 0.85)), camp)
+	_box(Vector3(1.7, 1.1, 0.04), Vector3(0.9, 4.4, 0), _mat(Color(0.97, 0.97, 0.97)), camp)
+	for sy: float in [3.98, 4.82]:
+		_box(Vector3(1.7, 0.14, 0.05), Vector3(0.9, sy, 0), _mat(Color(0.1, 0.25, 0.75)), camp)
+	_box(Vector3(0.3, 0.3, 0.05), Vector3(0.9, 4.4, 0), _mat(Color(0.1, 0.25, 0.75)), camp).rotation.z = PI * 0.25
+	_site_kit(camp, "survival/tent-canvas", 2.6, Vector3(-4.2, 0, 3.2), 0.6)
+	_site_kit(camp, "survival/campfire-pit", 0.55, Vector3(2.6, 0, 2.8))
+	_site_kit(camp, "survival/tree-log", 0.5, Vector3(4.2, 0, 3.4), 0.4)
+	_site_kit(camp, "survival/tree-log", 0.5, Vector3(2.2, 0, 4.5), 1.8)
+	_box(Vector3(0.12, 0.34, 0.12), Vector3(2.6, 0.5, 2.8), shade_mat, camp)                # the fire
+
+
+## A wooden watchtower at the north edge of a hill, `z` from its middle.
+func _tower_parts(tower: Node3D, z: float) -> void:
+	var wood := _mat(Color(0.5, 0.36, 0.22))
+	for sx: float in [-0.9, 0.9]:
+		for sz: float in [-0.9, 0.9]:
+			_box(Vector3(0.16, 4.2, 0.16), Vector3(sx, 2.1, z + sz), wood, tower)
+	_box(Vector3(2.4, 0.15, 2.4), Vector3(0, 4.2, z), wood, tower)
+	_box(Vector3(2.8, 0.14, 2.8), Vector3(0, 6.1, z), _mat(Color(0.5, 0.2, 0.16)), tower)
+	for sx: float in [-1.1, 1.1]:
+		_box(Vector3(0.1, 1.9, 0.1), Vector3(sx, 5.15, z - 1.1), wood, tower)
+		_box(Vector3(0.1, 1.9, 0.1), Vector3(sx, 5.15, z + 1.1), wood, tower)
+	_site_solid(tower, Vector3(2.0, 4.0, 2.0), Vector3(0, 0, z))
+
+
+func _outpost_top(k: int) -> Vector3:
+	return (HILLS[k + 1][0] as Vector3) + Vector3(0, float(HILLS[k + 1][3]), 0)
+
+
+## Where the six trees (or patches of wheat) of outpost `k` go.
+func _outpost_spots(k: int) -> Array:
+	var spots: Array = []
+	for j in 6:
+		spots.append(_outpost_top(k) + Vector3(-5.0 + j * 2.0, 0, 9.0 + (j % 2) * 2.0))
+	return spots
+
+
+## Everything outpost `k` will have, hidden until each part is built.
+func _build_outpost(k: int) -> void:
+	var top := _outpost_top(k)
+	var post: Dictionary = OUTPOSTS[k]
+	var pre := "o%d_" % k
+	var wood := _mat(Color(0.5, 0.36, 0.22))
+	_camp_parts(_site(pre + "camp", top))
+	var cabins := _site(pre + "cabins", top)
+	for j in 2:
+		var at := Vector3(7.5, 0, 4.2 - j * 8.4)
+		_site_kit(cabins, "suburban/building-type-h", 4.0, at, -PI * 0.5, {"wall": [Color(0.82, 0.64, 0.42), Color(0.74, 0.6, 0.46)][j], "green": [Color(0.55, 0.3, 0.2), Color(0.35, 0.42, 0.5)][j]})
+		_site_solid(cabins, Vector3(4.6, 3.0, 6.4), at)
+	var pen := _site(pre + "pen", top)
+	var rail := {"wood": Color(0.56, 0.4, 0.26), "woodDark": Color(0.42, 0.29, 0.18)}
+	for j in 2:
+		for sz: float in [2.6, 7.8]:
+			_site_kit(pen, "nature/fence_simple", 1.0, Vector3(-9.3 + j * 2.6, 0, sz), 0.0, rail)
+		for sx: float in [-10.6, -5.4]:
+			_site_kit(pen, "nature/fence_simple", 1.0, Vector3(sx, 0, 3.9 + j * 2.6), PI * 0.5, rail)
+	for j in 3:
+		_simple_sheep(pen, Vector3(-9.2 + j * 1.3, 0, 4.2 + (j % 2) * 1.8)).rotation.y = j * 2.2
+	var crop := _site(pre + "crop", top)
+	var spots := _outpost_spots(k)
+	for j in spots.size():
+		var at: Vector3 = (spots[j] as Vector3) - top
+		match String(post["crop"]):
+			"almond":       # almond trees in blossom
+				_site_kit(crop, "nature/tree_default", 2.8, at, j * 1.1, {"leafsGreen": Color(0.99, 0.86, 0.9), "leafsDark": Color(0.95, 0.75, 0.82), "woodBark": Color(0.42, 0.3, 0.22)})
+			"olive":
+				_site_kit(crop, "nature/tree_oak", 3.0, at, j * 1.1, {"leafsGreen": Color(0.44, 0.52, 0.38), "leafsDark": Color(0.36, 0.44, 0.32), "woodBark": Color(0.45, 0.4, 0.32)})
+			_:              # a patch of ripe wheat
+				for w in 4:
+					_site_kit(crop, "nature/crops_wheatStageB", 0.95, at + Vector3((w % 2) * 0.7 - 0.35, 0, (w / 2) * 0.7 - 0.35), w * 0.8, {"woodInner": Color(0.9, 0.75, 0.35), "_defaultMat": Color(0.82, 0.66, 0.3)})
+	var tower := _site(pre + "tower", top)
+	_tower_parts(tower, -11.0)
+	var homes := _site(pre + "homes", top)
+	_site_kit(homes, "suburban/building-type-i", 5.0, Vector3(-8.5, 0, -5.0), PI * 0.5, {"wall": Color(0.95, 0.9, 0.78), "green": ROOFS[k % ROOFS.size()]})
+	_site_solid(homes, Vector3(5.4, 3.5, 6.6), Vector3(-8.5, 0, -5.0))
+	_site_kit(homes, "suburban/building-type-o", 5.0, Vector3(0.4, 0, -5.6), 0.0, {"wall": Color(0.9, 0.93, 0.95), "green": ROOFS[(k + 2) % ROOFS.size()]})
+	_site_solid(homes, Vector3(6.4, 3.5, 5.0), Vector3(0.4, 0, -5.6))
+	_box(Vector3(2.4, 0.08, 0.9), Vector3(-3.6, 0.55, 0.4), wood, homes)                         # a bench by the flag
+	for sx: float in [-1.0, 1.0]:
+		_box(Vector3(0.12, 0.5, 0.8), Vector3(-3.6 + sx, 0.27, 0.4), wood, homes)
+
+
+## The steps that found outpost `k`, in order.
+func _outpost_steps(k: int) -> Array[Dictionary]:
+	var post: Dictionary = OUTPOSTS[k]
+	var name := String(post["name"])
+	var top := _outpost_top(k)
+	var pre := "o%d_" % k
+	var pen_at := top + Vector3(-8.0, 0, 5.2)
+	var call_text: Array = {
+		"eliya": ["אליה מחפש אותך בחוות הגבעה", ["הרועה אליה", "גבעת השחר מלאה חיים, כל הכבוד. אבל ממזרח לפינת הפיקניק יש עוד גבעה ריקה. מי יעלה אליה אם לא אנחנו?"]],
+		"rabbi": ["הרב רוצה לדבר איתך", ["הרב", "יישוב אחד הוא התחלה. \"לא תוהו בראה - לשבת יצרה\". מעל האגם יש גבעה שמחכה למשפחות."]],
+		"insp": ["הפקח מחכה לך בגבעת השחר", ["הפקח", "אל תיבהל, הפעם באתי עם מפה. במזרח היער יש גבעה מאושרת מראש, עם כל החותמות. פעם ראשונה שאני מביא בשורות טובות."]],
+	}[String(post["giver"])]
+	var crop_line: String = {
+		"almond": "השקדייה פורחת ראשונה, עוד כשקר. מי שנוטע אותה לא מחכה שיהיה נוח.",
+		"wheat": "\"הזורעים בדמעה - ברינה יקצורו\". בינתיים יש יבלות, והן לגמרי שלך.",
+		"olive": "עץ זית נותן שמן רק אחרי שנים, וחי אלף שנה. נוטעים אותו בשביל הנכדים.",
+	}[String(post["crop"])]
+	var first: Dictionary = {"ch": name, "do": "go", "at": String(post["giver"]), "t": call_text[0], "say": [call_text[1]]}
+	if String(post["giver"]) == "insp":
+		first["insp"] = true
+	var steps: Array[Dictionary] = [
+		first,
+		{"do": "stay", "secs": 2.5, "at": top + Vector3(0.8, 0, 1.6), "t": "עלה ל%s ותקע את הדגל" % name, "build": pre + "camp",
+			"say": [[name, "עוד דגל, עוד אוהל, עוד מדורה. את ההתחלה אתה כבר מכיר - עכשיו בונים."]]},
+		{"do": "pay", "cost": int(post["cost"]), "at": "site", "t": "קנה קרשים לשני צריפים (₪%d)" % int(post["cost"]),
+			"say": [["הקבלן", "שוב אתה? עוד מעט אפתח סניף ביער. קח, ותמסור ד\"ש לכבשים."]]},
+		{"do": "stay", "secs": 3.5, "at": top + Vector3(3.6, 0, 0), "carry": "wood", "t": "בנה את הצריפים ב%s" % name, "build": pre + "cabins"},
+		{"do": "go", "at": "pen", "t": "קח שלוש כבשים מהדיר שלך בגבעת השחר",
+			"say": [["גבעת השחר", "העדר שלך גדל. שלוש כבשים יוצאות לדרך, להתחיל עדר חדש."]]},
+		{"do": "escort", "who": "sheep", "at": pen_at, "t": "הובל את הכבשים ל%s, בסבלנות" % name, "build": pre + "pen"},
+		{"do": "gather", "n": 6, "what": "hole", "spots": _outpost_spots(k), "carry": "plants", "at": top + Vector3(0, 0, 10.0),
+			"t": "%s ב%s ({c}/6)" % [String(post["plant"]), name], "build": pre + "crop", "say": [[name, crop_line]]},
+		{"do": "stay", "secs": 1.5, "at": top + Vector3(0, 0, -8.6), "t": "עלה לעמדת השמירה ב%s" % name},
+		{"do": "guard", "n": int(post["jackals"]), "pen": pen_at, "ring": HILLS[k + 1][0], "at": pen_at,
+			"t": "גרש את התנים מהדיר ({c}/%d)" % int(post["jackals"]), "build": pre + "tower",
+			"say": [[name, "עוד לילה עבר בשלום. מגדל השמירה עומד, והכבשים ישנות."]]},
+		{"do": "go", "at": "bus", "t": "פגוש את המשפחות החדשות בתחנת האוטובוס",
+			"say": [["אבא של המשפחה", "שמענו שיש גבעה עם נוף ובלי פקקים. איפה חותמים? הילדים כבר שואלים אם יש כבשים."]]},
+		{"do": "escort", "who": "family", "at": top + Vector3(-3.0, 0, -1.2), "t": "הובל את המשפחות ל%s" % name, "build": pre + "homes", "pts": 5,
+			"say": [[name, "יישוב חדש נוסד: %s! בתים, ילדים, כביסה על החבל." % name], [name, "\"ובנו ערים נשמות וישבו, ונטעו כרמים ושתו את יינם\"."]]},
+	]
+	return steps
