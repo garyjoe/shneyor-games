@@ -9113,7 +9113,7 @@ func _quest_enter() -> void:
 		child.queue_free()
 	var step: Dictionary = story[quest] if quest < story.size() else {}
 	inspector.root.visible = bool(step.get("insp", false))
-	var show_party := redeemed or party_t > 0.0
+	var show_party := party_t > 0.0
 	for k in party.size():
 		party[k].root.visible = show_party
 	if step.is_empty():
@@ -9193,6 +9193,7 @@ func _quest_done() -> void:
 			party_t = 90.0
 		"finale":
 			redeemed = true
+			party_t = 90.0                     # they dance him in, and then everyone goes home
 			rent_owed = 0
 			clock = 5.7
 			_apply_daylight()
@@ -9251,7 +9252,7 @@ func _update_quest(delta: float) -> void:
 			story_card.text = story_queue.pop_front()
 			story_t = 5.2
 	party_t = maxf(party_t - delta, 0.0)
-	if redeemed or party_t > 0.0:                    # the circle dance round the flag
+	if party_t > 0.0:                                # the circle dance round the flag: a minute and a half, then they go home
 		var spin := Time.get_ticks_msec() * 0.0006
 		for k in party.size():
 			var angle := spin + k * TAU / party.size()
