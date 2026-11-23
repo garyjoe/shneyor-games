@@ -39,6 +39,7 @@ python3 -m http.server --directory dist 8000
 
 1. מעתיקים את `games/game-01` לתיקייה חדשה תחת `games/`.
 2. משנים את `config/name` ואת `config/description` בקובץ `project.godot`.
+3. מוחקים מהתיקייה החדשה את הקובץ `.hidden` (הוא מה שמסתיר את משחק הדוגמה מהאפליקציה).
 
 המשחק ייבנה ויופיע באפליקציה אוטומטית, עם השם, התיאור והסמל (`icon.svg`) שלו.
 

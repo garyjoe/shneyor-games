@@ -22,6 +22,11 @@ for project in games/*/project.godot; do
   [ -e "$project" ] || continue
   dir="$(dirname "$project")"
   slug="$(basename "$dir")"
+  # A game with a file named .hidden in its folder is left out of the app (the template, for one).
+  if [ -e "$dir/.hidden" ]; then
+    echo "==> Skipping $slug (hidden)"
+    continue
+  fi
   name="$(sed -n 's/^config\/name="\(.*\)"$/\1/p' "$project" | head -n1)"
   desc="$(sed -n 's/^config\/description="\(.*\)"$/\1/p' "$project" | head -n1)"
 
