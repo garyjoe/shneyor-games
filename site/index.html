@@ -75,13 +75,21 @@
     padding: calc(5px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 5px max(8px, env(safe-area-inset-left));
     background: var(--bar); color: var(--on-bar);
   }
-  #bar button {
-    border: 0; border-radius: 999px; padding: 5px 14px; background: rgba(255, 255, 255, .14); color: inherit;
+  #bar button, #bar a {
+    border: 0; text-decoration: none; border-radius: 999px; padding: 5px 14px; background: rgba(255, 255, 255, .14); color: inherit;
     font-weight: 600; font-size: .9rem; white-space: nowrap;
   }
-  #bar button:hover, #bar button:focus-visible { background: rgba(255, 255, 255, .26); outline: none; }
+  #bar button:hover, #bar button:focus-visible, #bar a:hover, #bar a:focus-visible { background: rgba(255, 255, 255, .26); outline: none; }
+  #bar #back { background: #ffd94d; color: #1b1733; font-weight: 700; font-size: 1rem; padding: 6px 18px; }
+  #bar #back:hover, #bar #back:focus-visible { background: #ffe680; }
   #bar #title { flex: 1; min-width: 0; text-align: center; font-weight: 700; font-size: .95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #player:fullscreen #bar { display: none; }
+  /* In full screen the bar is gone, so a small button stays in the corner to bring it back. */
+  #unfull {
+    display: none; position: absolute; top: calc(8px + env(safe-area-inset-top)); left: 8px; z-index: 5;
+    width: 36px; height: 36px; border: 0; border-radius: 50%; background: rgba(0, 0, 0, .45); color: #fff; font-size: 1rem;
+  }
+  #player:fullscreen #unfull { display: block; }
   #frame { flex: 1; min-height: 0; width: 100%; border: 0; display: block; background: #000; }
 </style>
 </head>
@@ -113,19 +121,21 @@
 
 <div id="player" hidden>
   <div id="bar">
-    <button id="back" type="button">→ לרשימה</button>
+    <button id="back" type="button">→ חזרה</button>
     <div id="title"></div>
+    <a id="out" target="_blank" rel="noopener" hidden>↗ בלשונית חדשה</a>
     <button id="full" type="button">מסך מלא</button>
   </div>
+  <button id="unfull" type="button" aria-label="יציאה ממסך מלא">✕</button>
   <iframe id="frame" title="" allow="fullscreen; autoplay; gamepad"></iframe>
 </div>
 
 <script>
   const $ = id => document.getElementById(id);
-  const home = $('home'), player = $('player'), frame = $('frame');
+  const home = $('home'), player = $('player');
+  let frame = $('frame');
   const appTitle = document.title;
   let games = [], apps = [];
-  let openedFromHome = false;
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -140,13 +150,11 @@
     $(sectionId).hidden = !items.length;
     for (const g of items) {
       const a = el('a', 'game');
-      if (g.url) {            // lives on another site: opens there, in a new tab
+      if (g.url && !g.embed) {   // cannot be shown inside the app: opens in this tab, and Back returns here
         a.href = g.url;
-        a.target = '_blank';
         a.rel = 'noopener';
       } else {
         a.href = '#/' + g.slug;
-        a.addEventListener('click', () => { openedFromHome = true; });
       }
       const top = el('div', 'top');
       const img = el('img');
@@ -157,7 +165,7 @@
       const name = el('strong', '', g.name), desc = el('span', 'desc', g.description || '');
       name.dir = desc.dir = 'auto';   // a name or description in English reads left to right
       top.append(img, name);
-      a.append(top, desc, el('span', 'play', g.url ? '↗ לפתוח' : playLabel));
+      a.append(top, desc, el('span', 'play', g.url && !g.embed ? '↗ לפתוח' : playLabel));
       const li = el('li');
       li.append(a);
       list.append(li);
@@ -172,11 +180,11 @@
   // The address after the # says which game is open, so the phone's back button returns to the list.
   function route() {
     const slug = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
-    const g = games.concat(apps).find(x => x.slug === slug && !x.url);
+    const g = games.concat(apps).find(x => x.slug === slug && (!x.url || x.embed));
     if (!g) {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       player.hidden = true;
-      frame.removeAttribute('src');   // unloads the game, so it stops running and goes quiet
+      newFrame();   // drops the game, so it stops running and goes quiet
       home.hidden = false;
       document.title = appTitle;
       return;
@@ -184,17 +192,31 @@
     home.hidden = true;
     player.hidden = false;
     $('title').textContent = g.name;
-    frame.title = g.name;
     document.title = g.name;
-    const src = g.path || g.slug + '/';
-    if (frame.getAttribute('src') !== src) frame.src = src;
+    const src = g.url || g.path || g.slug + '/';
+    $('out').hidden = !g.url;
+    if (g.url) $('out').href = g.url;
+    if (frame.getAttribute('src') !== src) {
+      newFrame();
+      frame.title = g.name;
+      frame.src = src;
+    }
   }
 
-  frame.addEventListener('load', () => { if (!player.hidden) frame.focus(); });
+  // Each game gets a frame of its own. Reusing one would leave the old game in the browser's history,
+  // and Back would then step through the frame instead of returning to the list.
+  function newFrame() {
+    const f = document.createElement('iframe');
+    f.id = 'frame';
+    f.allow = 'fullscreen; autoplay; gamepad';
+    f.addEventListener('load', () => { if (!player.hidden && f.getAttribute('src')) f.focus(); });
+    frame.replaceWith(f);
+    frame = f;
+  }
 
   $('back').addEventListener('click', () => {
-    if (openedFromHome) { openedFromHome = false; history.back(); }
-    else history.replaceState(null, '', location.pathname + location.search), route();
+    history.replaceState(null, '', location.pathname + location.search);
+    route();
   });
 
   if (player.requestFullscreen && document.fullscreenEnabled) {
@@ -205,13 +227,16 @@
     $('full').hidden = true;
   }
 
+  $('unfull').addEventListener('click', () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); });
+
   window.addEventListener('hashchange', route);
 
   // games.json is written by the build, one entry per game; apps.json lists the other apps by hand.
   const load = file => fetch(file, { cache: 'no-cache' }).then(r => r.json()).catch(() => null);
   Promise.all([load('games.json'), load('apps.json')]).then(([g, a]) => {
-    games = Array.isArray(g) ? g : [];
-    apps = Array.isArray(a) ? a : [];
+    const extra = Array.isArray(a) ? a : [];
+    games = (Array.isArray(g) ? g : []).concat(extra.filter(x => x.kind === 'game'));
+    apps = extra.filter(x => x.kind !== 'game');
     renderHome();
     const note = $('note'), empty = !games.length && !apps.length;
     if (!g && !a) note.textContent = 'לא הצלחנו לטעון את הרשימה. בדקו את החיבור ונסו שוב.';
