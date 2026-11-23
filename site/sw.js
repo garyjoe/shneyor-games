@@ -30,9 +30,11 @@ async function cacheFirst(request) {
 }
 
 // Everything else is fetched fresh, and the saved copy is only for when there is no connection.
+// 'no-cache' makes the browser check with the server each time: without it a page the browser had
+// kept for a few minutes would be shown as fresh, and a new version would seem not to arrive.
 async function networkFirst(request) {
   try {
-    return await store(request, await fetch(request));
+    return await store(request, await fetch(request.url, { cache: 'no-cache' }));
   } catch (err) {
     const saved = await caches.match(request, { ignoreSearch: true });
     if (saved) return saved;

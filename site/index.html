@@ -260,7 +260,22 @@
   });
   window.addEventListener('appinstalled', () => { $('install').hidden = true; });
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // When a new version of the app takes over, show it straight away instead of waiting for a second
+  // refresh. Not in the middle of a game, though: then it waits until the player is back at the list.
+  if ('serviceWorker' in navigator) {
+    const sw = navigator.serviceWorker;
+    let hadOne = !!sw.controller, pending = false;
+    const refresh = () => { if (pending && player.hidden) location.reload(); };
+    sw.addEventListener('controllerchange', () => {
+      if (hadOne) { pending = true; refresh(); }
+      hadOne = true;
+    });
+    window.addEventListener('hashchange', () => setTimeout(refresh, 0));
+    $('back').addEventListener('click', () => setTimeout(refresh, 0));
+    sw.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    }).catch(() => {});
+  }
 </script>
 </body>
 </html>
