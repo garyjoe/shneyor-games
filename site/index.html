@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>המשחקים של שניאור</title>
-<meta name="description" content="כל המשחקים של שניאור באפליקציה אחת.">
+<title>האפליקציות של שניאור</title>
+<meta name="description" content="כל המשחקים והאפליקציות של שניאור במקום אחד.">
 <meta name="theme-color" content="#3b2a8c">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -12,7 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="המשחקים">
+<meta name="apple-mobile-web-app-title" content="האפליקציות">
 <style>
   :root {
     color-scheme: light dark;
@@ -35,7 +35,7 @@
   /* Home */
   header.hero {
     background: var(--hero); color: #fff;
-    padding: calc(28px + env(safe-area-inset-top)) 16px 56px;
+    padding: calc(28px + env(safe-area-inset-top)) 16px 28px;
   }
   .hero-in, main { max-width: 880px; margin: 0 auto; }
   .hero-in { display: flex; align-items: center; gap: 14px; }
@@ -47,8 +47,9 @@
     border: 0; border-radius: 999px; padding: 9px 16px; background: #fff; color: #3b2a8c; font-weight: 700;
     white-space: nowrap;
   }
-  main { padding: 0 16px calc(32px + env(safe-area-inset-bottom)); margin-top: -32px; }
-  ul#games { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  main { padding: 4px 16px calc(32px + env(safe-area-inset-bottom)); }
+  main h2 { margin: 22px 0 12px; font-size: 1.15rem; color: var(--muted); }
+  ul.cards { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
   a.game {
     display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 12px;
     border: 1px solid var(--line); border-radius: 18px; background: var(--card); color: inherit; text-decoration: none;
@@ -74,13 +75,21 @@
     padding: calc(5px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 5px max(8px, env(safe-area-inset-left));
     background: var(--bar); color: var(--on-bar);
   }
-  #bar button {
-    border: 0; border-radius: 999px; padding: 5px 14px; background: rgba(255, 255, 255, .14); color: inherit;
+  #bar button, #bar a {
+    border: 0; text-decoration: none; border-radius: 999px; padding: 5px 14px; background: rgba(255, 255, 255, .14); color: inherit;
     font-weight: 600; font-size: .9rem; white-space: nowrap;
   }
-  #bar button:hover, #bar button:focus-visible { background: rgba(255, 255, 255, .26); outline: none; }
+  #bar button:hover, #bar button:focus-visible, #bar a:hover, #bar a:focus-visible { background: rgba(255, 255, 255, .26); outline: none; }
+  #bar #back { background: #ffd94d; color: #1b1733; font-weight: 700; font-size: 1rem; padding: 6px 18px; }
+  #bar #back:hover, #bar #back:focus-visible { background: #ffe680; }
   #bar #title { flex: 1; min-width: 0; text-align: center; font-weight: 700; font-size: .95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #player:fullscreen #bar { display: none; }
+  /* In full screen the bar is gone, so a small button stays in the corner to bring it back. */
+  #unfull {
+    display: none; position: absolute; top: calc(8px + env(safe-area-inset-top)); left: 8px; z-index: 5;
+    width: 36px; height: 36px; border: 0; border-radius: 50%; background: rgba(0, 0, 0, .45); color: #fff; font-size: 1rem;
+  }
+  #player:fullscreen #unfull { display: block; }
   #frame { flex: 1; min-height: 0; width: 100%; border: 0; display: block; background: #000; }
 </style>
 </head>
@@ -91,33 +100,42 @@
     <div class="hero-in">
       <img src="icon.svg" alt="" width="56" height="56">
       <div class="grow">
-        <h1>המשחקים של שניאור</h1>
-        <p>כל המשחקים במקום אחד</p>
+        <h1>האפליקציות של שניאור</h1>
+        <p>כל המשחקים והאפליקציות במקום אחד</p>
       </div>
       <button id="install" type="button" hidden>התקנה</button>
     </div>
   </header>
   <main>
-    <ul id="games"></ul>
+    <section id="sec-games" hidden>
+      <h2>משחקים</h2>
+      <ul class="cards" id="games"></ul>
+    </section>
+    <section id="sec-apps" hidden>
+      <h2>אפליקציות</h2>
+      <ul class="cards" id="apps"></ul>
+    </section>
     <p class="note" id="note" hidden></p>
   </main>
 </div>
 
 <div id="player" hidden>
   <div id="bar">
-    <button id="back" type="button">→ כל המשחקים</button>
+    <button id="back" type="button">→ חזרה</button>
     <div id="title"></div>
+    <a id="out" target="_blank" rel="noopener" hidden>↗ בלשונית חדשה</a>
     <button id="full" type="button">מסך מלא</button>
   </div>
+  <button id="unfull" type="button" aria-label="יציאה ממסך מלא">✕</button>
   <iframe id="frame" title="" allow="fullscreen; autoplay; gamepad"></iframe>
 </div>
 
 <script>
   const $ = id => document.getElementById(id);
-  const home = $('home'), player = $('player'), frame = $('frame');
+  const home = $('home'), player = $('player');
+  let frame = $('frame');
   const appTitle = document.title;
-  let games = [];
-  let openedFromHome = false;
+  let games = [], apps = [];
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -126,13 +144,18 @@
     return e;
   }
 
-  function renderHome() {
-    const list = $('games');
+  function renderList(listId, sectionId, items, playLabel) {
+    const list = $(listId);
     list.replaceChildren();
-    for (const g of games) {
+    $(sectionId).hidden = !items.length;
+    for (const g of items) {
       const a = el('a', 'game');
-      a.href = '#/' + g.slug;
-      a.addEventListener('click', () => { openedFromHome = true; });
+      if (g.url && !g.embed) {   // cannot be shown inside the app: opens in this tab, and Back returns here
+        a.href = g.url;
+        a.rel = 'noopener';
+      } else {
+        a.href = '#/' + g.slug;
+      }
       const top = el('div', 'top');
       const img = el('img');
       img.src = g.icon || 'icon.svg';
@@ -142,21 +165,26 @@
       const name = el('strong', '', g.name), desc = el('span', 'desc', g.description || '');
       name.dir = desc.dir = 'auto';   // a name or description in English reads left to right
       top.append(img, name);
-      a.append(top, desc, el('span', 'play', '▶ לשחק'));
+      a.append(top, desc, el('span', 'play', g.url && !g.embed ? '↗ לפתוח' : playLabel));
       const li = el('li');
       li.append(a);
       list.append(li);
     }
   }
 
+  function renderHome() {
+    renderList('games', 'sec-games', games, '▶ לשחק');
+    renderList('apps', 'sec-apps', apps, '▶ לפתוח');
+  }
+
   // The address after the # says which game is open, so the phone's back button returns to the list.
   function route() {
     const slug = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
-    const g = games.find(x => x.slug === slug);
+    const g = games.concat(apps).find(x => x.slug === slug && (!x.url || x.embed));
     if (!g) {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       player.hidden = true;
-      frame.removeAttribute('src');   // unloads the game, so it stops running and goes quiet
+      newFrame();   // drops the game, so it stops running and goes quiet
       home.hidden = false;
       document.title = appTitle;
       return;
@@ -164,17 +192,31 @@
     home.hidden = true;
     player.hidden = false;
     $('title').textContent = g.name;
-    frame.title = g.name;
     document.title = g.name;
-    const src = g.path || g.slug + '/';
-    if (frame.getAttribute('src') !== src) frame.src = src;
+    const src = g.url || g.path || g.slug + '/';
+    $('out').hidden = !g.url;
+    if (g.url) $('out').href = g.url;
+    if (frame.getAttribute('src') !== src) {
+      newFrame();
+      frame.title = g.name;
+      frame.src = src;
+    }
   }
 
-  frame.addEventListener('load', () => { if (!player.hidden) frame.focus(); });
+  // Each game gets a frame of its own. Reusing one would leave the old game in the browser's history,
+  // and Back would then step through the frame instead of returning to the list.
+  function newFrame() {
+    const f = document.createElement('iframe');
+    f.id = 'frame';
+    f.allow = 'fullscreen; autoplay; gamepad';
+    f.addEventListener('load', () => { if (!player.hidden && f.getAttribute('src')) f.focus(); });
+    frame.replaceWith(f);
+    frame = f;
+  }
 
   $('back').addEventListener('click', () => {
-    if (openedFromHome) { openedFromHome = false; history.back(); }
-    else history.replaceState(null, '', location.pathname + location.search), route();
+    history.replaceState(null, '', location.pathname + location.search);
+    route();
   });
 
   if (player.requestFullscreen && document.fullscreenEnabled) {
@@ -185,15 +227,21 @@
     $('full').hidden = true;
   }
 
+  $('unfull').addEventListener('click', () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); });
+
   window.addEventListener('hashchange', route);
 
-  fetch('games.json', { cache: 'no-cache' }).then(r => r.json()).catch(() => null).then(data => {
-    games = Array.isArray(data) ? data : [];
+  // games.json is written by the build, one entry per game; apps.json lists the other apps by hand.
+  const load = file => fetch(file, { cache: 'no-cache' }).then(r => r.json()).catch(() => null);
+  Promise.all([load('games.json'), load('apps.json')]).then(([g, a]) => {
+    const extra = Array.isArray(a) ? a : [];
+    games = (Array.isArray(g) ? g : []).concat(extra.filter(x => x.kind === 'game'));
+    apps = extra.filter(x => x.kind !== 'game');
     renderHome();
-    const note = $('note');
-    if (!data) note.textContent = 'לא הצלחנו לטעון את רשימת המשחקים. בדקו את החיבור ונסו שוב.';
-    else if (!games.length) note.textContent = 'עדיין אין משחקים.';
-    note.hidden = games.length > 0;
+    const note = $('note'), empty = !games.length && !apps.length;
+    if (!g && !a) note.textContent = 'לא הצלחנו לטעון את הרשימה. בדקו את החיבור ונסו שוב.';
+    else if (empty) note.textContent = 'עדיין אין כאן כלום.';
+    note.hidden = !empty;
     route();
   });
 
