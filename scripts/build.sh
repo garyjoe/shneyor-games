@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exports every Godot project under games/ to dist/<folder>/ for the web,
-# and copies the landing page to dist/. Used by CI and for local builds.
+# and copies the app that holds them (site/) to dist/. Used by CI and for local builds.
 #
 # Requires: Godot 4 (see .godot-version) with web export templates installed.
 # Override the binary with GODOT=/path/to/godot.
@@ -14,6 +14,8 @@ ver="$(git rev-parse --short HEAD 2>/dev/null || date +%s)"
 rm -rf dist
 mkdir -p dist
 cp -r site/. dist/
+# The service worker keeps one store of saved files per build, and drops the older ones.
+sed "s/__VERSION__/$ver/" site/sw.js > dist/sw.js
 
 entries=()
 for project in games/*/project.godot; do
@@ -36,7 +38,14 @@ for project in games/*/project.godot; do
     "<script>location.replace(\"$ver/\" + location.search + location.hash)</script>" \
     '</head>' "<body><a href=\"$ver/\">${name:-$slug}</a></body>" '</html>' > "dist/$slug/index.html"
 
-  entries+=("$(printf '{"slug":"%s","name":"%s","description":"%s"}' "$slug" "${name:-$slug}" "$desc")")
+  icon=""
+  if [ -f "$dir/icon.svg" ]; then
+    cp "$dir/icon.svg" "dist/$slug/icon.svg"
+    icon="$slug/icon.svg"
+  fi
+
+  entries+=("$(printf '{"slug":"%s","name":"%s","description":"%s","path":"%s","icon":"%s"}' \
+    "$slug" "${name:-$slug}" "$desc" "$slug/$ver/" "$icon")")
 done
 
 (IFS=,; printf '[%s]\n' "${entries[*]:-}") > dist/games.json

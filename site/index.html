@@ -1,50 +1,218 @@
 <!doctype html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shneyor Games</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>המשחקים של שניאור</title>
+<meta name="description" content="כל המשחקים של שניאור באפליקציה אחת.">
+<meta name="theme-color" content="#3b2a8c">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="המשחקים">
 <style>
-  :root { color-scheme: light dark; --bg: #f5f6f8; --fg: #171a21; --muted: #5c6370; --card: #fff; --line: #dfe2e8; --accent: #2f6fd6; }
+  :root {
+    color-scheme: light dark;
+    --bg: #f3f1fb; --fg: #1b1733; --muted: #5f5a7a; --card: #fff; --line: #e1dcf3;
+    --accent: #5b3fd6; --on-accent: #fff; --bar: #1b1733; --on-bar: #fff;
+    --hero: linear-gradient(135deg, #3b2a8c, #6a4be0 55%, #2fa9d9);
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #12151b; --fg: #eceef2; --muted: #9aa1ad; --card: #1b1f28; --line: #2b313d; --accent: #6fb0ff; }
+    :root {
+      --bg: #110f1f; --fg: #efedf9; --muted: #a39fbd; --card: #1c1930; --line: #2e2a49;
+      --accent: #9c86ff; --on-accent: #14102b; --bar: #0b0a14;
+    }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-  main { max-width: 760px; margin: 0 auto; padding: 48px 16px; }
-  h1 { margin: 0 0 24px; font-size: 2rem; }
-  ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
-  a.game { display: block; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: inherit; text-decoration: none; }
-  a.game:hover, a.game:focus-visible { border-color: var(--accent); }
-  a.game strong { display: block; color: var(--accent); font-size: 1.1rem; }
-  a.game span { color: var(--muted); font-size: .9rem; }
-  p.empty { color: var(--muted); }
+  html, body { height: 100%; }
+  body { margin: 0; font: 16px/1.5 system-ui, "Segoe UI", "Noto Sans Hebrew", Arial, sans-serif; background: var(--bg); color: var(--fg); }
+  button { font: inherit; cursor: pointer; }
+  [hidden] { display: none !important; }
+
+  /* Home */
+  header.hero {
+    background: var(--hero); color: #fff;
+    padding: calc(28px + env(safe-area-inset-top)) 16px 56px;
+  }
+  .hero-in, main { max-width: 880px; margin: 0 auto; }
+  .hero-in { display: flex; align-items: center; gap: 14px; }
+  .hero-in img { width: 56px; height: 56px; border-radius: 14px; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
+  .hero-in h1 { margin: 0; font-size: 1.6rem; line-height: 1.2; }
+  .hero-in p { margin: 2px 0 0; opacity: .85; font-size: .95rem; }
+  .hero-in .grow { flex: 1; min-width: 0; }
+  #install {
+    border: 0; border-radius: 999px; padding: 9px 16px; background: #fff; color: #3b2a8c; font-weight: 700;
+    white-space: nowrap;
+  }
+  main { padding: 0 16px calc(32px + env(safe-area-inset-bottom)); margin-top: -32px; }
+  ul#games { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  a.game {
+    display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 12px;
+    border: 1px solid var(--line); border-radius: 18px; background: var(--card); color: inherit; text-decoration: none;
+    box-shadow: 0 2px 10px rgba(27, 23, 51, .06); transition: transform .12s, border-color .12s;
+  }
+  a.game:hover, a.game:focus-visible { border-color: var(--accent); transform: translateY(-2px); outline: none; }
+  a.game:active { transform: scale(.98); }
+  a.game .top { display: flex; align-items: center; gap: 12px; }
+  a.game img { width: 64px; height: 64px; border-radius: 14px; flex: none; background: var(--line); }
+  a.game strong { font-size: 1.2rem; line-height: 1.25; }
+  a.game .desc { color: var(--muted); font-size: .92rem; flex: 1; }
+  a.game .play {
+    align-self: flex-start; border-radius: 999px; padding: 7px 18px; background: var(--accent); color: var(--on-accent);
+    font-weight: 700; font-size: .95rem;
+  }
+  p.note { color: var(--muted); text-align: center; margin: 32px 0 0; }
+  @media (prefers-reduced-motion: reduce) { a.game { transition: none; } }
+
+  /* Player */
+  #player { position: fixed; inset: 0; display: flex; flex-direction: column; background: #000; }
+  #bar {
+    display: flex; align-items: center; gap: 8px; flex: none;
+    padding: calc(5px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 5px max(8px, env(safe-area-inset-left));
+    background: var(--bar); color: var(--on-bar);
+  }
+  #bar button {
+    border: 0; border-radius: 999px; padding: 5px 14px; background: rgba(255, 255, 255, .14); color: inherit;
+    font-weight: 600; font-size: .9rem; white-space: nowrap;
+  }
+  #bar button:hover, #bar button:focus-visible { background: rgba(255, 255, 255, .26); outline: none; }
+  #bar #title { flex: 1; min-width: 0; text-align: center; font-weight: 700; font-size: .95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #player:fullscreen #bar { display: none; }
+  #frame { flex: 1; min-height: 0; width: 100%; border: 0; display: block; background: #000; }
 </style>
 </head>
 <body>
-<main>
-  <h1>Shneyor Games</h1>
-  <ul id="games"></ul>
-  <p class="empty" id="empty" hidden>No games yet.</p>
-</main>
+
+<div id="home">
+  <header class="hero">
+    <div class="hero-in">
+      <img src="icon.svg" alt="" width="56" height="56">
+      <div class="grow">
+        <h1>המשחקים של שניאור</h1>
+        <p>כל המשחקים במקום אחד</p>
+      </div>
+      <button id="install" type="button" hidden>התקנה</button>
+    </div>
+  </header>
+  <main>
+    <ul id="games"></ul>
+    <p class="note" id="note" hidden></p>
+  </main>
+</div>
+
+<div id="player" hidden>
+  <div id="bar">
+    <button id="back" type="button">→ כל המשחקים</button>
+    <div id="title"></div>
+    <button id="full" type="button">מסך מלא</button>
+  </div>
+  <iframe id="frame" title="" allow="fullscreen; autoplay; gamepad"></iframe>
+</div>
+
 <script>
-  fetch('games.json').then(r => r.json()).catch(() => []).then(games => {
-    const list = document.getElementById('games');
-    document.getElementById('empty').hidden = games.length > 0;
+  const $ = id => document.getElementById(id);
+  const home = $('home'), player = $('player'), frame = $('frame');
+  const appTitle = document.title;
+  let games = [];
+  let openedFromHome = false;
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function renderHome() {
+    const list = $('games');
+    list.replaceChildren();
     for (const g of games) {
-      const li = document.createElement('li');
-      const a = document.createElement('a');
-      a.className = 'game';
-      a.href = g.slug + '/';
-      const name = document.createElement('strong');
-      name.textContent = g.name;
-      const desc = document.createElement('span');
-      desc.textContent = g.description || '';
-      a.append(name, desc);
+      const a = el('a', 'game');
+      a.href = '#/' + g.slug;
+      a.addEventListener('click', () => { openedFromHome = true; });
+      const top = el('div', 'top');
+      const img = el('img');
+      img.src = g.icon || 'icon.svg';
+      img.alt = '';
+      img.width = img.height = 64;
+      img.onerror = () => { img.onerror = null; img.src = 'icon.svg'; };
+      const name = el('strong', '', g.name), desc = el('span', 'desc', g.description || '');
+      name.dir = desc.dir = 'auto';   // a name or description in English reads left to right
+      top.append(img, name);
+      a.append(top, desc, el('span', 'play', '▶ לשחק'));
+      const li = el('li');
       li.append(a);
       list.append(li);
     }
+  }
+
+  // The address after the # says which game is open, so the phone's back button returns to the list.
+  function route() {
+    const slug = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+    const g = games.find(x => x.slug === slug);
+    if (!g) {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      player.hidden = true;
+      frame.removeAttribute('src');   // unloads the game, so it stops running and goes quiet
+      home.hidden = false;
+      document.title = appTitle;
+      return;
+    }
+    home.hidden = true;
+    player.hidden = false;
+    $('title').textContent = g.name;
+    frame.title = g.name;
+    document.title = g.name;
+    const src = g.path || g.slug + '/';
+    if (frame.getAttribute('src') !== src) frame.src = src;
+  }
+
+  frame.addEventListener('load', () => { if (!player.hidden) frame.focus(); });
+
+  $('back').addEventListener('click', () => {
+    if (openedFromHome) { openedFromHome = false; history.back(); }
+    else history.replaceState(null, '', location.pathname + location.search), route();
   });
+
+  if (player.requestFullscreen && document.fullscreenEnabled) {
+    $('full').addEventListener('click', () => {
+      player.requestFullscreen().then(() => frame.focus()).catch(() => {});
+    });
+  } else {
+    $('full').hidden = true;
+  }
+
+  window.addEventListener('hashchange', route);
+
+  fetch('games.json', { cache: 'no-cache' }).then(r => r.json()).catch(() => null).then(data => {
+    games = Array.isArray(data) ? data : [];
+    renderHome();
+    const note = $('note');
+    if (!data) note.textContent = 'לא הצלחנו לטעון את רשימת המשחקים. בדקו את החיבור ונסו שוב.';
+    else if (!games.length) note.textContent = 'עדיין אין משחקים.';
+    note.hidden = games.length > 0;
+    route();
+  });
+
+  // Install button, where the browser offers one (on iPhone: Share, then "Add to Home Screen").
+  let installEvent = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    installEvent = e;
+    $('install').hidden = false;
+  });
+  $('install').addEventListener('click', () => {
+    if (!installEvent) return;
+    installEvent.prompt();
+    installEvent = null;
+    $('install').hidden = true;
+  });
+  window.addEventListener('appinstalled', () => { $('install').hidden = true; });
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
