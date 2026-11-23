@@ -1,0 +1,7 @@
+[
+  {"slug": "hamishakia", "name": "המשחקייה", "description": "אוסף של משחקים קצרים: תגובה מהירה, זיכרון, חשיבה ועוד, עם שיאים ופרסים.", "path": "apps/hamishakia/", "icon": "apps/hamishakia/icon.svg"},
+  {"slug": "numbers", "name": "משמעות המספרים", "description": "גימטריה: כמה שווה כל מילה, ואילו מילים בתנ\"ך ובעברית שוות לה.", "path": "apps/numbers/", "icon": "apps/numbers/icon.svg"},
+  {"slug": "alon", "name": "העלון שכולנו אוהבים", "description": "האתר של עלון השבת, עם כל הגיליונות.", "url": "https://hashabbat.netlify.app", "icon": "apps/icons/alon.svg"},
+  {"slug": "worksheets", "name": "עוזר דפי עבודה", "description": "מצלמים דף עבודה ומקבלים הסבר פשוט. נפתח ב-Claude ודורש חיבור לחשבון.", "url": "https://claude.ai/artifact/5z7FTsik91ABeX1pUNZeH3", "icon": "apps/icons/worksheets.svg"},
+  {"slug": "alon-desk", "name": "מערכת עלון השבת", "description": "המערכת שבה כותבים ועורכים את הגיליונות. נפתחת ב-Claude ודורשת חיבור לחשבון.", "url": "https://claude.ai/artifact/WBpf7HUbsogY3Lu7SBoBJd", "icon": "apps/icons/desk.svg"}
+]

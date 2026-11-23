@@ -2,7 +2,7 @@
 // scripts/build.sh replaces the version below with the commit the site was built from.
 const VERSION = '__VERSION__';
 const CACHE = 'shneyor-games-' + VERSION;
-const SHELL = ['./', 'games.json', 'manifest.webmanifest', 'icon.svg', 'icon-192.png'];
+const SHELL = ['./', 'games.json', 'apps.json', 'manifest.webmanifest', 'icon.svg', 'icon-192.png'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
