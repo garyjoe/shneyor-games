@@ -1821,7 +1821,7 @@ func _show_menu() -> void:
 	if FileAccess.file_exists(SAVE_PATH):
 		buttons.append(["להמשיך", _continue_game])
 	buttons.append(["משחק חדש", _new_game])
-	_overlay("חיים בעיר", "\n".join([
+	_overlay("חיים יהודים", "\n".join([
 		"עבדו בעבודה כדי להרוויח כסף, קנו אוכל בסופר,",
 		"אכלו ושנו בבית, ושלמו ₪%d שכר דירה כל %d ימים." % [RENT, RENT_DAYS],
 		"",
